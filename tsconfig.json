@@ -1,0 +1,39 @@
+{
+  "compilerOptions": {
+    // 严格性 —— 全项目不允许 any 漏网
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // 目标环境
+    "target": "es2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable", "WebWorker"],
+    "useDefineForClassFields": true,
+
+    // 模块解析 —— 相对 import 必须带 .ts 后缀，Node 原生解析，浏览器由 dev-server 解析
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+
+    // 关键：只允许可擦除语法（禁 enum / namespace / 参数属性 / 装饰器）
+    // Node 的类型剥离只支持可擦除语法，这个开关让 tsc 在编译期就拦住
+    "erasableSyntaxOnly": true,
+
+    // Node 类型来自本机复制的 @types/node（纯类型，无运行时依赖）。
+    // 它是全局注入的，所以 client/core/content 层误用 process/Buffer 这类 Node 全局时
+    // tsc 不会报错 —— 那一层由 tools/lint-layers.mjs 拦截。
+    "typeRoots": ["./tools/vendor/@types"],
+    "types": ["node"],
+
+    // 只做类型检查，不产出 —— 产出交给 esbuild
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}

@@ -1,0 +1,22 @@
+# 供应的工具链（纯本机文件复制，约 34 MB，可用 tools/vendor.mjs 重建）
+tools/vendor/
+tools/bin/
+
+# 构建产物
+dist/
+out/
+
+# 生成的资源（由 tools/gen/*.mjs 确定性重建）
+assets/generated/
+
+# 运行时
+*.log
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+
+# 测试输出
+tests/out/

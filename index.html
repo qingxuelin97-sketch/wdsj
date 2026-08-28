@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>我的世界 · 复刻</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+  body { font: 13px/1.4 Consolas, "Courier New", monospace; color: #e8e8e8; }
+  #gl { display: block; width: 100%; height: 100%; cursor: crosshair; }
+
+  #hud {
+    position: fixed; top: 8px; left: 8px; z-index: 10;
+    padding: 6px 9px; background: rgba(0,0,0,.55);
+    border: 1px solid rgba(255,255,255,.14);
+    white-space: pre; pointer-events: none;
+    text-shadow: 1px 1px 0 #000; letter-spacing: .2px;
+  }
+  #hint {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    z-index: 10; padding: 14px 20px; text-align: center;
+    background: rgba(0,0,0,.7); border: 1px solid rgba(255,255,255,.18);
+  }
+  #hint.hidden { display: none; }
+  #crosshair {
+    position: fixed; left: 50%; top: 50%; z-index: 9;
+    width: 18px; height: 18px; margin: -9px 0 0 -9px; pointer-events: none;
+    opacity: .8;
+  }
+  #crosshair::before, #crosshair::after {
+    content: ''; position: absolute; background: #fff; mix-blend-mode: difference;
+  }
+  #crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
+  #crosshair::after { left: 0; top: 8px; width: 18px; height: 2px; }
+  #fatal {
+    position: fixed; inset: 0; z-index: 100; padding: 24px;
+    background: #180d0d; color: #ffb4b4; overflow: auto; white-space: pre-wrap;
+    display: none;
+  }
+</style>
+</head>
+<body>
+  <canvas id="gl"></canvas>
+  <div id="crosshair"></div>
+  <div id="hud">启动中…</div>
+  <div id="hint">点击画面锁定鼠标<br><span style="opacity:.65">WASD 移动 · 空格上升 · Q 下降 · Ctrl 加速 · Esc 释放</span></div>
+  <pre id="fatal"></pre>
+
+  <script type="module">
+    // 把页面的 console 与未捕获异常汇聚到 dev-server 的 stdout，
+    // 这样无头跑测时不需要浏览器驱动也能读到客户端日志。
+    const ring = [];
+    const post = () => {
+      if (ring.length === 0) return;
+      const batch = ring.splice(0, ring.length);
+      fetch('/__log', { method: 'POST', body: JSON.stringify(batch) }).catch(() => {});
+    };
+    for (const level of ['log', 'warn', 'error']) {
+      const orig = console[level].bind(console);
+      console[level] = (...args) => {
+        orig(...args);
+        ring.push({ level, msg: args.map(a => (a instanceof Error ? (a.stack || a.message) : typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ') });
+        if (ring.length > 40) post();
+      };
+    }
+    setInterval(post, 400);
+    window.addEventListener('beforeunload', post);
+
+    const showFatal = (text) => {
+      const el = document.getElementById('fatal');
+      el.style.display = 'block';
+      el.textContent = String(text);
+    };
+    window.addEventListener('error', (e) => {
+      console.error('[uncaught]', e.error ? (e.error.stack || e.error.message) : e.message);
+      showFatal(e.error ? (e.error.stack || e.error.message) : e.message);
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      console.error('[unhandled rejection]', e.reason);
+      showFatal(e.reason && e.reason.stack ? e.reason.stack : String(e.reason));
+    });
+
+    // 开发期热重载
+    try {
+      const es = new EventSource('/__reload');
+      es.addEventListener('reload', () => location.reload());
+    } catch {}
+  </script>
+
+  <script type="module" src="/src/entry/client-main.ts"></script>
+</body>
+</html>
