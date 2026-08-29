@@ -13,91 +13,34 @@
  */
 import { PacketChannel, type Transport } from '../core/net/transport.ts';
 import {
-  C2S, PROTOCOL_VERSION, PlayerActionKind,
-  S_Login, S_TimeUpdate, S_BlockUpdate, S_Disconnect, S_CommandResult, S_Chat, S_ServerStats,
-  S_WindowItems, S_OpenWindow, S_WindowProgress, S_EntityEvent, S_PlayerHealth, WindowKind,
+  C2S, PROTOCOL_VERSION, 
+  S_Login, S_Disconnect, S_Chat, 
+  S_WindowProgress,
 } from '../core/net/packets.ts';
 import { ServerWorld } from './world/server-world.ts';
 import { handleCommand } from './commands.ts';
 import {
-  dropOf, toolOf, giveToPlayer, maxStackOf, syncInventory,
-  onWindowClick, showWindow, closeWindow,
+  syncInventory,
+  onWindowClick, closeWindow,
 } from './player/inventory-actions.ts';
 import { ServerPlayer } from './player/server-player.ts';
 import type { BlockRegistry } from '../core/registry/block-registry.ts';
-import { AIR_STATE, packState, chunkKey, stateId } from '../core/world/chunk.ts';
-import { breakProgressPerTick, canHarvest, type HeldTool } from '../core/block/breaking.ts';
-import {
-  isEmpty, cloneStack, makeStack, ITEM_ID_BASE, type ItemStack,
-} from '../core/item/item-def.ts';
-import { Window, ARMOR_SLOTS, MAIN_SLOTS, HOTBAR_SLOTS } from './player/player-inventory.ts';
+import { AIR_STATE } from '../core/world/chunk.ts';
 import { createItemRegistry, type ItemRegistry } from '../content/items.ts';
 import { createCraftingData, type SmeltingRecipe, type CraftingData } from '../content/recipes.ts';
-import { tickBlockEntities } from './world/block-entity-tick.ts';
-import { runScheduledTick } from './world/block-ticks.ts';
-import { onPlayerAction, onUseBlock, advanceDigging } from './player/block-interaction.ts';
+import { runServerTick } from './server-tick.ts';
+import { onPlayerAction, onUseBlock } from './player/block-interaction.ts';
 import {
-  onAttackEntity, tickArrows, shootArrow, explodeAt, damagePlayer,
-  armorPointsOf, sendVitals, respawnPlayer,
+  onAttackEntity, shootArrow, explodeAt, damagePlayer,
+  armorPointsOf, respawnPlayer,
 } from './entity/combat.ts';
-import { tickVitals, DamageKind, fallDamage, type VitalsContext } from './player/player-vitals.ts';
-import { ChestEntity, FurnaceEntity, type BlockEntity } from './world/block-entity.ts';
-import { tickItems, broadcastItems, spawnBlockDrop, scatterContents } from './entity/item-manager.ts';
-import { saveAllChunks } from './world/world-persistence.ts';
+import { DamageKind, fallDamage, type VitalsContext } from './player/player-vitals.ts';
+import { FurnaceEntity, type BlockEntity } from './world/block-entity.ts';
 import { MobManager } from './entity/mob-manager.ts';
-import { ArrowEntity, ARROW_SPEED, type ArrowEntity as Arrow } from './entity/arrow.ts';
-import { explode } from './entity/explosion.ts';
+import { type ArrowEntity as Arrow } from './entity/arrow.ts';
 import type { Mob } from './entity/mob.ts';
 import type { TargetRef } from './entity/goal.ts';
-import { setBodyBox, makeBox } from './../core/physics/block-collision.ts';
-import { TPS, EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, WORLD_HEIGHT, REACH_SURVIVAL, EXHAUSTION } from '../core/constants.ts';
-
-/**
- * 触及距离的判定上限（平方）。
- *
- * 比 4.5 格的标称值放宽一些：客户端是按自己**预测**的位置发包的，
- * 而服务端手里是稍旧的位置，卡在边界上时两边会差出零点几格。
- * 卡得太死的话，正常游玩时会偶发"点了没反应"。
- */
-/** 少数几个"掉的不是自己"的方块 */
-const DROP_OVERRIDE: Record<number, number> = {
-  1: 4,    // 石头 -> 圆石
-  2: 3,    // 草方块 -> 泥土
-  13: 13,  // 砾石有几率掉燧石，M9 接上随机掉落表后再说
-  16: 263, // 煤矿 -> 煤
-  21: 351, // 青金石矿 -> 青金石（染料）
-  56: 264, // 钻石矿 -> 钻石
-  73: 331, // 红石矿 -> 红石
-  110: 3,  // 菌丝 -> 泥土
-};
-
-/** 右键这些方块是"打开界面"而不是"放方块" */
-const OPENS_WINDOW: Record<number, WindowKind> = {
-  58: WindowKind.CRAFTING,
-  54: WindowKind.CHEST,
-  61: WindowKind.FURNACE,
-  62: WindowKind.FURNACE,
-};
-
-const WINDOW_TITLES: Record<number, string> = {
-  [WindowKind.INVENTORY]: 'Inventory',
-  [WindowKind.CRAFTING]: 'Crafting',
-  [WindowKind.FURNACE]: 'Furnace',
-  [WindowKind.CHEST]: 'Chest',
-};
-
-/** [start, start+count) 的下标序列 */
-function range(start: number, count: number): number[] {
-  return Array.from({ length: count }, (_, i) => start + i);
-}
-
-/** 箭命中判定复用的盒子。每刻可能有几十支箭，别每支都新建 */
-const arrowScratch = makeBox();
-
-/** face 编号到法线。与 core/block/types.ts 的 Facing 一致 */
-const FACE_NORMALS: readonly (readonly [number, number, number])[] = [
-  [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0],
-];
+import { TPS, EYE_HEIGHT, EXHAUSTION } from '../core/constants.ts';
 
 /** 每多少 tick 扫描一次并卸载无人问津的区块 */
 
@@ -127,14 +70,20 @@ export class ServerCore {
   readonly arrows = new Map<number, Arrow>();
   private readonly players = new Map<number, ServerPlayer>();
 
-  /** 测试用：遍历在线玩家。生产代码不要用 */
-  playersForTest(): Iterable<ServerPlayer> {
+  /**
+   * 遍历在线玩家。
+   *
+   * 只读地暴露 players —— 拿不到 Map 本身，所以外面加不了也删不掉玩家。
+   * 玩家的增删只有 onConnect / onDisconnect 两个入口，这是刻意的：
+   * tick 中途少一个玩家会让"先算再广播"的两段式代码读到不一致的状态。
+   */
+  eachPlayer(): Iterable<ServerPlayer> {
     return this.players.values();
   }
   private nextEntityId = 1;
   /** 已经跑过的 tick 数。宿主要把它写进共享统计槽，所以是公开的 */
   tickCount = 0;
-  private readonly timeSyncInterval: number;
+  readonly timeSyncInterval: number;
   /** 供宿主填写的统计，ServerCore 自己不读挂钟 */
   lastTickMs = 0;
   /**
@@ -147,6 +96,18 @@ export class ServerCore {
   spawnX = 0;
   spawnY = -1;
   spawnZ = 0;
+  /**
+   * 随机刻的开关。
+   *
+   * 截图回归必须关掉。开着的时候世界**永远不会静止**：两百个区块里
+   * 总有草在蔓延、树苗在长大，每一次都会把所在的子区块标脏。
+   * 于是客户端的网格化队列永远清不空，`waitForIdle` 等到超时也等不到安定 ——
+   * 而失败信息只会说"10 段待网格化"，看上去像网格化卡住了。
+   *
+   * 这不是 bug：真实的 MC 世界也一直在自己变。要的是一个**冻结的**世界
+   * 来做逐像素比对，就像 persist=0 与 mobs=0 那样。
+   */
+  randomTicks = true;
   /**
    * 玩家握手完成、位置已定，但**登录包还没发出去**时的回调。
    *
@@ -187,7 +148,7 @@ export class ServerCore {
   }
 
   /** 生存循环要用到的回调。建一次复用，别每刻每人各建一个对象 */
-  private readonly vitalsCtx: VitalsContext = {
+  readonly vitalsCtx: VitalsContext = {
     world: null as unknown as ServerWorld,
     armorPoints: (p) => armorPointsOf(this, p),
     hurt: (p, amount, kind) => { damagePlayer(this, p, amount, p.x, p.z, kind); },
@@ -276,138 +237,14 @@ export class ServerCore {
     this.players.delete(player.entityId);
   }
 
-  /** 推进一个 tick。宿主每 50ms 调一次 */
-  tick(): void {
-    this.tickCount++;
-    this.world.advanceTime();
-    this.world.resetGenerationBudget();
-    // 先收下 gen worker 这一轮送到的区块，再决定要不要下新单
-    this.world.intakeGenerated();
-
-    // 挖掘进度：服务端自己算，每 tick 推进一步。
-    //
-    // 必须排在下面 drainChanges 之前 —— 否则这一 tick 破坏的方块要等到
-    // **下一** tick 才广播出去，玩家会看到挖穿后方块还杵在那里闪一下。
-    for (const player of this.players.values()) advanceDigging(this, player);
-
-    // 区块流水线：先生成，再算光照，最后才推送。
-    // 顺序不能颠倒 —— 先推送的话客户端拿到的是光照全 0 的区块。
-    const prepared: { player: ServerPlayer; keys: number[] }[] = [];
-    for (const player of this.players.values()) {
-      player.updateSubscriptions(this.world);
-      const keys = player.prepareChunks(this.world);
-      if (keys.length > 0) prepared.push({ player, keys });
-    }
-
-    // 计划刻：流体流动、沙子下落、火蔓延、TNT 引爆。
-    //
-    // 排在方块实体之前，因为它们改的是**方块**，而方块变更要赶上
-    // 这一刻的光照重算与广播；排在挖掘之后，因为挖掉一格会当场排出
-    // 一批新的计划刻（周围的水要重新流），那些该在下一刻才跑
-    this.runScheduledTicks();
-
-    // 方块实体（熔炉）。排在挖掘之后、光照之前：熔炉点火会换方块 id，
-    // 那是一次真正的方块变更，得赶上这一刻的光照与广播
-    tickBlockEntities(this);
-
-    // 玩家的生存状态：环境伤害、饥饿、回血
-    for (const player of this.players.values()) {
-      tickVitals(player, player.vitals, this.vitalsCtx);
-    }
-
-    // 掉落物：物理、合并、拾取
-    tickItems(this);
-
-    // 生物：AI、物理、生成、同步
-    this.mobs.tick();
-    tickArrows(this);
-
-    // 光照重算（M4 会换成局部增量）
-    this.world.updateLighting();
-
-    for (const entry of prepared) entry.player.sendPreparedChunks(this.world, entry.keys);
-
-    // 方块变更广播 —— 只发给订阅了对应区块的玩家
-    const changes = this.world.drainChanges();
-    if (changes.length > 0) {
-      for (const player of this.players.values()) {
-        for (const c of changes) {
-          if (!player.isSubscribed(c.x >> 4, c.z >> 4)) continue;
-          player.channel.send(S_BlockUpdate, { x: c.x, y: c.y, z: c.z, state: c.state });
-        }
-      }
-    }
-
-    // 掉落物的出生 / 移动 / 销毁
-    broadcastItems(this, this.world.drainUnloadedItems());
-
-    // 服务端状态：每 tick 都发。它很小（10 字节），但让主线程随时知道
-    // 服务端还有多少活没干完 —— 这是 waitForIdle 判定世界安定的必要依据。
-    const pending = this.pendingChunkCount();
-    const loaded = this.world.loadedCount;
-    for (const player of this.players.values()) {
-      player.channel.send(S_ServerStats, {
-        tick: this.tickCount,
-        pendingChunks: Math.min(65535, pending),
-        loadedChunks: Math.min(65535, loaded),
-        tickMicros: Math.min(65535, Math.round(this.lastTickMs * 100)),
-      });
-    }
-
-    // 时间同步
-    if (this.tickCount % this.timeSyncInterval === 0) {
-      for (const player of this.players.values()) {
-        player.channel.send(S_TimeUpdate, {
-          worldAge: BigInt(this.world.worldAge),
-          timeOfDay: BigInt(this.world.timeOfDay),
-        });
-      }
-    }
-
-    // 卸载没人看的区块。
-    //
-    // 每 tick 都做，不做成"每 100 tick 一次"。原因不是性能而是**确定性**：
-    // 周期性任务会让世界在某个 tick 突然少掉一批区块，而截图恰好落在
-    // 那一下的前面还是后面，取决于机器快慢 —— 同一份代码截出来的画面
-    // 时而多两个区块时而少两个。实测就是这么在 skyline 上飘的：
-    // 连拍六张，第五张开始哈希变了。
-    //
-    // 保留范围本来就取视距 +2，有滞回，每 tick 扫不会造成反复卸载重建；
-    // 代价是几百次距离比较，相对生成一个区块的 11.6 ms 可以忽略。
-    this.unloadDistantChunks();
-
-    // 每 tick 一次 flush：一个 tick 内产生的所有包合成一条消息发出
-    for (const player of this.players.values()) player.channel.flush();
-  }
-
   /**
-   * 卸载没有任何玩家需要的区块。
+   * 推进一个 tick。宿主每 50ms 调一次。
    *
-   * 必须有这一步：prepareChunks 会连同 3×3 邻域一起生成（为了让天光收敛），
-   * 那些邻域区块从来没被"订阅"过，光靠订阅差集永远清不掉它们 ——
-   * 服务端会一直往上堆区块，跑久了就是内存泄漏。
-   *
-   * 保留范围取视距 +2：比玩家实际能看到的略大一圈，这样在边界来回走动时
-   * 不会反复卸载又重新生成（那比多留几个区块贵得多）。
+   * 具体做什么、按什么顺序，在 server/server-tick.ts 里 —— 那个顺序
+   * 本身就是一份文档，值得单独一个文件放。
    */
-  private unloadDistantChunks(): void {
-    const keep = new Set<number>();
-    for (const player of this.players.values()) {
-      const cx = player.chunkX;
-      const cz = player.chunkZ;
-      const r = player.viewDistance + 2;
-      for (let dz = -r; dz <= r; dz++) {
-        for (let dx = -r; dx <= r; dx++) {
-          if (dx * dx + dz * dz > r * r) continue;
-          keep.add(chunkKey(cx + dx, cz + dz));
-        }
-      }
-    }
-    const doomed: [number, number][] = [];
-    for (const chunk of this.world.store.chunkValues()) {
-      if (!keep.has(chunk.key)) doomed.push([chunk.cx, chunk.cz]);
-    }
-    for (const [cx, cz] of doomed) this.world.unloadChunk(cx, cz);
+  tick(): void {
+    runServerTick(this);
   }
 
   // -------------------------------------------------------------------------
@@ -521,23 +358,6 @@ export class ServerCore {
     const dy = player.y + EYE_HEIGHT - (y + 0.5);
     const dz = player.z - (z + 0.5);
     return dx * dx + dy * dy + dz * dz;
-  }
-
-  /**
-   * 跑掉这一刻到期的计划刻。
-   *
-   * 有上限（队列的 drainDue 默认 1000 条）：一片大水或者一个红石时钟能让
-   * 到期条目在一刻里堆到几万，全做完会让服务端停摆几百毫秒。做不完的留在
-   * 队列里下一刻接着做 —— 表现是水流得慢一点，而不是整个世界卡一下。
-   */
-  private runScheduledTicks(): void {
-    const due = this.world.scheduled.drainDue(this.world.worldAge);
-    for (const t of due) {
-      runScheduledTick(
-        this.world, t.x, t.y, t.z, t.blockId,
-        (x, y, z, power) => { this.explode(x, y, z, power); },
-      );
-    }
   }
 
   /**

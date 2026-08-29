@@ -63,7 +63,7 @@ function attachPlayer(core: ServerCore): ServerPlayer {
   channel.send(C_Handshake, { protocolVersion: PROTOCOL_VERSION, playerName: 'tester' });
   channel.send(C_SetViewDistance, { distance: 2 });
   channel.flush();
-  return [...core.playersForTest()][0]!;
+  return [...core.eachPlayer()][0]!;
 }
 
 test('僵尸在白天的天光下会烧起来，晚上不会', () => {

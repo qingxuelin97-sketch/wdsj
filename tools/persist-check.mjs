@@ -22,9 +22,15 @@ import { launchChrome, openPage } from './cdp.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 8098; // 与 dev(8080) 和 smoke(8099) 都错开
 const HEADLESS = !process.argv.includes('--head');
-/** 固定种子。存档目录按种子分，所以同一个种子跑两次会读到同一份存档 */
+/**
+ * 固定种子。存档目录按种子分，所以同一个种子跑两次会读到同一份存档。
+ *
+ * URL 里的 `randomTicks=0`：开着随机刻的话，两百个区块里总有草在蔓延、
+ * 树苗在长大，客户端的网格化队列永远清不空，`waitForIdle` 等到超时也
+ * 等不到安定。而且世界会在存盘与重读之间自己变，光照比对也就没意义了。
+ */
 const SEED = 20260829;
-const URL_BASE = `http://127.0.0.1:${PORT}/?test=persist&seed=${SEED}&radius=2`;
+const URL_BASE = `http://127.0.0.1:${PORT}/?test=persist&seed=${SEED}&radius=2&randomTicks=0`;
 
 const failures = [];
 function log(msg) {

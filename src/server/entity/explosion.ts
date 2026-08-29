@@ -20,6 +20,7 @@
 import type { ServerCore } from '../server-core.ts';
 import { AIR_STATE, stateId } from '../../core/world/chunk.ts';
 import { WORLD_HEIGHT } from '../../core/constants.ts';
+import { JavaRandom } from '../../core/rng/java-random.ts';
 
 /** 射线格子边长，与 MC 一致 */
 const RAY_GRID = 16;
@@ -48,7 +49,20 @@ export function explode(
   sourceId = -1,
 ): ExplosionResult {
   const world = core.world;
-  const rng = world.random;
+  /**
+   * 爆炸自带一个**按位置播种**的随机源，不用世界那个共享的。
+   *
+   * 与 MC 有意不同（记在 docs/DEVIATIONS.md）：MC 用共享的世界随机源，
+   * 于是"同一个地方炸出什么形状"取决于在此之前世界抽了多少次随机数 ——
+   * 加一套随机刻、多刷一只怪，爆坑就变了。
+   *
+   * 而爆坑形状正是本项目的一条验收指标（TNT 爆坑方块数与黄金完全相等）。
+   * 按位置播种之后，同一个世界同一个坐标炸出来永远一样，
+   * 这条断言才真正测的是"爆炸算法没变"，而不是"随机流没被别人动过"。
+   */
+  const rng = new JavaRandom(
+    world.seed ^ BigInt(Math.floor(cx) * 73856093 ^ Math.floor(cy) * 19349663 ^ Math.floor(cz) * 83492791),
+  );
   const affected = new Set<number>();
   const result: ExplosionResult = { destroyed: [], hurtPlayers: [], hurtMobs: [] };
   // 集合的键用**相对爆心的偏移**而不是世界坐标：射线最远走 power×~5 格，
@@ -129,7 +143,7 @@ export function explode(
   // 这里省掉遮挡系数（那要给每个实体再打一批射线），改用纯距离衰减，
   // 于是"躲在方块后面"挡不住爆炸 —— 记在 DEVIATIONS 里
   const radius = power * 2;
-  for (const p of core.playersForTest()) {
+  for (const p of core.eachPlayer()) {
     const d = Math.hypot(p.x - cx, p.y + 0.9 - cy, p.z - cz);
     if (d > radius) continue;
     const factor = 1 - d / radius;

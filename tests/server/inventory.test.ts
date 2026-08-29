@@ -22,7 +22,7 @@ import { showWindow, closeWindow } from '../../src/server/player/inventory-actio
 const registry = createBlockRegistry();
 const items = createItemRegistry();
 
-function makePair(): { server: ServerCore; send: (p: unknown, v: Record<string, unknown>) => void; player: ReturnType<ServerCore['playersForTest']> extends Iterable<infer T> ? T : never } {
+function makePair(): { server: ServerCore; send: (p: unknown, v: Record<string, unknown>) => void; player: ReturnType<ServerCore['eachPlayer']> extends Iterable<infer T> ? T : never } {
   const server = new ServerCore({ seed: 1234n, registry });
   const [clientSide, serverSide] = LoopbackTransport.createPair();
   clientSide.synchronous = true;
@@ -34,7 +34,7 @@ function makePair(): { server: ServerCore; send: (p: unknown, v: Record<string, 
   channel.send(C_SetViewDistance, { distance: 2 });
   channel.flush();
   for (let i = 0; i < 40; i++) server.tick();
-  const player = [...server.playersForTest()][0]!;
+  const player = [...server.eachPlayer()][0]!;
   return {
     server,
     send: (p, v) => { channel.send(p as never, v as never); channel.flush(); },

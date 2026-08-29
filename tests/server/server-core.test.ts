@@ -14,7 +14,7 @@ import { createBlockRegistry } from '../../src/content/blocks.ts';
 import { LoopbackTransport, PacketChannel } from '../../src/core/net/transport.ts';
 import { S2C, C_Handshake, C_PlayerMove, C_PlayerAction, C_UseBlock, C_Command, C_SetViewDistance, PROTOCOL_VERSION, PlayerActionKind } from '../../src/core/net/packets.ts';
 import { decodeChunk } from '../../src/core/world/chunk-codec.ts';
-import { AIR_STATE, packState, stateId } from '../../src/core/world/chunk.ts';
+import { AIR_STATE, stateId } from '../../src/core/world/chunk.ts';
 
 const registry = createBlockRegistry();
 
@@ -195,7 +195,7 @@ test('挖掉方块会广播 S_BlockUpdate', () => {
 
   assert.equal(
     server.world.getBlock(target![0], target![1], target![2]), AIR_STATE,
-    `200 tick 内应该挖穿；玩家在 ${[...server.playersForTest()][0]!.digProgress.toFixed(3)} 进度上停住了`,
+    `200 tick 内应该挖穿；玩家在 ${[...server.eachPlayer()][0]!.digProgress.toFixed(3)} 进度上停住了`,
   );
   const update = client.last('S_BlockUpdate');
   assert.ok(update !== undefined, '挖掉方块后应收到 S_BlockUpdate');
@@ -261,15 +261,18 @@ test('对着方块的某个面放置，新方块落在那一侧', () => {
   server.tick();
 
   assert.notEqual(server.world.getBlock(tx, ty + 1, tz), AIR_STATE, '上方应该多出一个方块');
-  const update = client.last('S_BlockUpdate');
+  // 找**放置位置上的那条**更新，不能取"最后一条"：
+  // 随机刻（草蔓延、耕地变干、树苗长大）每刻都可能广播别处的方块变更，
+  // 最后一条多半不是我们刚放的那块
+  const update = client.of('S_BlockUpdate')
+    .find((u) => u['x'] === tx && u['y'] === ty + 1 && u['z'] === tz);
   assert.ok(update !== undefined, '放置也要广播 S_BlockUpdate');
-  assert.equal(update!['y'], ty + 1);
 });
 
 test('不能把方块放进自己身体里', () => {
   const { server, client } = makePair();
   for (let i = 0; i < 40; i++) server.tick();
-  const player = [...server.playersForTest()][0]!;
+  const player = [...server.eachPlayer()][0]!;
   // 玩家脚下那一格的正上方就是玩家自己站的位置
   const fx = Math.floor(player.x);
   const fz = Math.floor(player.z);

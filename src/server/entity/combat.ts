@@ -43,7 +43,7 @@ export function tickArrows(core: ServerCore): void {
 function resolveArrowHit(core: ServerCore, arrow: Arrow): void {
   // 玩家优先：被自己射的箭打到在 1.0 里是不会发生的（骷髅射的箭能打到骷髅，
   // 但打不到射它的那只），所以只跳过 owner 自己
-  for (const player of [...core.playersForTest()].sort((a, b) => a.entityId - b.entityId)) {
+  for (const player of [...core.eachPlayer()].sort((a, b) => a.entityId - b.entityId)) {
     if (player.entityId === arrow.ownerId || player.health <= 0) continue;
     setBodyBox(arrowScratch, player.x, player.y, player.z, PLAYER_WIDTH, PLAYER_HEIGHT);
     if (!arrow.hits(arrowScratch)) continue;
@@ -87,7 +87,7 @@ export function onAttackEntity(core: ServerCore, player: ServerPlayer, value: Re
   mob.knockback(dx, dz);
   // 打了它就会还手；被动生物则会逃跑，那由 PanicGoal 负责
   if (mob.def.attackDamage > 0) mob.targetId = player.entityId;
-  for (const p of core.playersForTest()) {
+  for (const p of core.eachPlayer()) {
     if (!p.isSubscribed(Math.floor(mob.x) >> 4, Math.floor(mob.z) >> 4)) continue;
     p.channel.send(S_EntityEvent, { entityId: mob.entityId, event: mob.alive ? 0 : 1 });
   }
@@ -129,7 +129,7 @@ export function explodeAt(core: ServerCore, x: number, y: number, z: number, pow
     const player = core.playerById(hit.entityId);
     if (player !== undefined) damagePlayer(core, player, hit.damage, x, z);
   }
-  for (const player of core.playersForTest()) {
+  for (const player of core.eachPlayer()) {
     if (!player.isSubscribed(Math.floor(x) >> 4, Math.floor(z) >> 4)) continue;
     player.channel.send(S_EntityEvent, { entityId: sourceId < 0 ? 0 : sourceId, event: 2 });
   }

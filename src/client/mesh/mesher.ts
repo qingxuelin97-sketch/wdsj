@@ -14,7 +14,7 @@ import { MESH_PADDED_SIZE, SECTION_SIZE } from '../../core/constants.ts';
 import { stateId, stateMeta } from '../../core/world/chunk.ts';
 import { ModelKind, RenderLayer } from '../../core/block/types.ts';
 import type { ModelTables } from '../../core/registry/model-tables.ts';
-import { FACES, FACE_UV } from './cube-faces.ts';
+import { FACES } from './cube-faces.ts';
 import { packVertex } from '../render/block-shader.ts';
 
 const P = MESH_PADDED_SIZE; // 18

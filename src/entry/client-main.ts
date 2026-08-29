@@ -20,8 +20,7 @@ import { ItemEntityRenderer } from '../client/render/item-entity-renderer.ts';
 import { MobRenderer } from '../client/render/mob-renderer.ts';
 import { EntityView } from './entity-view.ts';
 import { drawWorldFrame } from './world-render.ts';
-import { mobModelOf, WOOL_COLORS } from '../content/mob-models.ts';
-import { MobType, mobDefOf } from '../content/mobs.ts';
+import { mobDefOf } from '../content/mobs.ts';
 import { MobSound, mobVoicePitch } from '../core/audio/sound-spec.ts';
 import { XP_ORB_ITEM_ID } from '../core/item/item-def.ts';
 
@@ -37,26 +36,21 @@ import { UiRenderer } from '../client/ui/ui-renderer.ts';
 import { UiController, decodeSlots } from '../client/ui/ui-controller.ts';
 import { createItemRegistry } from '../content/items.ts';
 import { LocalPlayer } from '../client/player/local-player.ts';
-import { type MesherTables } from '../client/mesh/mesher.ts';
 import { MeshWorkerPool, recommendedMeshWorkers } from '../client/mesh/mesh-worker-pool.ts';
 import { ClientWorld, type SectionCoord } from '../client/world/client-world.ts';
 import { createBlockRegistry } from '../content/blocks.ts';
 import { extractPaddedNeighborhood } from '../core/world/chunk-codec.ts';
-import { stateId } from '../core/world/chunk.ts';
-import { raycastBlocks } from '../core/physics/raycast.ts';
 import { Frustum } from '../core/math/frustum.ts';
 import { startServerHost } from './server-host.ts';
 import { installPacketHandlers } from './net-handlers.ts';
+import { FrameInput } from './frame-input.ts';
 import {
-  S2C, C_Handshake, C_Command, C_PlayerMove, C_PlayerAction, C_UseBlock,
-  C_SetViewDistance, C_WindowClick, C_CloseWindow, C_HeldSlot, C_AttackEntity, C_Respawn,
-  PROTOCOL_VERSION, PlayerActionKind, WindowKind,
-  ENTITY_POS_SCALE, SPAWN_ITEM_STRIDE, ENTITY_MOVE_STRIDE,
+  C_Handshake, C_Command, C_PlayerMove, C_PlayerAction, 
+  C_SetViewDistance, C_AttackEntity, C_Respawn,
+  PROTOCOL_VERSION, PlayerActionKind, 
+  
 } from '../core/net/packets.ts';
-import { SECTION_SIZE, DEFAULT_RENDER_DISTANCE, TPS, REACH_SURVIVAL, MS_PER_TICK } from '../core/constants.ts';
-import { skyColor, sunBrightness } from '../core/world/day-night.ts';
-import { StatSlot, readStat, writeStat, STAT_BYTES } from '../core/shared-stats.ts';
-import { TILE_SIZE } from '../client/render/texgen.ts';
+import { SECTION_SIZE, DEFAULT_RENDER_DISTANCE, TPS, MS_PER_TICK } from '../core/constants.ts';
 
 const canvas = document.getElementById('gl') as HTMLCanvasElement | null;
 const hud = document.getElementById('hud');
@@ -165,6 +159,9 @@ const host = startServerHost({
   persist: params.get('persist') !== '0',
   // 同理：野生的怪会走进画面，让同一个机位每次截出来都不一样
   spawnMobs: params.get('mobs') !== '0',
+  // 随机刻也一样，而且更隐蔽：草会蔓延、树苗会长大，两百个区块里
+  // 总有东西在变，客户端的网格化队列因此永远清不空
+  randomTicks: params.get('randomTicks') !== '0',
   recordError,
   recordLog,
 });
@@ -452,13 +449,13 @@ installTestHook({
 // 主循环
 // ---------------------------------------------------------------------------
 let firstFrameDone = false;
-/** 上一帧的按键状态，用来做边沿触发 */
-let prevInventory = false;
-let prevAttack = false;
-/** 上一帧世界交互里的左键状态，用来做边沿触发 */
-let prevAttackWorld = false;
-let prevUse = false;
 let hudAccum = 0;
+
+/** 界面输入的边沿触发状态，见 entry/frame-input.ts */
+const frameInput = new FrameInput({
+  net, ui,
+  pointer: () => ({ x: input.pointerX, y: input.pointerY, w: canvas!.width, h: canvas!.height }),
+});
 
 function frame(nowMs: number): void {
   clock.advance(nowMs);
@@ -466,60 +463,13 @@ function frame(nowMs: number): void {
 
   const snap = input.sample();
 
-  // --- 死了：只接受"重生" ---
-  //
-  // 死亡界面挡住整个世界，输入也全部截住。让玩家在死亡界面里还能挖方块
-  // 会让死亡完全没有分量，而"分量"正是这套生存循环唯一想产生的东西
-  if (ui.dead) {
-    if ((snap.attack && !prevAttack) || (snap.use && !prevUse) || snap.inventory) {
-      net.send(C_Respawn, {});
-    }
-    prevAttack = snap.attack;
-    prevUse = snap.use;
-    prevInventory = snap.inventory;
+  // 死亡界面吃掉一切输入，这一帧只渲染
+  if (frameInput.handleDeath(snap)) {
     renderOnce();
     scheduleFrame(frame);
     return;
   }
-
-  // --- 界面开关。按键要做**边沿触发**，否则按住 E 会每帧开一次 ---
-  if (snap.inventory && !prevInventory) {
-    if (ui.open) {
-      net.send(C_CloseWindow, { windowId: ui.windowId });
-      ui.onCloseWindow();
-    } else {
-      net.send(C_PlayerAction, {
-        action: PlayerActionKind.OPEN_INVENTORY, x: 0, y: 0, z: 0, face: 0,
-      });
-    }
-  }
-  prevInventory = snap.inventory;
-
-  if (snap.escape && ui.open) {
-    net.send(C_CloseWindow, { windowId: ui.windowId });
-    ui.onCloseWindow();
-  }
-
-  // 数字键切快捷栏
-  if (snap.hotbarKey >= 0 && snap.hotbarKey !== ui.selectedHotbar) {
-    ui.selectedHotbar = snap.hotbarKey;
-    net.send(C_HeldSlot, { slot: snap.hotbarKey });
-  }
-
-  // --- 界面开着时鼠标用来点格子，不动相机也不挖方块 ---
-  if (ui.open) {
-    ui.onMouseMove(input.pointerX, input.pointerY, canvas!.width, canvas!.height);
-    if (snap.attack && !prevAttack) {
-      const click = ui.click(0, snap.sneak);
-      if (click !== null) net.send(C_WindowClick, click);
-    }
-    if (snap.use && !prevUse) {
-      const click = ui.click(1, snap.sneak);
-      if (click !== null) net.send(C_WindowClick, click);
-    }
-  }
-  prevAttack = snap.attack;
-  prevUse = snap.use;
+  frameInput.handleUi(snap);
 
   if (!clock.frozen && spawned && !ui.open) {
     if (player.mode === 'detached') camera.applyFreeFlight(snap, clock.dt, 12);
@@ -528,7 +478,8 @@ function frame(nowMs: number): void {
     // 左键按下的那一下：先看有没有指着生物。
     // 有的话打生物、**不**挖方块 —— 与 MC 一致，否则站在怪面前挖矿
     // 会一边挖一边打，两个动作抢同一个按键
-    const hitMob = snap.attack && !prevAttackWorld ? entityView.pickMob(camera, entityPartialTick) : -1;
+    const hitMob = frameInput.attackPressedInWorld(snap)
+      ? entityView.pickMob(camera, entityPartialTick) : -1;
     if (hitMob >= 0) {
       net.send(C_AttackEntity, { entityId: hitMob });
       interaction.stopDigging();
@@ -536,7 +487,7 @@ function frame(nowMs: number): void {
       interaction.update(snap, clock.dt * 1000);
     }
   }
-  prevAttackWorld = snap.attack;
+  frameInput.endWorldFrame(snap);
 
   // 掉落物按固定 20 Hz 推进；freeze() 之后一起停住，截图才可复现
   if (!clock.frozen) {

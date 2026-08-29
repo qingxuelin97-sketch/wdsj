@@ -22,7 +22,7 @@ import {
 import { stateId } from '../world/chunk.ts';
 import type { BlockView } from '../world/block-view.ts';
 import {
-  collideMove, setBodyBox, makeBox, type Box, type CollisionTables,
+  collideMove, setBodyBox, makeBox, type CollisionTables,
 } from './block-collision.ts';
 
 /** 空中的水平摩擦 */

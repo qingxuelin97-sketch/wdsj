@@ -62,7 +62,7 @@ async function main() {
       throw new Error('dev-server 没起来');
     }
     chrome = await launchChrome({ headless: true });
-    game = await openPage(chrome.port, `http://127.0.0.1:${PORT}/?test=smoke&seed=1234&radius=2`);
+    game = await openPage(chrome.port, `http://127.0.0.1:${PORT}/?test=smoke&seed=1234&radius=2&randomTicks=0`);
 
     const read = async () => JSON.parse(String(await game.evaluate(READ)));
 

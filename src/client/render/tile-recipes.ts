@@ -282,6 +282,56 @@ export const RECIPES: Record<string, Recipe> = {
     const knob = rgb(0x9a9a9a);
     for (let y = 2; y < 5; y++) for (let x = 6; x <= 9; x++) p.set(x, y, knob.r, knob.g, knob.b);
   },
+  // 红石线：灰度的十字，颜色由 TintKind.REDSTONE 按信号强度决定深浅。
+  // 画成十字而不是单条线，是因为线的连接方向是每帧由邻居推出来的，
+  // 一张能同时当直线和拐角用的贴图省掉了十六种朝向的图
+  redstone_wire: (p) => {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
+    for (let i = 0; i < 16; i++) {
+      for (let w = 6; w <= 9; w++) {
+        const d = (p.rand() - 0.5) * 24;
+        p.set(i, w, 235 + d, 235 + d, 235 + d);
+        p.set(w, i, 235 + d, 235 + d, 235 + d);
+      }
+    }
+  },
+  piston_side: (p) => {
+    p.noiseFill(rgb(0x9a8a6a), 12);
+    // 上下各一道深色包边，看着像一截木质的筒身
+    p.rect(0, 0, 16, 2, rgb(0x6a5a3a));
+    p.rect(0, 14, 16, 2, rgb(0x6a5a3a));
+    for (let x = 0; x < 16; x += 5) p.rect(x, 2, 1, 12, rgb(0x7a6a4a));
+  },
+  piston_top: (p) => {
+    p.noiseFill(rgb(0xb8a878), 10);
+    p.rect(1, 1, 14, 14, rgb(0x8a7a5a));
+    p.rect(3, 3, 10, 10, rgb(0xb0a070));
+  },
+  piston_top_sticky: (p) => {
+    p.noiseFill(rgb(0xb8a878), 10);
+    p.rect(1, 1, 14, 14, rgb(0x8a7a5a));
+    // 粘性活塞顶上那一圈绿 —— 唯一能一眼分辨两种活塞的地方
+    p.rect(3, 3, 10, 10, rgb(0x7aa03a));
+    p.speckles(rgb(0x5a8020), 12, 2);
+  },
+  piston_bottom: (p) => {
+    p.noiseFill(rgb(0x8a7a5a), 12);
+    p.speckles(rgb(0x6a5a3a), 10, 2);
+  },
+
+  // 熄灭的红石火把：与亮着的同形，只是头上那点是暗红的
+  redstone_torch_off: (p) => {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
+    for (let y = 6; y < 16; y++) p.rect(7, y, 2, 1, rgb(0x6a4a2a));
+    p.rect(6, 4, 4, 3, rgb(0x5a1a1a));
+  },
+  repeater_block_on: (p) => {
+    p.noiseFill(rgb(0xb0a8a0), 8);
+    p.rect(2, 6, 12, 4, rgb(0x8a8280));
+    // 点亮时那两点火把是红的
+    p.rect(3, 3, 2, 2, rgb(0xff4020));
+    p.rect(11, 3, 2, 2, rgb(0xff4020));
+  },
   redstone_torch: (p) => {
     for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
     const stick = rgb(0x8a6a3a);

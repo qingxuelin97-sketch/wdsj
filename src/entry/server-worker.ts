@@ -40,6 +40,8 @@ interface StartMessage {
   persist?: boolean;
   /** 是否自然生成生物。截图回归要关掉，见 MobManager.naturalSpawning */
   spawnMobs?: boolean;
+  /** 是否跑随机刻。截图回归要关掉，见 ServerCore.randomTicks */
+  randomTicks?: boolean;
 }
 
 interface StopMessage {
@@ -206,6 +208,10 @@ async function start(msg: StartMessage): Promise<void> {
   if (msg.spawnMobs === false) {
     core.mobs.naturalSpawning = false;
     console.log('[mobs] 已按参数关闭自然生成，只有 spawn 指令能放怪');
+  }
+  if (msg.randomTicks === false) {
+    core.randomTicks = false;
+    console.log('[world] 已按参数关闭随机刻，世界不会自己长草长树');
   }
 
   // persist=0 时**根本不挂存档**，而不是挂一个内存后端。

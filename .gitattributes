@@ -1,0 +1,16 @@
+# 行尾统一 LF。
+#
+# 起因：仓库长到 M13 时已经是混的 —— 106 个文件 LF、41 个 CRLF。
+# 因为写文件的路径有两条（Write 工具在 Windows 上写 CRLF，脚本与 heredoc 写 LF），
+# 谁最后动过一个文件决定了它的行尾。后果不是"不好看"：一次脚本化的批量改动
+# 会把几十个文件整体重写，真正的改动淹在几千行行尾 diff 里，review 直接失效。
+#
+# eol=lf 而不是 eol=crlf：LF 是工具链的默认（node / esbuild / bash / python 都写 LF），
+# 顺着默认走比逆着修更省事；Windows 上所有相关编辑器都能正常处理 LF。
+* text=auto eol=lf
+
+# 二进制：绝不做行尾转换
+*.png binary
+*.wav binary
+*.exe binary
+*.mcr binary

@@ -252,10 +252,23 @@ export async function runSceneChecks(ctx) {
     const invShot = await m.screenshot();
     const invHash = await m.screenshotHash();
     const quads = m.uiQuads();
-    return { hotbarShot, hotbarHash, invShot, invHash, opened, quads };
+
+    // **把界面关掉再走**。
+    //
+    // 界面是盖在整个世界上面的：不关的话，后面每一项检查截到的都是
+    // 这块面板，而不是它们各自想看的东西。方块陈列阵与形状近景那两张图
+    // 一直是这样 —— 断言照过，图却完全不是那么回事。
+    // 每项检查都该把自己改过的全局状态还回去
+    await m.press('KeyE', 120);
+    for (let i = 0; i < 20; i++) await new Promise(r => requestAnimationFrame(r));
+    const closed = !m.uiOpen();
+    return { hotbarShot, hotbarHash, invShot, invHash, opened, quads, closed };
   `);
   saveShot('ui-hotbar', gui.hotbarShot);
   saveShot('ui-inventory', gui.invShot);
+  if (gui.closed !== true) {
+    failures.push('再按一次 E 之后背包界面没关掉 —— 它会盖住后面所有检查的截图');
+  }
   if (!gui.opened) {
     failures.push('按 E 之后背包界面没打开');
   } else if (gui.quads < 60) {

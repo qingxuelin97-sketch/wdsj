@@ -61,7 +61,7 @@ async function makeRig(storage: MemoryStorage, seed = 4242n): Promise<Rig> {
   channel.send(C_Handshake, { protocolVersion: PROTOCOL_VERSION, playerName: 'tester' });
   channel.send(C_SetViewDistance, { distance: 2 });
   channel.flush();
-  const player = [...core.playersForTest()][0]!;
+  const player = [...core.eachPlayer()][0]!;
   return { core, save, controller, player };
 }
 

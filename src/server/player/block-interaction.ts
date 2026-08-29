@@ -11,17 +11,19 @@
 import type { ServerCore } from '../server-core.ts';
 import type { ServerPlayer } from './server-player.ts';
 import { PlayerActionKind, WindowKind } from '../../core/net/packets.ts';
+import { ToolKind } from '../../core/block/types.ts';
 import { AIR_STATE, packState, stateId } from '../../core/world/chunk.ts';
 import { breakProgressPerTick } from '../../core/block/breaking.ts';
 import { isEmpty, ITEM_ID_BASE } from '../../core/item/item-def.ts';
 import { dropOf, toolOf, showWindow, syncInventory } from './inventory-actions.ts';
 import { spawnBlockDrop, scatterContents } from '../entity/item-manager.ts';
 import { ChestEntity, FurnaceEntity } from '../world/block-entity.ts';
-import { EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, WORLD_HEIGHT, REACH_SURVIVAL, EXHAUSTION } from '../../core/constants.ts';
+import { PLAYER_WIDTH, PLAYER_HEIGHT, WORLD_HEIGHT, REACH_SURVIVAL, EXHAUSTION } from '../../core/constants.ts';
 import { placeFluid } from '../world/fluid.ts';
 import { sendVitals } from '../entity/combat.ts';
 import { MAX_HUNGER } from '../../core/constants.ts';
 import { igniteAt, primeTnt } from '../world/block-ticks.ts';
+import { tillSoil, applyBoneMeal } from '../world/random-ticks.ts';
 
 /**
  * 吃一口。饥饿已经满了就不吃 —— 与 MC 一致，免得把珍贵的食物浪费掉。
@@ -104,6 +106,49 @@ function useSpecialItem(
     }
     return true;
   }
+  // 锄头：把泥土/草方块翻成耕地
+  const hoeDef = core.items.get(itemId);
+  if (hoeDef !== undefined && hoeDef.toolKind === ToolKind.HOE) {
+    if (tillSoil(core.world, bx, by, bz)) {
+      held.damage++;
+      const max = hoeDef.maxDurability;
+      if (max > 0 && held.damage >= max) {
+        held.id = 0;
+        held.count = 0;
+      }
+      syncInventory(core, player);
+    }
+    return true;
+  }
+
+  // 骨粉：催熟
+  if (itemId === items.idOf('bone_meal')) {
+    if (applyBoneMeal(core.world, bx, by, bz)) {
+      held.count--;
+      if (held.count <= 0) {
+        held.id = 0;
+        held.damage = 0;
+      }
+      syncInventory(core, player);
+    }
+    return true;
+  }
+
+  // 种子：种在耕地上
+  if (itemId === items.idOf('seeds')) {
+    if (stateId(core.world.getBlock(bx, by, bz)) === core.registry.idOf('farmland')
+      && stateId(core.world.getBlock(px, py, pz)) === 0) {
+      core.world.setBlock(px, py, pz, packState(core.registry.idOf('wheat_crop'), 0));
+      held.count--;
+      if (held.count <= 0) {
+        held.id = 0;
+        held.damage = 0;
+      }
+      syncInventory(core, player);
+    }
+    return true;
+  }
+
   if (itemId === items.idOf('flint_and_steel')) {
     if (igniteAt(core.world, px, py, pz)) {
       held.damage++;

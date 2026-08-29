@@ -222,7 +222,7 @@ export class MobManager {
   }
 
   private playerRef(id: number): TargetRef | null {
-    for (const p of this.core.playersForTest()) {
+    for (const p of this.core.eachPlayer()) {
       if (p.entityId !== id) continue;
       return this.refOf(p);
     }
@@ -243,7 +243,7 @@ export class MobManager {
   private nearestPlayer(mob: Mob, range: number): TargetRef | null {
     let best: ServerPlayer | null = null;
     let bestSq = range * range;
-    for (const p of this.core.playersForTest()) {
+    for (const p of this.core.eachPlayer()) {
       if (p.health <= 0) continue;
       const dx = p.x - mob.x;
       const dy = p.y - mob.y;
@@ -275,7 +275,7 @@ export class MobManager {
   }
 
   private attackPlayer(mob: Mob, target: TargetRef, damage: number): void {
-    for (const p of this.core.playersForTest()) {
+    for (const p of this.core.eachPlayer()) {
       if (p.entityId !== target.entityId) continue;
       this.core.damagePlayer(p, damage, mob.x, mob.z);
       return;
@@ -339,7 +339,7 @@ export class MobManager {
   private trySpawn(day: boolean): void {
     const world = this.core.world;
     const rng = world.random;
-    const players = [...this.core.playersForTest()];
+    const players = [...this.core.eachPlayer()];
     if (players.length === 0) return;
 
     let hostiles = this.countOf(MobCategory.HOSTILE);
@@ -426,7 +426,7 @@ export class MobManager {
     // 超距的先清掉，免得白发一轮出生包再发销毁包
     this.despawnDistant();
 
-    for (const player of this.core.playersForTest()) {
+    for (const player of this.core.eachPlayer()) {
       const spawns: Mob[] = [];
       const moves: Mob[] = [];
       const seen = new Set<number>();
@@ -509,7 +509,7 @@ export class MobManager {
 
   /** 离所有玩家都超过 128 格的直接消失 */
   private despawnDistant(): void {
-    const players = [...this.core.playersForTest()];
+    const players = [...this.core.eachPlayer()];
     if (players.length === 0) return;
     for (const mob of [...this.mobs.values()]) {
       let nearest = Infinity;

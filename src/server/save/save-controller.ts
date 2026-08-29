@@ -70,7 +70,7 @@ export class SaveController {
     this.saving = true;
     try {
       const chunks = saveAllChunks(this.core.world);
-      for (const player of this.core.playersForTest()) {
+      for (const player of this.core.eachPlayer()) {
         await this.save.writePlayer(snapshotPlayer(player));
         break; // 单人：只有一个玩家。多人存档在 M17
       }

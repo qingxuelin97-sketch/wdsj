@@ -12,13 +12,9 @@ import { defineBlock } from '../core/block/block-def.ts';
 import type { BlockDef } from '../core/block/block-def.ts';
 import { BlockRegistry } from '../core/registry/block-registry.ts';
 import { registerCraftedBlocks } from './blocks-crafted.ts';
-import { registerFluidBlocks, FluidBlocks } from './blocks-fluid.ts';
+import { registerFluidBlocks } from './blocks-fluid.ts';
+import { registerRedstoneBlocks } from './blocks-redstone.ts';
 import { ModelKind, RenderLayer, TintKind, SoundGroup, ToolKind, ToolTier, Facing } from '../core/block/types.ts';
-import {
-  element, slabModel, stairsModel, fenceModel, torchModel, paneModel,
-  layerModel, cakeModel, doorModel, bedModel, railModel,
-  type ModelElement,
-} from '../core/block/block-model.ts';
 import { NO_COLLISION } from '../core/math/aabb.ts';
 
 /** 方块名常量，代码里一律用它引用方块，不写裸字符串 */
@@ -91,6 +87,10 @@ export const Blocks = {
   LAVA: 'lava',
   FLOWING_LAVA: 'flowing_lava',
   FIRE: 'fire',
+  REDSTONE_WIRE: 'redstone_wire',
+  PISTON: 'piston',
+  STICKY_PISTON: 'sticky_piston',
+  PISTON_HEAD: 'piston_head',
   JUKEBOX: 'jukebox',
   NOTE_BLOCK: 'note_block',
   DISPENSER: 'dispenser',
@@ -342,6 +342,7 @@ export function createBlockRegistry(): BlockRegistry {
 
   registerCraftedBlocks(r);
   registerFluidBlocks(r);
+  registerRedstoneBlocks(r);
 
   // --- 植物 ---
   r.register(crossPlant(31, Blocks.TALL_GRASS, 'tall_grass', TintKind.GRASS));

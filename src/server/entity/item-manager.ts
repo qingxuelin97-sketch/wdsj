@@ -107,7 +107,7 @@ export function tickItems(core: ServerCore): void {
   mergeNearbyItems(core);
 
   // 拾取。玩家按 entityId 排序遍历，保证多人时"谁先捡到"是确定的
-  const players = [...core.playersForTest()].sort((a, b) => a.entityId - b.entityId);
+  const players = [...core.eachPlayer()].sort((a, b) => a.entityId - b.entityId);
   for (const item of world.items.values()) {
     if (item.dead) continue;
     for (const player of players) {
@@ -174,7 +174,7 @@ function mergeNearbyItems(core: ServerCore): void {
 /** 把这一刻的实体增删改同步给每个玩家 */
 export function broadcastItems(core: ServerCore, destroyedElsewhere: readonly number[]): void {
   const world = core.world;
-  for (const player of core.playersForTest()) {
+  for (const player of core.eachPlayer()) {
     const spawns: ItemEntity[] = [];
     const moves: ItemEntity[] = [];
     const seen = new Set<number>();

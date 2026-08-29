@@ -11,12 +11,11 @@
 import type { ServerCore } from './server-core.ts';
 import type { ServerPlayer } from './player/server-player.ts';
 import { S_CommandResult, S_TimeUpdate, WindowKind } from '../core/net/packets.ts';
-import { AIR_STATE, packState, stateId } from '../core/world/chunk.ts';
+import { packState } from '../core/world/chunk.ts';
 import { makeStack, type ItemStack } from '../core/item/item-def.ts';
 import { giveToPlayer, syncInventory, showWindow, closeWindow } from './player/inventory-actions.ts';
 import { damagePlayer, respawnPlayer } from './entity/combat.ts';
 import { DamageKind } from './player/player-vitals.ts';
-import { SECTIONS_PER_COLUMN } from '../core/constants.ts';
 
 export function handleCommand(
 core: ServerCore,
@@ -64,7 +63,7 @@ value: Record<string, unknown>,
           core.world.daylightCycle = val !== '1' && val !== 'true';
         }
         // 立刻回传一次，不等下一个同步周期 —— 自动化就是靠这个知道设定生效了
-        for (const p of core.playersForTest()) {
+        for (const p of core.eachPlayer()) {
           p.channel.send(S_TimeUpdate, {
             worldAge: BigInt(core.world.worldAge),
             timeOfDay: BigInt(core.world.timeOfDay),

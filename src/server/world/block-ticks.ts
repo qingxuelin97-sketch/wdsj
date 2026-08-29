@@ -15,6 +15,7 @@ import type { ServerWorld } from './server-world.ts';
 import { AIR_STATE, packState, stateId, stateMeta } from '../../core/world/chunk.ts';
 import { tickFluid, scheduleNeighbors, tickRateOf as fluidTickRate } from './fluid.ts';
 import { isFluidId, isLavaId } from '../../content/blocks-fluid.ts';
+import { isRedstoneComponent, tickRedstoneComponent, notifyRedstone } from './redstone-tick.ts';
 import { WORLD_HEIGHT } from '../../core/constants.ts';
 
 /** 沙子 / 砾石 */
@@ -61,6 +62,13 @@ export function runScheduledTick(
   }
   if (blockId === FIRE_ID) {
     tickFire(world, x, y, z);
+    return;
+  }
+  if (isRedstoneComponent(blockId)) {
+    if (tickRedstoneComponent(world, x, y, z, blockId)) {
+      // 元件真的变了 -> 再通知一圈，让信号往下游传
+      notifyRedstone(world, x, y, z);
+    }
     return;
   }
   if (blockId === TNT_ID) {
@@ -123,6 +131,8 @@ export function onBlockChanged(world: ServerWorld, x: number, y: number, z: numb
   if (isFallingBlock(id) && canFallInto(world, x, y - 1, z)) {
     world.scheduled.schedule(world.worldAge, x, y, z, id, FALL_INTERVAL);
   }
+  // 红石：线网整体重算 + 附近元件排刻
+  notifyRedstone(world, x, y, z);
   // 周围的流体要重新算
   scheduleNeighbors(world, x, y, z);
   // 自己要是刚被放下的流体，也得排上 —— scheduleNeighbors 只管**邻居**。

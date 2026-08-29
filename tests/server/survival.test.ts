@@ -46,7 +46,7 @@ function makeRig(): { core: ServerCore; player: ServerPlayer; send: (p: unknown,
   channel.send(C_Handshake, { protocolVersion: PROTOCOL_VERSION, playerName: 't' });
   channel.send(C_SetViewDistance, { distance: 2 });
   channel.flush();
-  const player = [...core.playersForTest()][0]!;
+  const player = [...core.eachPlayer()][0]!;
   for (let cx = -2; cx <= 2; cx++) {
     for (let cz = -2; cz <= 2; cz++) core.world.forceChunk(cx, cz);
   }

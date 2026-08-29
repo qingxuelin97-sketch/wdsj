@@ -13,7 +13,6 @@
 const MULT_HI = 0x5de; //  0x5DEECE66D >> 24        = 1502
 const MULT_LO = 0xece66d; //  0x5DEECE66D & 0xFFFFFF   = 15525485
 const ADDEND = 0xb;
-const MASK24 = 0xffffff;
 const POW24 = 0x1000000; // 2^24
 
 export class JavaRandom {

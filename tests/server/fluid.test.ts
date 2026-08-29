@@ -62,7 +62,7 @@ function buildArena(rows: readonly string[]): { core: ServerCore; width: number;
   channel.send(C_Handshake, { protocolVersion: PROTOCOL_VERSION, playerName: 't' });
   channel.send(C_SetViewDistance, { distance: 2 });
   channel.flush();
-  const player = [...core.playersForTest()][0]!;
+  const player = [...core.eachPlayer()][0]!;
 
   for (let cx = -1; cx <= 2; cx++) {
     for (let cz = -1; cz <= 2; cz++) core.world.forceChunk(cx, cz);
@@ -376,7 +376,7 @@ test('⑬TNT 引信 80 刻，爆坑方块数与黄金值完全相等', () => {
   channel.send(C_Handshake, { protocolVersion: PROTOCOL_VERSION, playerName: 't' });
   channel.send(C_SetViewDistance, { distance: 2 });
   channel.flush();
-  const player = [...core.playersForTest()][0]!;
+  const player = [...core.eachPlayer()][0]!;
   for (let cx = -1; cx <= 1; cx++) {
     for (let cz = -1; cz <= 1; cz++) core.world.forceChunk(cx, cz);
   }
@@ -423,7 +423,7 @@ test('⑭水桶：只舀得到源，舀完那格就空了；倒出来又是一�
     '.....',
     '#####',
   ]);
-  const player = [...core.playersForTest()][0]!;
+  const player = [...core.eachPlayer()][0]!;
   // 一个源 + 它流出来的几格。放在 Y0+1（地板之上），
   // 放在 Y0 会直接把石头地板替换掉，水就没处可流了
   placeFluid(core.world, X0 + 1, Y0 + 1, Z, WATER, 0);

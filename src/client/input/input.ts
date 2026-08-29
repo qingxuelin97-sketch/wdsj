@@ -54,12 +54,9 @@ export class Input {
   private accYaw = 0;
   private accPitch = 0;
   private locked = false;
-  private readonly canvas: HTMLCanvasElement;
   private readonly listeners: (() => void)[] = [];
 
   constructor(canvas: HTMLCanvasElement) {
-    this.canvas = canvas;
-
     const onKeyDown = (e: KeyboardEvent): void => {
       this.down.add(e.code);
       // 空格会滚动页面，Tab 会切焦点，都要拦

@@ -9,6 +9,17 @@
     "noImplicitReturns": true,
     "forceConsistentCasingInFileNames": true,
 
+    // 死 import 一律报错。
+    //
+    // 这条是被一次事故换来的：M13 拆分 server-core.ts / client-main.ts 时，
+    // 有 69 个 import 因为代码搬走而变成死的，而 tsc 默认不管它们。
+    // 死 import 不只是噪音 —— 它让"这个模块依赖谁"这个问题的答案是错的，
+    // 分层 lint 也会跟着误判（一个已经不 import server 的 client 文件，
+    // 看起来还在 import）。
+    //
+    // noUnusedParameters 不开：回调要按签名接参数，用不上的那个也得占位。
+    "noUnusedLocals": true,
+
     // 目标环境
     "target": "es2023",
     "lib": ["ES2023", "DOM", "DOM.Iterable", "WebWorker"],

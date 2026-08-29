@@ -368,20 +368,46 @@ export function installTestHook(host: HostBridge): void {
      * 截图回归必须等这个，不能用固定 sleep —— 世界是流式加载的，
      * 看得远的视角要等更多区块到达。固定 sleep 在快的机器上够、慢的机器上不够，
      * 表现为**同一份代码时而通过时而失败**的哈希不匹配，是最难查的一类"假失败"。
+     *
+     * 判据是**停止进展**，不是"总共等了多久"。
+     *
+     * 早先这里是一个 30 秒的死线，结果它自己变成了那类假失败：RD 8 冷启动要
+     * 通过两个 gen worker 流式生成约 270 个区块，机器一忙就压线，于是同一份代码
+     * 在 CI 里时而绿时而红。而且红的时候给不出任何线索 —— 报出来的是
+     * "超时了"，不是"卡在哪"。
+     *
+     * 改成看进展之后两头都变好了：还在往前走就不算失败（等多久都行），
+     * 真卡死了 8 秒就报错（比原来快得多），而且报错里带着**卡住前后的形状**，
+     * 一眼能看出是服务端没推完还是客户端没网格化完。
+     *
+     * @param stallMs   多久没有任何进展就判定卡死
+     * @param ceilingMs 兜底上限。防止"每轮都动一点点但永远到不了头"那种活锁
+     *                  真的把 CI 挂到天荒地老。取 45 秒是因为 tools/cdp.mjs 的
+     *                  Runtime.evaluate 在 60 秒上放弃 —— 兜底必须先于它触发，
+     *                  否则上层看到的是一句没有信息量的 CDP 超时，而不是
+     *                  下面那条带着形状的报错
      */
-    async waitForIdle(timeoutMs = 30000): Promise<void> {
-      const deadline = Date.now() + timeoutMs;
+    async waitForIdle(stallMs = 8000, ceilingMs = 45000): Promise<void> {
+      const ceiling = Date.now() + ceilingMs;
+      let stallDeadline = Date.now() + stallMs;
       let stableRounds = 0;
       let lastShape = '';
+      let prevShape = '';
 
-      while (Date.now() < deadline) {
+      while (Date.now() < ceiling && Date.now() < stallDeadline) {
         // 先把本地的活干完：网格化队列清空、在飞的任务收回
         let pumps = 0;
-        while (Date.now() < deadline) {
+        while (Date.now() < ceiling) {
           host.pumpWorld();
           const s = host.idleStats();
           if (s.chunks > 0 && s.dirty === 0) break;
-          if (++pumps % 32 === 0) await nextFrame();
+          if (++pumps % 32 === 0) {
+            await nextFrame();
+            // 网格化本身就是进展：队列在往下掉的时候不该被判成卡死
+            const shape = `pump|${s.dirty}|${s.chunks}`;
+            if (shape !== prevShape) { prevShape = shape; stallDeadline = Date.now() + stallMs; }
+            if (Date.now() >= stallDeadline) break;
+          }
         }
 
         // 再问服务端一次。这一步是**同步往返**，回执必定反映最新的订阅状态。
@@ -393,16 +419,22 @@ export function installTestHook(host: HostBridge): void {
           // 形状连续几轮不变才算安定。只看一轮的话，服务端可能正好
           // 在两轮之间又生成了一批区块。
           if (++stableRounds >= 3) return;
+          // 注意这里**不**续期：安定判定要的正是"连续几轮都不动"，
+          // 续期会把它和卡死混为一谈
         } else {
           stableRounds = 0;
+          // 形状变了 = 世界还在往前走，重新给足时间
+          if (shape !== prevShape) { prevShape = shape; stallDeadline = Date.now() + stallMs; }
         }
         lastShape = shape;
         await nextFrame();
       }
 
       const s = host.idleStats();
+      const why = Date.now() >= ceiling ? `超过兜底上限 ${ceilingMs}ms` : `${stallMs}ms 没有任何进展`;
       throw new Error(
-        `waitForIdle 超时 (${timeoutMs}ms)：${s.dirty} 段待网格化，${s.chunks} 个区块已加载，服务端 ${lastShape}`,
+        `waitForIdle 放弃（${why}）：${s.dirty} 段待网格化，${s.chunks} 个区块已加载，`
+        + `服务端 ${lastShape}（上一次不同的形状：${prevShape || '无'}）`,
       );
     },
 
