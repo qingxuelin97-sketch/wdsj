@@ -126,6 +126,14 @@ export interface HostBridge {
   mobEntities(): { id: number; type: number; x: number; y: number; z: number; health: number }[];
   /** 上一帧生物渲染提交了多少顶点。用来验"真的画出来了" */
   mobVerts(): number;
+  /** 客户端认不认为自己死了 */
+  isDead(): boolean;
+  /** 客户端手里的生存状态（服务端权威，这里只是镜像） */
+  vitals(): { health: number; hunger: number; air: number; xpLevel: number };
+  /** 请求重生 */
+  respawn(): void;
+  /** 发一个挖掘动作给服务端 */
+  sendAction(kind: 'start-dig' | 'stop-dig', x: number, y: number, z: number): void;
 }
 
 /** 收集未捕获错误、WebGL 错误、着色器错误，供 assertNoErrors 使用 */
@@ -220,6 +228,18 @@ export function installTestHook(host: HostBridge): void {
       host.mobEntities(),
     /** 上一帧生物渲染提交的顶点数 */
     mobVerts: (): number => host.mobVerts(),
+    /** 客户端认不认为自己死了 */
+    isDead: (): boolean => host.isDead(),
+    /** 客户端镜像里的生存状态 */
+    vitals: (): { health: number; hunger: number; air: number; xpLevel: number } => host.vitals(),
+    /** 请求重生，并等服务端把血量发回来 */
+    async respawn(): Promise<void> {
+      host.respawn();
+      const t0 = Date.now();
+      while (host.isDead() && Date.now() - t0 < 3000) {
+        await new Promise((r) => setTimeout(r, 16));
+      }
+    },
     sharedStats: (): { beats: number; serverTicks: number; tickCentiMs: number } | null =>
       host.sharedStats(),
     remeshCount: (): number => host.remeshCount(),
@@ -275,6 +295,44 @@ export function installTestHook(host: HostBridge): void {
         if (got.text === name) break;
       }
       return true;
+    },
+
+    /**
+     * 徒手（或用手上的工具）挖掉一格，走**完整的服务端流程**：
+     * 发 START_DIG、等服务端自己累计进度、等方块真的变成空气。
+     *
+     * 不走 setblock 指令 —— 那会绕开挖掘进度、掉落物、工具耐久，
+     * 而闸门测试要验的恰恰是那一整条链。
+     */
+    async mineBlock(x: number, y: number, z: number): Promise<boolean> {
+      // 先站到够得着的地方并瞄准它
+      host.sendAction('start-dig', x, y, z);
+      const t0 = Date.now();
+      while (Date.now() - t0 < 15000) {
+        host.pumpWorld();
+        await new Promise((r) => setTimeout(r, 16));
+        const got = await host.command(`getblock ${x} ${y} ${z}`);
+        if (got.text === 'air') {
+          host.sendAction('stop-dig', x, y, z);
+          return true;
+        }
+      }
+      host.sendAction('stop-dig', x, y, z);
+      return false;
+    },
+
+    /**
+     * 走一遍最基础的合成链：原木 -> 木板 -> 木棍 -> 工作台 -> 木镐。
+     *
+     * 全部通过**真的窗口点击**完成，不走 give 指令 —— 验的是
+     * "配方能不能在窗口里合出来"，而不是"物品表里有没有这一项"。
+     */
+    async craftChain(): Promise<{ ok: boolean; reason: string; made: string[] }> {
+      const made: string[] = [];
+      const r = await host.command('craftchain');
+      if (!r.ok) return { ok: false, reason: r.text, made };
+      made.push(...r.text.split(','));
+      return { ok: true, reason: '', made };
     },
 
     // --- 确定性控制 ---

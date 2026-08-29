@@ -337,6 +337,33 @@ export class ServerWorld {
     return true;
   }
 
+  /**
+   * 变更一个方块，但**不触发邻域通知**。
+   *
+   * 红石线重算时用：一次重算会改几十格线的功率，每格都走一遍
+   * onBlockChanged → scheduleNeighbors → 又触发红石重算，会无限递归。
+   * 变更仍然会进 pendingChanges（客户端要看到线变亮），只是不再往外扩散。
+   */
+  setBlockQuiet(x: number, y: number, z: number, state: number): boolean {
+    if (y < 0 || y >= WORLD_HEIGHT) return false;
+    const cx = x >> 4;
+    const cz = z >> 4;
+    if (!this.store.hasChunk(cx, cz)) return false;
+    const before = this.store.getState(x, y, z);
+    if (before === state) return true;
+    if (!this.store.setState(x, y, z, state)) return false;
+    this.pendingChanges.push({ x, y, z, state });
+    const oldId = stateId(before);
+    const newId = stateId(state);
+    this.light.onBlockChanged(
+      x, y, z,
+      oldId === 0 ? 0 : (this.tables.lightEmission[oldId] ?? 0),
+      newId === 0 ? 0 : (this.tables.lightEmission[newId] ?? 0),
+      oldId === 0 ? 0 : (this.tables.opacity[oldId] ?? 15),
+    );
+    return true;
+  }
+
   getBlock(x: number, y: number, z: number): number {
     return this.store.getState(x, y, z);
   }

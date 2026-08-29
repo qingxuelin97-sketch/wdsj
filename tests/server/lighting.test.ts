@@ -127,50 +127,51 @@ test('发光方块的光照按 MC 曲线向外衰减，且能被移除干净', (
 });
 
 /**
- * 取若干次测量里最快的那次。
+ * 光照开销。
  *
- * 时间断言在并行跑测的机器上会被别的进程干扰 —— 实测同一段代码
- * 独占时 0.38 ms、和另一套测试抢 CPU 时 4.7 ms，差了十二倍。
- * 取最小值等于"这台机器在最好的情况下能跑多快"，而那正是想测的东西：
- * 算法有没有退化。被别的进程拖慢不是回退。
+ * 断言的是**做了多少活**（队列处理了多少条目），不是挂钟时间。
+ *
+ * 挂钟版本试过两轮都不成：`node --test` 会并行跑测试文件，而生存那边
+ * 有一个 2 万刻的压力测试 —— 同一段光照代码独占时 0.38 ms/区块，
+ * 和它抢 CPU 时 4.59 ms，差十二倍。取三次里最快的也压不住。
+ *
+ * 而"偶发失败的性能测试"比没有还糟：它会训练人忽略红色。
+ * 换成计数之后，算法退化它一定涨，机器忙它一动不动。
  */
-function fastestOf(times: number, fn: () => number): number {
-  let best = Infinity;
-  for (let i = 0; i < times; i++) best = Math.min(best, fn());
-  return best;
-}
-
-test('光照开销：播种与增量更新都在预算内', () => {
+test('光照开销：播种与增量更新的工作量都在预算内', () => {
   const n = 25;
-  // 一个 tick 最多生成 generationQuota(6) 个区块，光照预算 5 ms/tick
-  // -> 每区块要低于 0.83 ms。放宽到 3 ms，只拦数量级的回退
-  const perChunk = fastestOf(3, () => {
-    const world = new ServerWorld(4321n, registry);
-    world.generationQuota = 0;
-    for (let cz = -2; cz <= 2; cz++) for (let cx = -2; cx <= 2; cx++) world.forceChunk(cx, cz);
-    const t0 = performance.now();
-    world.updateLighting();
-    return (performance.now() - t0) / n;
-  });
-  assert.ok(perChunk < 3, `播种 ${perChunk.toFixed(2)} ms/区块，超出数量级预算`);
+  const world = new ServerWorld(4321n, registry);
+  world.generationQuota = 0;
+  for (let cz = -2; cz <= 2; cz++) for (let cx = -2; cx <= 2; cx++) world.forceChunk(cx, cz);
+
+  world.light.workUnits = 0;
+  world.updateLighting();
+  const perChunk = world.light.workUnits / n;
+  // 实测 649 条目/区块。上界取 5000（约 7 倍余量）：
+  // 松到能吸收世界生成的内容变化（加了水之后光照要多穿几层），
+  // 紧到能抓住"播种退化成逐格入队"（那会跳到 32768 一级）
+  assert.ok(
+    perChunk < 5000,
+    `播种每区块处理了 ${Math.round(perChunk)} 个队列条目，预算 5000`,
+  );
 
   const stone = packState(registry.idOf('stone'));
   const edits = 200;
-  const perEdit = fastestOf(3, () => {
-    const world = new ServerWorld(4321n, registry);
-    world.generationQuota = 0;
-    for (let cz = -2; cz <= 2; cz++) for (let cx = -2; cx <= 2; cx++) world.forceChunk(cx, cz);
-    world.updateLighting();
-    const rng = new JavaRandom(7);
-    const t1 = performance.now();
-    for (let i = 0; i < edits; i++) {
-      const x = rng.nextInt(60) - 30;
-      const z = rng.nextInt(60) - 30;
-      const y = 55 + rng.nextInt(20);
-      world.setBlock(x, y, z, rng.nextInt(2) === 0 ? AIR_STATE : stone);
-    }
-    return (performance.now() - t1) / edits;
-  });
-  assert.ok(perEdit < 1, `增量更新 ${perEdit.toFixed(3)} ms/次，超出数量级预算`);
+  const rng = new JavaRandom(7);
+  world.light.workUnits = 0;
+  for (let i = 0; i < edits; i++) {
+    const x = rng.nextInt(60) - 30;
+    const z = rng.nextInt(60) - 30;
+    const y = 55 + rng.nextInt(20);
+    world.setBlock(x, y, z, rng.nextInt(2) === 0 ? AIR_STATE : stone);
+  }
+  const perEdit = world.light.workUnits / edits;
+  // 实测 11 条目/次。上界取 500：增量更新一旦退化成"重算整列"，
+  // 这个数会跳到几千甚至上万（一列 128 格 × 周围一片）
+  assert.ok(
+    perEdit < 500,
+    `改一格处理了 ${Math.round(perEdit)} 个队列条目，增量更新可能退化成全量重算`,
+  );
+  console.log(`    光照工作量：播种 ${Math.round(perChunk)} 条目/区块，改一格 ${Math.round(perEdit)} 条目`);
   void stateId;
 });

@@ -15,7 +15,7 @@ import { saveAllChunks } from '../world/world-persistence.ts';
 import { PERSISTENT_SLOTS } from '../player/player-inventory.ts';
 import { copyStack } from '../../core/item/item-def.ts';
 import { syncInventory } from '../player/inventory-actions.ts';
-import { TPS } from '../../core/constants.ts';
+import { TPS, MAX_HEALTH } from '../../core/constants.ts';
 
 /** 默认多久自动存一次：30 秒。MC 是 45 秒 */
 export const AUTOSAVE_INTERVAL_TICKS = TPS * 30;
@@ -150,6 +150,15 @@ export class SaveController {
     for (let i = 0; i < PERSISTENT_SLOTS; i++) {
       copyStack(data.slots[i]!, player.inventory.slots[i]!);
     }
+    // 生存状态：血量为 0 的存档（存盘时正好死着）按满血读回，
+    // 否则玩家一进游戏就卡在死亡界面里
+    player.vitals.health = data.health > 0 ? data.health : MAX_HEALTH;
+    player.vitals.hunger = data.hunger;
+    player.vitals.saturation = data.saturation;
+    player.vitals.air = data.air;
+    player.xp.level = data.xpLevel;
+    player.xp.progress = data.xpProgress;
+    player.xp.total = data.xpTotal;
     // 订阅集是按坐标算的，位置换了就得重算，否则会先推一批出生点附近的区块
     player.resetSubscriptions();
     syncInventory(this.core, player);
@@ -163,5 +172,12 @@ function snapshotPlayer(player: ServerPlayer): PlayerSaveData {
     yaw: player.yaw, pitch: player.pitch,
     selectedHotbar: player.inventory.selectedHotbar,
     slots: player.inventory.slots,
+    health: player.vitals.health,
+    hunger: player.vitals.hunger,
+    saturation: player.vitals.saturation,
+    air: player.vitals.air,
+    xpLevel: player.xp.level,
+    xpProgress: player.xp.progress,
+    xpTotal: player.xp.total,
   };
 }

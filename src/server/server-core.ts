@@ -36,7 +36,11 @@ import { createCraftingData, type SmeltingRecipe, type CraftingData } from '../c
 import { tickBlockEntities } from './world/block-entity-tick.ts';
 import { runScheduledTick } from './world/block-ticks.ts';
 import { onPlayerAction, onUseBlock, advanceDigging } from './player/block-interaction.ts';
-import { onAttackEntity, tickArrows, shootArrow, explodeAt, damagePlayer } from './entity/combat.ts';
+import {
+  onAttackEntity, tickArrows, shootArrow, explodeAt, damagePlayer,
+  armorPointsOf, sendVitals, respawnPlayer,
+} from './entity/combat.ts';
+import { tickVitals, DamageKind, fallDamage, type VitalsContext } from './player/player-vitals.ts';
 import { ChestEntity, FurnaceEntity, type BlockEntity } from './world/block-entity.ts';
 import { tickItems, broadcastItems, spawnBlockDrop, scatterContents } from './entity/item-manager.ts';
 import { saveAllChunks } from './world/world-persistence.ts';
@@ -46,7 +50,7 @@ import { explode } from './entity/explosion.ts';
 import type { Mob } from './entity/mob.ts';
 import type { TargetRef } from './entity/goal.ts';
 import { setBodyBox, makeBox } from './../core/physics/block-collision.ts';
-import { TPS, EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, WORLD_HEIGHT, REACH_SURVIVAL } from '../core/constants.ts';
+import { TPS, EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, WORLD_HEIGHT, REACH_SURVIVAL, EXHAUSTION } from '../core/constants.ts';
 
 /**
  * 触及距离的判定上限（平方）。
@@ -156,6 +160,8 @@ export class ServerCore {
     this.registry = opts.registry;
     this.world = new ServerWorld(BigInt(opts.seed), opts.registry);
     this.mobs = new MobManager(this);
+    // vitalsCtx 在字段初始化时建，那时 this.world 还没赋值，所以补一刀
+    (this.vitalsCtx as { world: ServerWorld }).world = this.world;
     this.timeSyncInterval = opts.timeSyncInterval ?? TPS;
     // 掉落物与玩家共用一个 id 空间：两边各发一号会让客户端把一个掉落物
     // 当成某个玩家的更新，而那种错乱看起来完全不像同步问题
@@ -179,6 +185,13 @@ export class ServerCore {
   get tickNumber(): number {
     return this.tickCount;
   }
+
+  /** 生存循环要用到的回调。建一次复用，别每刻每人各建一个对象 */
+  private readonly vitalsCtx: VitalsContext = {
+    world: null as unknown as ServerWorld,
+    armorPoints: (p) => armorPointsOf(this, p),
+    hurt: (p, amount, kind) => { damagePlayer(this, p, amount, p.x, p.z, kind); },
+  };
 
   /**
    * 熔炼配方按输入物品建的索引。
@@ -297,6 +310,11 @@ export class ServerCore {
     // 那是一次真正的方块变更，得赶上这一刻的光照与广播
     tickBlockEntities(this);
 
+    // 玩家的生存状态：环境伤害、饥饿、回血
+    for (const player of this.players.values()) {
+      tickVitals(player, player.vitals, this.vitalsCtx);
+    }
+
     // 掉落物：物理、合并、拾取
     tickItems(this);
 
@@ -405,6 +423,10 @@ export class ServerCore {
       case 'C_AttackEntity': return onAttackEntity(this, player, value);
       case 'C_WindowClick': return onWindowClick(this, player, value);
       case 'C_CloseWindow': return closeWindow(this, player);
+      case 'C_Respawn': {
+        if (player.awaitingRespawn) respawnPlayer(this, player);
+        return;
+      }
       case 'C_HeldSlot': {
         player.inventory.selectedHotbar = Math.max(0, Math.min(8, value['slot'] as number));
         return;
@@ -458,14 +480,39 @@ export class ServerCore {
   }
 
   private onPlayerMove(player: ServerPlayer, value: Record<string, unknown>): void {
-    // M6 会在这里做服务端物理与和解。现在信任客户端，只记录位置。
+    // 位置仍然信任客户端（服务端物理与和解在 M17 的多人里才有意义）。
+    // 但**摔落伤害由服务端判**：客户端只报"我在哪、我落地了没"，
+    // 落差与伤害在这里算 —— 否则改一行前端就能从任意高度跳下来不掉血。
+    const prevOnGround = player.onGround;
     player.lastSeq = value['seq'] as number;
+    const newY = value['y'] as number;
     player.x = value['x'] as number;
-    player.y = value['y'] as number;
+    player.y = newY;
     player.z = value['z'] as number;
     player.yaw = value['yaw'] as number;
     player.pitch = value['pitch'] as number;
     player.onGround = value['onGround'] as boolean;
+
+    if (player.vitals.dead) return;
+    if (player.onGround) {
+      if (!prevOnGround) {
+        const damage = fallDamage(player.peakY - newY);
+        if (damage > 0) damagePlayer(this, player, damage, player.x, player.z, DamageKind.FALL);
+      }
+      player.peakY = newY;
+    } else if (newY > player.peakY) {
+      player.peakY = newY;
+    }
+
+    // 走路与疾跑消耗体力。用**实际位移**而不是"有没有按键"：
+    // 撞着墙原地跑不该消耗，而按键状态看不出这一点
+    const moved = Math.hypot(player.x - player.lastX, player.z - player.lastZ);
+    if (moved > 0 && player.onGround) {
+      const sprinting = value['sprinting'] === true;
+      player.vitals.addExhaustion(moved * (sprinting ? EXHAUSTION.sprintPerMeter : 0.01));
+    }
+    player.lastX = player.x;
+    player.lastZ = player.z;
   }
 
   /** 玩家眼睛到方块中心的距离平方，用于触及检查 */

@@ -359,13 +359,28 @@ export const S_EntityEvent = S2C.add(
   ]),
 );
 
-/** 玩家血量与饥饿。M12 会把饥饿真正接上，这里先把血量通道打通 */
+/**
+ * 玩家的生存状态：血、饥饿、氧气、经验。
+ *
+ * 合成一个包发，因为它们**一起变**：挨一下打会同时改血量与消耗，
+ * 而消耗又可能改饥饿。分成几个包发的话，客户端会在同一帧里画出
+ * "血掉了但饥饿还没掉"的中间态。
+ */
 export const S_PlayerHealth = S2C.add(
   definePacket(0x97, 'S_PlayerHealth', [
     ['health', 'u8'],
     ['maxHealth', 'u8'],
+    ['hunger', 'u8'],
+    /** 剩余氧气，0..20 的气泡数 */
+    ['air', 'u8'],
+    ['xpLevel', 'u8'],
+    /** 当前等级的进度，0..255 */
+    ['xpProgress', 'u8'],
   ]),
 );
+
+/** 客户端请求重生 */
+export const C_Respawn = C2S.add(definePacket(0x0d, 'C_Respawn', []));
 
 /** S_SpawnMobs 里每项的字节数 */
 export const SPAWN_MOB_STRIDE = 23;

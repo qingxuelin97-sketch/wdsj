@@ -17,9 +17,38 @@ import { isEmpty, ITEM_ID_BASE } from '../../core/item/item-def.ts';
 import { dropOf, toolOf, showWindow, syncInventory } from './inventory-actions.ts';
 import { spawnBlockDrop, scatterContents } from '../entity/item-manager.ts';
 import { ChestEntity, FurnaceEntity } from '../world/block-entity.ts';
-import { EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, WORLD_HEIGHT, REACH_SURVIVAL } from '../../core/constants.ts';
+import { EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, WORLD_HEIGHT, REACH_SURVIVAL, EXHAUSTION } from '../../core/constants.ts';
 import { placeFluid } from '../world/fluid.ts';
+import { sendVitals } from '../entity/combat.ts';
+import { MAX_HUNGER } from '../../core/constants.ts';
 import { igniteAt, primeTnt } from '../world/block-ticks.ts';
+
+/**
+ * 吃一口。饥饿已经满了就不吃 —— 与 MC 一致，免得把珍贵的食物浪费掉。
+ *
+ * @returns 是否吃了
+ */
+function tryEat(core: ServerCore, player: ServerPlayer, itemId: number): boolean {
+  const def = core.items.get(itemId);
+  if (def === undefined || def.foodPoints <= 0) return false;
+  if (player.vitals.hunger >= MAX_HUNGER) return true; // 吃不下，但这次右键算用掉了
+  player.vitals.eat(def.foodPoints, def.saturation);
+
+  const held = player.inventory.held;
+  held.count--;
+  if (held.count <= 0) {
+    held.id = 0;
+    held.damage = 0;
+  }
+  // 蘑菇煲吃完剩一个碗
+  if (def.name === 'mushroom_stew' && held.count <= 0) {
+    held.id = core.items.idOf('bowl');
+    held.count = 1;
+  }
+  syncInventory(core, player);
+  sendVitals(player);
+  return true;
+}
 
 /**
  * 右键用掉一件"特殊"物品：水桶、岩浆桶、空桶、打火石。
@@ -190,6 +219,8 @@ export function advanceDigging(core: ServerCore, player: ServerPlayer): void {
   }
 
   if (drop !== null) spawnBlockDrop(core, x, y, z, drop);
+  // 挖一格消耗 0.025 体力。数字很小，但一场挖矿下来是实打实的饭量
+  player.vitals.addExhaustion(EXHAUSTION.breakBlock);
 }
 
 export function onUseBlock(core: ServerCore, player: ServerPlayer, value: Record<string, unknown>): void {
@@ -226,7 +257,11 @@ export function onUseBlock(core: ServerCore, player: ServerPlayer, value: Record
   const held = player.inventory.held;
   if (isEmpty(held)) return;
 
-  // 桶、打火石这类"用一下"的物品先处理：它们不是放方块，
+  // 吃东西优先：食物既不是方块也不需要瞄准什么，
+  // 而且饿的时候玩家会对着地面猛点，那时候可不该在地上摆一排面包
+  if (tryEat(core, player, held.id)) return;
+
+  // 桶、打火石这类"用一下"的物品：它们不是放方块，
   // 走下面的 placesBlock 那条路会什么都不做
   if (useSpecialItem(core, player, held.id, x, y, z, px, py, pz)) return;
 

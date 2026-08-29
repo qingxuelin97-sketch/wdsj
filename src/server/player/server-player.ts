@@ -11,8 +11,10 @@ import { encodeChunk } from '../../core/world/chunk-codec.ts';
 import { PlayerInventory, type Window } from './player-inventory.ts';
 import { S_ChunkData, S_ChunkUnload } from '../../core/net/packets.ts';
 import type { ServerWorld } from '../world/server-world.ts';
-import { DEFAULT_RENDER_DISTANCE, SEA_LEVEL } from '../../core/constants.ts';
+import { DEFAULT_RENDER_DISTANCE, SEA_LEVEL, MAX_HEALTH } from '../../core/constants.ts';
 import type { BlockEntity } from '../world/block-entity.ts';
+import { PlayerVitals } from './player-vitals.ts';
+import { Experience } from './experience.ts';
 
 /** 每 tick 最多推送几个区块，避免一次性把带宽和生成预算打满 */
 const CHUNKS_PER_TICK = 8;
@@ -37,16 +39,30 @@ export class ServerPlayer {
   pitch = 0;
 
   /**
-   * 血量，半心为 1（满血 20）。
+   * 生存状态：血量、饥饿、饱和、消耗、氧气、着火、各种伤害计时。
    *
-   * 完整的生存循环（饥饿、饱和、再生、重生流程）是 M12 的事；
-   * 这里先把血量本身打通，因为 M10 的生物要能真的打到人 ——
-   * 没有伤害的僵尸只是个会走路的模型。
+   * 血量本身在 M10 就打通了（生物要能打到人），M12 把整套循环接上。
    */
-  health = 20;
-  maxHealth = 20;
-  /** 受伤后的无敌帧，与生物同为 10 刻 */
-  invulnerable = 0;
+  readonly vitals = new PlayerVitals();
+  /** 经验等级与进度 */
+  readonly xp = new Experience();
+  /** 上一次报上来的位置里，下落的最高点。摔落伤害按它算 */
+  peakY = 0;
+  /** 上一刻是不是在地上，用来判定"刚落地" */
+  wasOnGround = true;
+  /** 上一次报位置时的水平坐标，用来算走了多远（体力消耗按位移算） */
+  lastX = 0;
+  lastZ = 0;
+  /** 死亡之后等待客户端请求重生 */
+  awaitingRespawn = false;
+
+  get health(): number {
+    return this.vitals.health;
+  }
+
+  get maxHealth(): number {
+    return MAX_HEALTH;
+  }
 
   // --- 挖掘状态 ---
   //

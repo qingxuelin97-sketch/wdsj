@@ -12,10 +12,14 @@ import type { TargetRef } from './goal.ts';
 import { ArrowEntity, ARROW_SPEED, type ArrowEntity as Arrow } from './arrow.ts';
 import { explode } from './explosion.ts';
 import { REACH_LIMIT_SQ } from '../player/block-interaction.ts';
-import { isEmpty } from '../../core/item/item-def.ts';
+import { isEmpty, cloneStack } from '../../core/item/item-def.ts';
+import { applyArmor, DamageKind } from '../player/player-vitals.ts';
+import { xpToNextLevel } from '../player/experience.ts';
+import { tossFromPlayer, spawnXpOrbs } from './item-manager.ts';
+import { syncInventory } from '../player/inventory-actions.ts';
 import { setBodyBox, makeBox } from '../../core/physics/block-collision.ts';
-import { S_EntityEvent, S_PlayerHealth } from '../../core/net/packets.ts';
-import { EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT } from '../../core/constants.ts';
+import { S_EntityEvent, S_PlayerHealth, S_PlayerPosLook } from '../../core/net/packets.ts';
+import { EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, MAX_HEALTH, INVULNERABLE_TICKS, EXHAUSTION } from '../../core/constants.ts';
 
 /** 箭命中判定复用的盒子。每刻可能有几十支箭，别每支都新建 */
 const arrowScratch = makeBox();
@@ -134,15 +138,110 @@ export function explodeAt(core: ServerCore, x: number, y: number, z: number, pow
 /**
  * 玩家掉血。
  *
- * 完整的伤害类型、盔甲减伤、饥饿与重生在 M12；这里只做
- * "掉血 + 无敌帧 + 击退 + 同步"，让生物的攻击成立。
+ * 全部伤害都从这里过：生物的攻击、箭、爆炸、以及 player-vitals.ts 里
+ * 那一串环境伤害。集中在一处的好处是护甲减伤、无敌帧、死亡处理各只有
+ * 一份实现 —— 分散写的话，"某种伤害忘了算护甲"这种 bug 会一直藏着，
+ * 因为它只在穿着甲被那一种东西打时才显形。
  */
-export function damagePlayer(core: ServerCore, player: ServerPlayer, amount: number, fromX: number, fromZ: number): void {
-  if (player.health <= 0 || player.invulnerable > 0) return;
-  player.health = Math.max(0, player.health - amount);
-  player.invulnerable = 10;
-  void fromX;
-  void fromZ;
-  player.channel.send(S_PlayerHealth, { health: player.health, maxHealth: player.maxHealth });
-  if (player.health <= 0) core.sendChat(player, '你死了');
+export function damagePlayer(
+  core: ServerCore, player: ServerPlayer, amount: number,
+  fromX: number, fromZ: number, kind: DamageKind = DamageKind.PHYSICAL,
+): void {
+  const v = player.vitals;
+  if (v.dead) return;
+  // 无敌帧只挡"一次性"的伤害。环境伤害（岩浆、溺水）各有自己的节奏，
+  // 走无敌帧的话它们会被近战打断，泡在岩浆里反而更安全
+  if (kind === DamageKind.PHYSICAL && v.invulnerable > 0) return;
+
+  const armor = armorPointsOf(core, player);
+  const dealt = applyArmor(amount, armor, kind);
+  v.health = Math.max(0, v.health - dealt);
+  if (kind === DamageKind.PHYSICAL) v.invulnerable = INVULNERABLE_TICKS;
+  // 受伤会消耗体力 —— 挨打之后更容易饿，这是 MC 的设计
+  v.addExhaustion(EXHAUSTION.damageTaken);
+
+  // 击退：把玩家推离伤害来源。客户端会自己预测，服务端只发一次位置
+  const dx = player.x - fromX;
+  const dz = player.z - fromZ;
+  const len = Math.hypot(dx, dz);
+  if (len > 1e-6 && kind === DamageKind.PHYSICAL) {
+    player.x += dx / len * 0.4;
+    player.z += dz / len * 0.4;
+  }
+
+  sendVitals(player);
+  if (v.dead) onPlayerDeath(core, player);
+}
+
+/** 整套护甲的点数 */
+export function armorPointsOf(core: ServerCore, player: ServerPlayer): number {
+  let points = 0;
+  for (let i = 0; i < 4; i++) {
+    const stack = player.inventory.armorAt(i);
+    if (isEmpty(stack)) continue;
+    points += core.items.get(stack.id)?.armorPoints ?? 0;
+  }
+  return points;
+}
+
+/** 把血量与饥饿同步给客户端 */
+export function sendVitals(player: ServerPlayer): void {
+  player.channel.send(S_PlayerHealth, {
+    health: Math.max(0, Math.round(player.vitals.health)),
+    maxHealth: MAX_HEALTH,
+    hunger: Math.max(0, Math.round(player.vitals.hunger)),
+    air: Math.max(0, Math.round(player.vitals.air / 15)),
+    xpLevel: Math.min(255, player.xp.level),
+    xpProgress: Math.round(xpBarFraction(player) * 255),
+  });
+}
+
+function xpBarFraction(player: ServerPlayer): number {
+  const need = xpToNextLevel(player.xp.level);
+  return need <= 0 ? 0 : Math.min(1, player.xp.progress / need);
+}
+
+/**
+ * 玩家死了。
+ *
+ * 掉光背包、按等级掉经验、等客户端请求重生。**不立刻重生** ——
+ * 那会让死亡毫无重量，而"看着自己的东西撒了一地"正是死亡的代价本身。
+ */
+export function onPlayerDeath(core: ServerCore, player: ServerPlayer): void {
+  if (player.awaitingRespawn) return;
+  player.awaitingRespawn = true;
+
+  // 背包全掉在原地
+  for (const slot of player.inventory.slots) {
+    if (isEmpty(slot)) continue;
+    tossFromPlayer(core, player, cloneStack(slot));
+    slot.id = 0;
+    slot.count = 0;
+    slot.damage = 0;
+  }
+  // 经验按等级掉，上限 100 点
+  const dropped = player.xp.dropOnDeath();
+  if (dropped > 0) spawnXpOrbs(core, player.x, player.y + 0.5, player.z, dropped);
+  player.xp.reset();
+
+  syncInventory(core, player);
+  sendVitals(player);
+  core.sendChat(player, '你死了');
+}
+
+/** 重生：满血满饥饿，回到出生点 */
+export function respawnPlayer(core: ServerCore, player: ServerPlayer): void {
+  player.vitals.reset();
+  player.awaitingRespawn = false;
+  player.x = core.spawnX;
+  player.y = core.spawnY;
+  player.z = core.spawnZ;
+  player.peakY = player.y;
+  player.resetSubscriptions();
+  player.channel.send(S_PlayerPosLook, {
+    seq: 0, x: player.x, y: player.y, z: player.z,
+    yaw: player.yaw, pitch: player.pitch, onGround: true,
+  });
+  sendVitals(player);
+  syncInventory(core, player);
 }

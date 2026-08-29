@@ -44,6 +44,14 @@ export interface PlayerSaveData {
   yaw: number; pitch: number;
   selectedHotbar: number;
   slots: ItemStack[];
+  /** 生存状态。存下来才能做到"退出重进不回满血" */
+  health: number;
+  hunger: number;
+  saturation: number;
+  air: number;
+  xpLevel: number;
+  xpProgress: number;
+  xpTotal: number;
 }
 
 export class WorldSave {
@@ -242,6 +250,14 @@ export class WorldSave {
         yaw: num(rot, 0), pitch: num(rot, 1),
         selectedHotbar: getInt(root, 'SelectedItemSlot'),
         slots,
+        // 老存档没有这些字段，取默认值 —— 满血满饥饿，与新玩家一致
+        health: getInt(root, 'Health', 20),
+        hunger: getInt(root, 'foodLevel', 20),
+        saturation: getInt(root, 'foodSaturationLevel', 5),
+        air: getInt(root, 'Air', 300),
+        xpLevel: getInt(root, 'XpLevel'),
+        xpProgress: getInt(root, 'XpProgress'),
+        xpTotal: getInt(root, 'XpTotal'),
       };
     } catch {
       return null;
@@ -254,6 +270,14 @@ export class WorldSave {
       Rotation: nbt.list(TagType.DOUBLE, [nbt.double(p.yaw), nbt.double(p.pitch)]),
       SelectedItemSlot: nbt.int(p.selectedHotbar),
       Inventory: stacksToNbt(p.slots),
+      // 字段名照抄 MC 的 player.dat（Health / foodLevel / foodSaturationLevel）
+      Health: nbt.short(Math.round(p.health)),
+      foodLevel: nbt.short(Math.round(p.hunger)),
+      foodSaturationLevel: nbt.short(Math.round(p.saturation)),
+      Air: nbt.short(Math.round(p.air)),
+      XpLevel: nbt.int(p.xpLevel),
+      XpProgress: nbt.int(p.xpProgress),
+      XpTotal: nbt.int(p.xpTotal),
     })));
   }
 }

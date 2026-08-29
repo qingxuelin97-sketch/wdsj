@@ -15,8 +15,10 @@ import {
   S_SpawnItems, S_EntityMoves, S_DestroyEntities,
   ENTITY_POS_SCALE, SPAWN_ITEM_STRIDE, ENTITY_MOVE_STRIDE,
 } from '../../core/net/packets.ts';
-import { makeStack, type ItemStack } from '../../core/item/item-def.ts';
+import { makeStack, XP_ORB_ITEM_ID, type ItemStack } from '../../core/item/item-def.ts';
 import { giveToPlayer, maxStackOf, syncInventory } from '../player/inventory-actions.ts';
+import { splitIntoOrbs } from '../player/experience.ts';
+import { sendVitals } from './combat.ts';
 
 /** 一个世界里最多同时存在多少掉落物。超了就不再生成新的 */
 const MAX_ITEMS = 2000;
@@ -44,6 +46,20 @@ export function spawnItem(
   }
   core.world.items.set(entity.entityId, entity);
   return entity;
+}
+
+/**
+ * 撒一把经验球。
+ *
+ * 按面额从大到小拆，100 点不会变成 100 个球 —— 数量直接决定服务端
+ * 要 tick 多少实体。
+ */
+export function spawnXpOrbs(core: ServerCore, x: number, y: number, z: number, amount: number): void {
+  for (const value of splitIntoOrbs(amount)) {
+    // count 存的是这颗球值多少经验，最多 255（面额最大 2477 会被截断，
+    // 但那只在末影龙那种量级才出现，M16 再说）
+    spawnItem(core, x, y, z, makeStack(XP_ORB_ITEM_ID, Math.min(255, value)));
+  }
 }
 
 /** 破坏一个方块时，掉落物出现在方块中心附近 */
@@ -95,7 +111,18 @@ export function tickItems(core: ServerCore): void {
   for (const item of world.items.values()) {
     if (item.dead) continue;
     for (const player of players) {
+      if (player.vitals.dead) continue;
       if (!item.canBePickedUpBy(player.x, player.y, player.z)) continue;
+
+      // 经验球：加经验，不进背包
+      if (item.stack.id === XP_ORB_ITEM_ID) {
+        player.xp.add(item.stack.count);
+        sendVitals(player);
+        item.dead = true;
+        dead.push(item.entityId);
+        break;
+      }
+
       const left = giveToPlayer(core, player, item.stack);
       if (left === item.stack.count) continue; // 背包满了，一个都没进去
       syncInventory(core, player);
@@ -126,6 +153,9 @@ function mergeNearbyItems(core: ServerCore): void {
     for (const b of items) {
       if (b === a || b.dead) continue;
       if (b.stack.id !== a.stack.id || b.stack.damage !== a.stack.damage) continue;
+      // 经验球不合并：它的 count 是"值多少经验"而不是"几个"，
+      // 合并会让 3+3 变成一颗值 6 的球，看起来像凭空少了一颗
+      if (a.stack.id === XP_ORB_ITEM_ID) continue;
       if (a.stack.count + b.stack.count > max) continue;
       if (Math.abs(a.x - b.x) > MERGE_RANGE) continue;
       if (Math.abs(a.y - b.y) > MERGE_RANGE) continue;

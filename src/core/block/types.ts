@@ -80,6 +80,14 @@ export const TintKind = {
   GRASS: 1,
   FOLIAGE: 2,
   WATER: 3,
+  /**
+   * 红石线：贴图是灰度的，最终颜色按**信号强度**决定深浅。
+   *
+   * 与其余几种染色不同 —— 那几种按群系取一个固定颜色，红石按元数据取。
+   * 着色器里用同一条乘法通路，只是取色的来源不同（见 block-shader.ts）。
+   * "通电的线更亮"是红石调试唯一的视觉反馈，没有它整套红石没法用。
+   */
+  REDSTONE: 4,
 } as const;
 export type TintKind = (typeof TintKind)[keyof typeof TintKind];
 

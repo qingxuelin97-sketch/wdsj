@@ -13,7 +13,7 @@ import { installGoals } from './mob-factory.ts';
 import { PathFinder } from './pathfind.ts';
 import { MOBS, MobCategory, mobDefOf, type MobDef } from '../../content/mobs.ts';
 import type { MobCtx, TargetRef } from './goal.ts';
-import { spawnBlockDrop } from './item-manager.ts';
+import { spawnBlockDrop, spawnXpOrbs } from './item-manager.ts';
 import { makeStack, isEmpty } from '../../core/item/item-def.ts';
 import { raycastBlocks } from '../../core/physics/raycast.ts';
 import {
@@ -180,6 +180,10 @@ export class MobManager {
       const id = this.core.items.idOf(name);
       if (id <= 0) continue;
       spawnBlockDrop(this.core, Math.floor(mob.x), Math.floor(mob.y), Math.floor(mob.z), makeStack(id, count));
+    }
+    // 经验：MC 里敌对生物给 5 点、动物给 1-3 点
+    if (mob.def.xp > 0) {
+      spawnXpOrbs(this.core, mob.x, mob.y + 0.5, mob.z, mob.def.xp);
     }
     // 羊掉自己颜色的羊毛，不走战利品表
     if (mob.def.name === 'sheep') {

@@ -12,8 +12,10 @@ import type { ServerCore } from './server-core.ts';
 import type { ServerPlayer } from './player/server-player.ts';
 import { S_CommandResult, S_TimeUpdate, WindowKind } from '../core/net/packets.ts';
 import { AIR_STATE, packState, stateId } from '../core/world/chunk.ts';
-import { makeStack } from '../core/item/item-def.ts';
-import { giveToPlayer, syncInventory, showWindow } from './player/inventory-actions.ts';
+import { makeStack, type ItemStack } from '../core/item/item-def.ts';
+import { giveToPlayer, syncInventory, showWindow, closeWindow } from './player/inventory-actions.ts';
+import { damagePlayer, respawnPlayer } from './entity/combat.ts';
+import { DamageKind } from './player/player-vitals.ts';
 import { SECTIONS_PER_COLUMN } from '../core/constants.ts';
 
 export function handleCommand(
@@ -138,6 +140,33 @@ value: Record<string, unknown>,
         reply(true, String(n));
         return;
       }
+      case 'craftchain': {
+        // 闸门测试①用：走一遍最基础的合成链，**全部通过真实的窗口点击**。
+        //
+        // 不走 give 指令：那只验了"物品表里有这一项"，而这里要验的是
+        // "配方在窗口里真的能合出来" —— 摆位、镜像归一化、产物槽、
+        // 取走产物时扣材料，整条路都要走一遍。
+        const made = runCraftChain(core, player);
+        reply(made.length >= 3, made.join(','));
+        return;
+      }
+      case 'respawn': {
+        respawnPlayer(core, player);
+        reply(true, 'ok');
+        return;
+      }
+      case 'vitals': {
+        const v = player.vitals;
+        reply(true, `${v.health} ${v.hunger} ${Math.round(v.saturation)} ${player.xp.level}`);
+        return;
+      }
+      case 'damage': {
+        // 自动化用：直接扣血，走的是和生物攻击同一条路径（含护甲与死亡处理）
+        const [, amount] = parts;
+        damagePlayer(core, player, Number(amount ?? 1), player.x + 1, player.z, DamageKind.PHYSICAL);
+        reply(true, String(player.vitals.health));
+        return;
+      }
       case 'spawn': {
         // 自动化与调试用：在指定位置放一只生物
         const [, kind, sx, sy, sz] = parts;
@@ -184,10 +213,17 @@ value: Record<string, unknown>,
         return;
       }
       case 'inv': {
-        // 打印背包内容，供断言
+        // 打印背包内容，供断言。
+        //
+        // 报**名字**而不是裸 id：断言写成 `includes('log')` 是自然的，
+        // 而写成 `includes('17')` 既难读又会误命中（117、170 都含 "17"）。
+        // 闸门测试①最初就是因为这个报了一次假失败 —— 背包里明明有原木，
+        // 但输出是 "31:17x1"，断言找不到 "log"
         const inv = player.inventory;
+        const nameOf = (id: number): string =>
+          core.registry.get(id)?.name ?? core.items.get(id)?.name ?? `#${id}`;
         const out = inv.slots
-          .map((s2, i) => (s2.count > 0 ? `${i}:${s2.id}x${s2.count}` : ''))
+          .map((s2, i) => (s2.count > 0 ? `${i}:${nameOf(s2.id)}x${s2.count}` : ''))
           .filter((x) => x !== '')
           .join(',');
         reply(true, out);
@@ -223,6 +259,107 @@ value: Record<string, unknown>,
  *
  * @returns 摆了多少个方块
  */
+/**
+ * 原木 -> 木板 -> 木棍 + 工作台 -> 木镐。
+ *
+ * 每一步都开一个真的窗口、把材料摆进合成格、再从产物槽取走。
+ * 返回成功做出来的东西的名字。
+ */
+function runCraftChain(core: ServerCore, player: ServerPlayer): string[] {
+  const made: string[] = [];
+  const inv = player.inventory;
+
+  /** 背包里有多少个某物 */
+  const countOf = (name: string): number => {
+    const id = core.registry.hasBlock(name) ? core.registry.idOf(name) : core.items.idOf(name);
+    let n = 0;
+    for (const s of inv.slots) if (s.id === id && s.count > 0) n += s.count;
+    return n;
+  };
+
+  /**
+   * 在窗口里合一次。
+   * @param grid 合成格的内容（按窗口槽位顺序），null 表示空
+   * @param times 连续取几次产物
+   */
+  const craft = (kind: WindowKind, grid: (string | null)[], times: number): boolean => {
+    showWindow(core, player, kind);
+    const win = player.openWindow;
+    if (win === null) return false;
+    // 槽位 0 是产物，合成格从 1 开始
+    for (let i = 0; i < grid.length; i++) {
+      const name = grid[i] ?? null;
+      const slot = win.container.slots[1 + i];
+      if (slot === undefined) return false;
+      if (name === null) {
+        slot.id = 0;
+        slot.count = 0;
+        continue;
+      }
+      const id = core.registry.hasBlock(name) ? core.registry.idOf(name) : core.items.idOf(name);
+      // 材料从背包里扣，模拟玩家把东西拖进合成格
+      if (!takeFromInventory(inv.slots, id, 1)) return false;
+      slot.id = id;
+      slot.count = 1;
+      slot.damage = 0;
+    }
+    // 摆完材料要让窗口重算产物槽。
+    //
+    // 正常玩家是**点**进去的，每次点击后 click() 自己会调 refreshOutput；
+    // 这里为了省事直接写了格子，那条路就没走到 —— 产物槽还是空的，
+    // 接下来点它当然什么都拿不到。pullFromPlayer 会重算产物，
+    // 而合成格映射到 −1（窗口自己的临时格），不会被它覆盖
+    win.pullFromPlayer();
+
+    let got = false;
+    for (let t = 0; t < times; t++) {
+      // shift+左键产物槽 = 全部拿走并塞进背包
+      if (!win.click(0, 0, true)) break;
+      got = true;
+    }
+    closeWindow(core, player);
+    return got;
+  };
+
+  // 1. 原木 -> 木板。**合两次**：一根原木出 4 块板，而后面要用掉
+  // 2 块做木棍 + 4 块做工作台 + 3 块做镐 = 9 块，一次不够
+  let plankRuns = 0;
+  for (let i = 0; i < 3; i++) {
+    if (craft(WindowKind.INVENTORY, ['log', null, null, null], 1)) plankRuns++;
+  }
+  if (plankRuns > 0) made.push('planks');
+  // 2. 木板 -> 木棍（竖着两块，出 4 根）
+  if (craft(WindowKind.INVENTORY, ['planks', null, 'planks', null], 1)) made.push('stick');
+  // 3. 木板 ×4 -> 工作台
+  if (craft(WindowKind.INVENTORY, ['planks', 'planks', 'planks', 'planks'], 1)) made.push('crafting_table');
+  // 4. 工作台上合木镐：三块木板一横 + 两根木棍一竖
+  if (craft(WindowKind.CRAFTING, [
+    'planks', 'planks', 'planks',
+    null, 'stick', null,
+    null, 'stick', null,
+  ], 1)) made.push('wooden_pickaxe');
+
+  void countOf;
+  return made;
+}
+
+/** 从背包里扣掉若干个某物。不够返回 false */
+function takeFromInventory(slots: ItemStack[], id: number, count: number): boolean {
+  let left = count;
+  for (const s of slots) {
+    if (s.id !== id || s.count <= 0) continue;
+    const take = Math.min(s.count, left);
+    s.count -= take;
+    left -= take;
+    if (s.count <= 0) {
+      s.id = 0;
+      s.damage = 0;
+    }
+    if (left <= 0) return true;
+  }
+  return left <= 0;
+}
+
 function buildGallery(core: ServerCore, ox: number, oy: number, oz: number): number {
   const ids: number[] = [];
   for (let id = 1; id < core.world.tables.count; id++) {

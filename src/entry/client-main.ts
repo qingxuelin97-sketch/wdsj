@@ -19,9 +19,12 @@ import { ClientMobs } from '../client/entity/client-mobs.ts';
 import { ItemEntityRenderer } from '../client/render/item-entity-renderer.ts';
 import { MobRenderer } from '../client/render/mob-renderer.ts';
 import { EntityView } from './entity-view.ts';
+import { drawWorldFrame } from './world-render.ts';
 import { mobModelOf, WOOL_COLORS } from '../content/mob-models.ts';
 import { MobType, mobDefOf } from '../content/mobs.ts';
 import { MobSound, mobVoicePitch } from '../core/audio/sound-spec.ts';
+import { XP_ORB_ITEM_ID } from '../core/item/item-def.ts';
+
 import { BLOCK_VERT_SRC, BLOCK_FRAG_SRC } from '../client/render/block-shader.ts';
 import { tintColorArray } from '../client/render/block-textures.ts';
 import { buildRenderResources } from '../client/render/resources.ts';
@@ -46,7 +49,7 @@ import { startServerHost } from './server-host.ts';
 import { installPacketHandlers } from './net-handlers.ts';
 import {
   S2C, C_Handshake, C_Command, C_PlayerMove, C_PlayerAction, C_UseBlock,
-  C_SetViewDistance, C_WindowClick, C_CloseWindow, C_HeldSlot, C_AttackEntity,
+  C_SetViewDistance, C_WindowClick, C_CloseWindow, C_HeldSlot, C_AttackEntity, C_Respawn,
   PROTOCOL_VERSION, PlayerActionKind, WindowKind,
   ENTITY_POS_SCALE, SPAWN_ITEM_STRIDE, ENTITY_MOVE_STRIDE,
 } from '../core/net/packets.ts';
@@ -73,7 +76,8 @@ const tables = registry.getTables();
 const itemRegistry = createItemRegistry();
 const { atlas, faceLayer, mesherTables, texture } = buildRenderResources(
   gl, tables, caps, anisoExt,
-  itemRegistry.all().map((d) => d.texture),
+  // 经验球的图标既不属于方块也不属于物品，要显式塞进图集
+  [...itemRegistry.all().map((d) => d.texture), 'xp_orb'],
 );
 recordLog(`方块 ${registry.size} 种 · 物品 ${itemRegistry.size} 件 · 贴图 ${atlas.layers} 张`);
 
@@ -106,6 +110,9 @@ const ui = new UiController();
 const iconLayerOf = (id: number, damage: number): number => {
   void damage;
   if (id <= 0) return -1;
+  // 经验球用的是合成 id（见 server/entity/item-manager.ts），
+  // 既不在方块表也不在物品表里，单独查
+  if (id === XP_ORB_ITEM_ID) return atlas.index.get('xp_orb') ?? -1;
   if (id < 256) return faceLayer[id * 6 + 1] ?? -1;
   const def = itemRegistry.get(id);
   if (def === undefined) return -1;
@@ -125,8 +132,6 @@ const entityView = new EntityView({
   entities, mobs, itemEntityRenderer, mobRenderer,
   world, tables, faceLayer, iconLayer: iconLayerOf,
 });
-/** 玩家血量，服务端权威 */
-const vitals = { health: 20, maxHealth: 20 };
 /**
  * 掉落物的 20 Hz 刻累加器。
  *
@@ -231,9 +236,12 @@ installPacketHandlers(net, {
     const pitch = mobVoicePitch(def === null ? 1 : def.height / 1.8);
     audio.play(event === 1 ? MobSound.DEATH : MobSound.HURT, 0, pitch);
   },
-  onHealth: (health, maxHealth) => {
-    vitals.health = health;
-    vitals.maxHealth = maxHealth;
+  onHealth: (v) => {
+    Object.assign(ui.vitals, v);
+    const wasDead = ui.dead;
+    ui.dead = v.health <= 0;
+    // 刚死的那一刻解除指针锁，让玩家能点重生
+    if (ui.dead && !wasDead) document.exitPointerLock();
   },
   onLogin: (x, y, z) => {
     // 相机和**身体**都要放到出生点。只挪相机的话，物理下一帧就会
@@ -351,51 +359,17 @@ function meshDirtySections(): void {
   }
 }
 
+/**
+ * 画一帧世界。所有绘制状态与顺序都在 entry/world-render.ts 里，
+ * 这里只是把这一帧要用到的东西递过去。
+ */
 function renderOnce(): void {
-  const w = canvas!.width;
-  const h = canvas!.height;
-  gl.viewport(0, 0, w, h);
-  gl.enable(gl.DEPTH_TEST);
-  gl.enable(gl.CULL_FACE);
-  gl.cullFace(gl.BACK);
-  gl.frontFace(gl.CCW);
-  // 天空色随昼夜变化，雾色跟着天空走 —— 远处的地形才不会在夜里浮出一层白边
-  const sky = skyColor(timeOfDay);
-  gl.clearColor(sky.r, sky.g, sky.b, 1);
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
-  camera.update(w / Math.max(1, h));
-  frustum.update(camera.viewProjection);
-
-  shader.use();
-  shader.setMat4('uViewProj', camera.viewProjection);
-  shader.setFloat('uSunBrightness', sunBrightness(timeOfDay));
-  shader.setVec3('uFogColor', sky.r, sky.g, sky.b);
-  shader.setVec3('uCameraPos', camera.position[0]!, camera.position[1]!, camera.position[2]!);
-  shader.setFloat('uFogStart', renderDistance * SECTION_SIZE * 0.65);
-  shader.setFloat('uFogEnd', renderDistance * SECTION_SIZE * 1.05);
-  shader.setInt('uAtlas', 0);
-  const tintLoc = shader.loc('uTintColors[0]');
-  if (tintLoc !== null) gl.uniform3fv(tintLoc, tintColors);
-
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
-  renderer.render(shader, frustum, camera.position[0]!, camera.position[1]!, camera.position[2]!);
-
-  entityView.draw({
-    partialTick: entityPartialTick,
-    timeOfDay,
-    cameraYaw: camera.yaw,
-    cameraPitch: camera.pitch,
+  drawWorldFrame({
+    gl, canvas: canvas!, camera, frustum, shader, renderer, tintColors,
+    texture, renderDistance, timeOfDay,
+    entityView, itemEntityRenderer, mobRenderer, particles, interaction,
+    overlay, ui, uiRenderer, uiCtx, entityPartialTick,
   });
-  itemEntityRenderer.render(camera.viewProjection, texture);
-  mobRenderer.render(camera.viewProjection);
-  particles.render(camera.viewProjection, camera.yaw, camera.pitch, texture);
-  interaction.renderOverlay(overlay, texture);
-
-  // 界面画在最后，且用**虚拟像素**坐标系（见 ui-renderer.ts）
-  ui.draw(uiRenderer, uiCtx);
-  uiRenderer.flush(texture);
 }
 
 installTestHook({
@@ -409,6 +383,19 @@ installTestHook({
     id: m.entityId, type: m.type, x: m.x, y: m.y, z: m.z, health: m.health,
   })),
   mobVerts: () => mobRenderer.lastVerts,
+  isDead: () => ui.dead,
+  vitals: () => ({
+    health: ui.vitals.health, hunger: ui.vitals.hunger,
+    air: ui.vitals.air, xpLevel: ui.vitals.xpLevel,
+  }),
+  respawn: () => { net.send(C_Respawn, {}); net.flush(); },
+  sendAction: (kind, x, y, z) => {
+    net.send(C_PlayerAction, {
+      action: kind === 'start-dig' ? PlayerActionKind.START_DIG : PlayerActionKind.CANCEL_DIG,
+      x, y, z, face: 1,
+    });
+    net.flush();
+  },
   drawStats: () => ({ drawCalls: renderer.drawCalls, quads: renderer.quadsDrawn }),
   setSizeLock: (locked: boolean) => {
     sizeLocked = locked;
@@ -478,6 +465,22 @@ function frame(nowMs: number): void {
   if (!sizeLocked) resizeToDisplay(canvas!, Math.min(window.devicePixelRatio || 1, 2));
 
   const snap = input.sample();
+
+  // --- 死了：只接受"重生" ---
+  //
+  // 死亡界面挡住整个世界，输入也全部截住。让玩家在死亡界面里还能挖方块
+  // 会让死亡完全没有分量，而"分量"正是这套生存循环唯一想产生的东西
+  if (ui.dead) {
+    if ((snap.attack && !prevAttack) || (snap.use && !prevUse) || snap.inventory) {
+      net.send(C_Respawn, {});
+    }
+    prevAttack = snap.attack;
+    prevUse = snap.use;
+    prevInventory = snap.inventory;
+    renderOnce();
+    scheduleFrame(frame);
+    return;
+  }
 
   // --- 界面开关。按键要做**边沿触发**，否则按住 E 会每帧开一次 ---
   if (snap.inventory && !prevInventory) {

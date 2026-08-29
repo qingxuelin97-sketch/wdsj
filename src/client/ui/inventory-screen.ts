@@ -221,3 +221,97 @@ export function drawCrosshair(ui: UiRenderer): void {
   ui.rect(cx - 5, cy - 0.5, 10, 1, 1, 1, 1, 0.75);
   ui.rect(cx - 0.5, cy - 5, 1, 10, 1, 1, 1, 0.75);
 }
+
+/**
+ * 生存状态条：血、饥饿、氧气、经验。
+ *
+ * 摆位照抄 MC：血在快捷栏左上、饥饿在右上、氧气在饥饿之上、
+ * 经验条横跨快捷栏正上方。这不是审美偏好 —— 玩家的余光是按位置找信息的，
+ * 摆错地方等于没有。
+ *
+ * 图形用纯色小方块拼，和数字点阵同一套理由：为几个图标去烘贴图不划算，
+ * 而且纯色块在任何缩放下都清晰。心形用"两个小方块 + 一个尖"近似。
+ */
+export function drawVitals(
+  ui: UiRenderer,
+  v: { health: number; maxHealth: number; hunger: number; air: number; xpLevel: number; xpProgress: number },
+): void {
+  const w = 9 * SLOT + 4;
+  const x0 = (UI_WIDTH - w) / 2;
+  const barY = UI_HEIGHT - SLOT - 6;
+
+  // --- 经验条：快捷栏正上方一条细带 ---
+  const xpY = barY - 8;
+  ui.rect(x0, xpY, w, 4, 0.12, 0.12, 0.12, 0.8);
+  if (v.xpProgress > 0) {
+    ui.rect(x0 + 1, xpY + 1, (w - 2) * (v.xpProgress / 255), 2, 0.45, 0.92, 0.20, 1);
+  }
+  if (v.xpLevel > 0) {
+    // 等级数字压在经验条中间，绿色 —— MC 也是这样
+    ui.number(v.xpLevel, UI_WIDTH / 2 + 6, xpY - 6, 1, 0.5, 1, 0.4);
+  }
+
+  // --- 血：10 颗心，每颗两点 ---
+  const rowY = xpY - 11;
+  for (let i = 0; i < 10; i++) {
+    const hx = x0 + i * 8;
+    // 底槽
+    heart(ui, hx, rowY, 0.16, 0.16, 0.16, 0.85);
+    const filled = v.health - i * 2;
+    if (filled >= 2) heart(ui, hx, rowY, 0.85, 0.12, 0.12, 1);
+    else if (filled >= 1) halfHeart(ui, hx, rowY, 0.85, 0.12, 0.12);
+  }
+
+  // --- 饥饿：10 个鸡腿，右对齐 ---
+  for (let i = 0; i < 10; i++) {
+    const hx = x0 + w - 8 - i * 8;
+    ui.rect(hx, rowY, 7, 7, 0.16, 0.16, 0.16, 0.85);
+    const filled = v.hunger - i * 2;
+    if (filled >= 2) ui.rect(hx + 1, rowY + 1, 5, 5, 0.72, 0.45, 0.16, 1);
+    else if (filled >= 1) ui.rect(hx + 1, rowY + 1, 2, 5, 0.72, 0.45, 0.16, 1);
+  }
+
+  // --- 氧气：只在水下（air < 20）时画，在饥饿之上 ---
+  if (v.air < 20) {
+    for (let i = 0; i < 10; i++) {
+      if (v.air <= i * 2) continue;
+      const hx = x0 + w - 8 - i * 8;
+      ui.rect(hx + 1, rowY - 9, 5, 5, 0.35, 0.72, 0.95, 1);
+    }
+  }
+}
+
+/** 一颗心：两个方块加一个下尖 */
+function heart(ui: UiRenderer, x: number, y: number, r: number, g: number, b: number, a: number): void {
+  ui.rect(x, y, 3, 3, r, g, b, a);
+  ui.rect(x + 4, y, 3, 3, r, g, b, a);
+  ui.rect(x, y + 2, 7, 2, r, g, b, a);
+  ui.rect(x + 1, y + 4, 5, 1, r, g, b, a);
+  ui.rect(x + 2, y + 5, 3, 1, r, g, b, a);
+}
+
+/** 半颗心：只画左半边 */
+function halfHeart(ui: UiRenderer, x: number, y: number, r: number, g: number, b: number): void {
+  ui.rect(x, y, 3, 3, r, g, b, 1);
+  ui.rect(x, y + 2, 4, 2, r, g, b, 1);
+  ui.rect(x + 1, y + 4, 2, 1, r, g, b, 1);
+  ui.rect(x + 2, y + 5, 1, 1, r, g, b, 1);
+}
+
+/**
+ * 死亡界面。
+ *
+ * 一层暗红的罩子 + 一行字。真正重要的是它**挡住了世界** ——
+ * 死亡要有分量，而"画面照常、只是不能动"完全没有分量。
+ */
+export function drawDeathScreen(ui: UiRenderer): void {
+  ui.rect(0, 0, UI_WIDTH, UI_HEIGHT, 0.45, 0.02, 0.02, 0.6);
+  // "你死了"用点阵数字画不出来，改成一个醒目的图形：一颗碎掉的心
+  const cx = UI_WIDTH / 2 - 12;
+  const cy = UI_HEIGHT / 2 - 26;
+  heart(ui, cx, cy, 0.55, 0.08, 0.08, 1);
+  heart(ui, cx + 16, cy, 0.55, 0.08, 0.08, 1);
+  // 一条提示带，宽度暗示"按键重生"
+  ui.rect(UI_WIDTH / 2 - 60, UI_HEIGHT / 2 + 6, 120, 14, 0.15, 0.15, 0.15, 0.9);
+  ui.rect(UI_WIDTH / 2 - 58, UI_HEIGHT / 2 + 8, 116, 10, 0.35, 0.35, 0.35, 0.9);
+}

@@ -122,6 +122,16 @@ export class LightEngine {
     return out;
   }
 
+  /**
+   * 累计处理过多少个队列条目。
+   *
+   * 性能测试断言的是**它**，不是挂钟时间：挂钟会被同时跑的别的测试
+   * 拖慢（实测同一段代码独占时 0.38 ms、和 2 万刻的生存压力测试
+   * 抢 CPU 时 4.7 ms，差十二倍），而这个计数只取决于算法做了多少活。
+   * 算法退化它一定涨，机器忙它一动不动。
+   */
+  workUnits = 0;
+
   get touchedCount(): number {
     return this.touched.size;
   }
@@ -164,6 +174,7 @@ export class LightEngine {
     let head = 0;
     while (head < this.removeQueue.length) {
       const entry = this.removeQueue[head++]!;
+      this.workUnits++;
       const x = unpackLightX(entry.pos);
       const y = unpackLightY(entry.pos);
       const z = unpackLightZ(entry.pos);
@@ -195,6 +206,7 @@ export class LightEngine {
     let head = 0;
     while (head < this.addQueue.length) {
       const pos = this.addQueue[head++]!;
+      this.workUnits++;
       const x = unpackLightX(pos);
       const y = unpackLightY(pos);
       const z = unpackLightZ(pos);

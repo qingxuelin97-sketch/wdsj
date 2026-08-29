@@ -153,4 +153,65 @@ export async function runSimChecks(ctx) {
       await window.__mc.command('killall');
     `);
   }
+
+  // --- 生存：血条画出来了、掉血看得见、死了有死亡界面、能重生 ---
+  //
+  // 服务端的生存循环有 16 条单测（含 2 万刻的压力跑），这里验的是
+  // 另外半条路：状态包有没有到客户端、HUD 有没有真的画上去、
+  // 死亡界面挡不挡得住世界。
+  {
+    const survival = await page.evaluate(`
+      ${ensureHook}
+      const m = window.__mc;
+      if (m.uiOpen()) { await m.press('KeyE', 120); for (let i=0;i<20;i++) await new Promise(r=>requestAnimationFrame(r)); }
+      await m.command('killall');
+      // 满血时的界面
+      const fullQuads = m.uiQuads();
+      const fullHash = await m.screenshotHash();
+      const fullShot = await m.screenshot();
+
+      // 掉一半血：HUD 该变
+      await m.command('damage 10');
+      for (let i = 0; i < 10; i++) await new Promise(r => requestAnimationFrame(r));
+      const hurtHash = await m.screenshotHash();
+      const hurtShot = await m.screenshot();
+
+      // 打死：该出死亡界面。
+      // 两次伤害之间**必须等过无敌帧**（10 刻 = 0.5 秒），否则第二下会被
+      // 无敌帧挡掉，玩家停在 10 血，测试报"客户端不认为自己死了"——
+      // 而那其实是无敌帧在正常工作
+      await new Promise(r => setTimeout(r, 700));
+      await m.command('damage 100');
+      for (let i = 0; i < 15; i++) await new Promise(r => requestAnimationFrame(r));
+      const deadShot = await m.screenshot();
+      const deadHash = await m.screenshotHash();
+      const isDead = m.isDead();
+
+      // 重生
+      await m.respawn();
+      for (let i = 0; i < 20; i++) await new Promise(r => requestAnimationFrame(r));
+      const aliveAgain = !m.isDead();
+      const hp = m.vitals();
+      return { fullQuads, fullHash, hurtHash, deadHash, isDead, aliveAgain, hp, fullShot, hurtShot, deadShot };
+    `);
+    saveShot('hud-full', survival.fullShot);
+    saveShot('hud-hurt', survival.hurtShot);
+    saveShot('hud-dead', survival.deadShot);
+    log(`生存：HUD ${survival.fullQuads} 个矩形，死亡=${survival.isDead}，重生后血量=${survival.hp.health}`);
+    if (survival.fullQuads < 100) {
+      failures.push(`HUD 只画了 ${survival.fullQuads} 个矩形 —— 血条/饥饿条多半没画出来`);
+    }
+    if (survival.fullHash === survival.hurtHash) {
+      failures.push('掉血之后画面没变 —— 血条没跟着服务端走');
+    }
+    if (survival.isDead !== true) {
+      failures.push('打到 0 血之后客户端不认为自己死了');
+    }
+    if (survival.deadHash === survival.hurtHash) {
+      failures.push('死亡界面没画出来');
+    }
+    if (survival.aliveAgain !== true || survival.hp.health !== 20) {
+      failures.push(`重生失败：活着=${survival.aliveAgain} 血量=${survival.hp.health}`);
+    }
+  }
 }

@@ -42,8 +42,11 @@ export interface PacketContext {
   decodeSlots(bytes: Uint8Array): ItemStack[];
   /** 生物受伤 / 死亡 / 爆炸，用来放音效与粒子 */
   onEntityEvent(entityId: number, event: number): void;
-  /** 玩家血量变化 */
-  onHealth(health: number, maxHealth: number): void;
+  /** 玩家的生存状态变了：血、饥饿、氧气、经验 */
+  onHealth(v: {
+    health: number; maxHealth: number; hunger: number;
+    air: number; xpLevel: number; xpProgress: number;
+  }): void;
   /** 有窗口打开时要解除指针锁 */
   releasePointer(): void;
   recordError(msg: string): void;
@@ -130,7 +133,14 @@ export function installPacketHandlers(net: PacketChannel, ctx: PacketContext): v
         ctx.onEntityEvent(value['entityId'] as number, value['event'] as number);
         return;
       case 'S_PlayerHealth':
-        ctx.onHealth(value['health'] as number, value['maxHealth'] as number);
+        ctx.onHealth({
+          health: value['health'] as number,
+          maxHealth: value['maxHealth'] as number,
+          hunger: value['hunger'] as number,
+          air: value['air'] as number,
+          xpLevel: value['xpLevel'] as number,
+          xpProgress: value['xpProgress'] as number,
+        });
         return;
       case 'S_WindowProgress':
         ctx.ui.onWindowProgress(

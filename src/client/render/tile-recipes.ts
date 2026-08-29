@@ -383,6 +383,23 @@ export const RECIPES: Record<string, Recipe> = {
   },
   wheat_crop: (p) => plant(p, rgb(0xc8b048), rgb(0xe0c860), 11),
   nether_wart_block: (p) => plant(p, rgb(0x8a1a2a), rgb(0xb02a3a), 10),
+  // 经验球：一颗发亮的小球。它不是方块也不是物品，
+  // 但走的是同一套图集，所以在这里画
+  xp_orb: (p) => {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
+    for (let y = 4; y < 12; y++) {
+      for (let x = 4; x < 12; x++) {
+        const dx = x - 7.5;
+        const dy = y - 7.5;
+        const r = Math.sqrt(dx * dx + dy * dy);
+        if (r > 3.6) continue;
+        // 中心偏黄、边缘偏绿，像 MC 的经验球
+        const t = Math.min(1, r / 3.6);
+        p.set(x, y, 240 - t * 60, 240 - t * 30, 60 + t * 20);
+      }
+    }
+  },
+
   // --- 流体与火 ---
   //
   // 水画成**接近白的灰度**，颜色交给 TintKind.WATER 在着色器里相乘 ——

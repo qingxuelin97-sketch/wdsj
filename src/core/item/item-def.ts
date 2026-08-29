@@ -13,6 +13,20 @@ import type { ToolKind, ToolTier } from '../block/types.ts';
 /** 真正的物品（非方块）id 从这里开始 */
 export const ITEM_ID_BASE = 256;
 
+/**
+ * 经验球的合成物品 id。
+ *
+ * 经验球复用掉落物那一整套（物理、同步、合并、过期），只有"捡起来加的是
+ * 经验而不是物品"这一点不同 —— 用一个 id 区分就够了。
+ *
+ * 放在 core 而不是服务端：客户端要靠它决定这颗东西画成经验球还是物品图标，
+ * 而客户端**不许 import 服务端**（那会把整个服务端拖进浏览器包里）。
+ *
+ * 值取 2000：物品 id 最大 382、方块 id 最大 122，2000 落在两者之外，
+ * 而网络包里的 itemId 是 u16，装得下。
+ */
+export const XP_ORB_ITEM_ID = 2000;
+
 /** 盔甲槽位 */
 export const ArmorSlot = {
   HELMET: 0,

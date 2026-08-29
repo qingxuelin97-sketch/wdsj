@@ -36,6 +36,10 @@ if (!skipSmoke && fs.existsSync(path.join(ROOT, 'tools/smoke.mjs'))) {
   // 闸门测试③：真浏览器 + 真 OPFS + 真页面刷新。
   // 单元测试用的是内存后端，验不到"存盘请求有没有送到 worker"这一段接线。
   steps.push({ name: '闸门③ 存读 (headless chrome)', cmd: NODE, args: [path.join(ROOT, 'tools/persist-check.mjs')] });
+  // 闸门测试①：把世界生成、挖掘、掉落物、拾取、合成、放置、光照、昼夜、
+  // 怪物生成与 AI 串成一条链跑一遍。单项全绿而这条挂掉，
+  // 说明有东西只在隔离环境里成立
+  steps.push({ name: '闸门① 第一夜 (headless chrome)', cmd: NODE, args: [path.join(ROOT, 'tools/first-night-check.mjs')] });
 }
 
 let failed = 0;

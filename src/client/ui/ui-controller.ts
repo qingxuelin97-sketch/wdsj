@@ -9,6 +9,7 @@
 import { UiRenderer, UI_WIDTH, UI_HEIGHT } from './ui-renderer.ts';
 import {
   layoutFor, slotAt, drawWindow, drawHotbar, drawCrosshair, drawFurnaceProgress,
+  drawVitals, drawDeathScreen,
   type SlotRect, type DrawContext,
 } from './inventory-screen.ts';
 import { WindowKind } from '../../core/net/packets.ts';
@@ -32,6 +33,10 @@ export class UiController {
   selectedHotbar = 0;
   /** 熔炉的火焰与箭头进度。只有熔炉窗口用得上 */
   readonly progress = { burnTime: 0, burnTotal: 0, cookTime: 0 };
+  /** 生存状态。服务端权威，客户端只画 */
+  readonly vitals = { health: 20, maxHealth: 20, hunger: 20, air: 20, xpLevel: 0, xpProgress: 0 };
+  /** 死了没。死了就画死亡界面并挡住输入 */
+  dead = false;
 
   get open(): boolean {
     return this.windowKind !== null;
@@ -107,6 +112,10 @@ export class UiController {
       drawCrosshair(ui);
     }
     drawHotbar(ui, this.slots, this.hotbarStart, this.selectedHotbar, ctx);
+    // 生存状态画在快捷栏之上。开着容器界面时不画 —— 那时候面板已经
+    // 盖住了那一片，两者叠在一起会糊成一团
+    if (!this.open) drawVitals(ui, this.vitals);
+    if (this.dead) drawDeathScreen(ui);
   }
 
   /** 界面缩放：把设计分辨率整数倍地放到画布上，像素才不会糊 */

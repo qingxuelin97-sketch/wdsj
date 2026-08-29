@@ -235,3 +235,25 @@ test('过期的窗口点击会被丢弃', () => {
 });
 
 void makeStack;
+
+test('合成链：原木 -> 木板 -> 木棍 + 工作台 -> 木镐，全部走真实窗口', () => {
+  // 闸门测试①在浏览器里跑的就是这条链。放一份在这里，
+  // 是因为它挂掉时浏览器那边只会报"合成链断了"，看不出断在哪一步
+  const { server, send, player } = makePair();
+  send(C_Command, { requestId: 1, text: 'give log 8' });
+  server.tick();
+
+  send(C_Command, { requestId: 2, text: 'craftchain' });
+  server.tick();
+
+  const has = (name: string): number => {
+    const id = registry.hasBlock(name) ? registry.idOf(name) : items.idOf(name);
+    let n = 0;
+    for (const s of player.inventory.slots) if (s.id === id) n += s.count;
+    return n;
+  };
+  assert.ok(has('planks') > 0, '该合出木板');
+  assert.ok(has('stick') > 0, '该合出木棍');
+  assert.ok(has('crafting_table') > 0, '该合出工作台');
+  assert.ok(has('wooden_pickaxe') > 0, '该合出木镐 —— 这是"第一夜"能不能过的分水岭');
+});
