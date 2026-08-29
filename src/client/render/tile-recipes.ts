@@ -251,6 +251,144 @@ export const RECIPES: Record<string, Recipe> = {
     for (let y = 0; y < 16; y++) { for (const x of [4, 5, 10, 11]) p.set(x, y, metal.r, metal.g, metal.b); }
   },
 
+  // --- M8 批的贴图 ---
+  chest_top: (p) => { p.noiseFill(rgb(0x9a6f3f), 10); p.rect(0, 0, 16, 1, rgb(0x6f4f2a)); },
+  chest_side: (p) => { p.noiseFill(rgb(0x9a6f3f), 10); p.rect(0, 5, 16, 2, rgb(0x6f4f2a)); },
+  chest_front: (p) => {
+    p.noiseFill(rgb(0x9a6f3f), 10);
+    p.rect(0, 5, 16, 2, rgb(0x6f4f2a));
+    p.rect(7, 6, 2, 4, rgb(0xd8c060));   // 锁扣
+  },
+  tnt_top: (p) => { p.noiseFill(rgb(0xd03028), 12); p.rect(2, 2, 12, 12, rgb(0xa02018)); },
+  tnt_bottom: (p) => { p.noiseFill(rgb(0x7a6a5a), 12); },
+  tnt_side: (p) => {
+    p.noiseFill(rgb(0xd03028), 12);
+    p.rect(0, 5, 16, 6, rgb(0xf0f0f0));
+    // 中间那圈白带上写点东西的感觉
+    for (let x = 2; x < 14; x += 3) p.rect(x, 7, 2, 2, rgb(0x303030));
+  },
+  jukebox_top: (p) => { p.noiseFill(rgb(0x8a6a45), 12); p.rect(4, 4, 8, 8, rgb(0x303030)); },
+  jukebox_side: (p) => { p.noiseFill(rgb(0x8a6a45), 12); p.rect(0, 13, 16, 3, rgb(0x6a4f34)); },
+  note_block: (p) => { p.noiseFill(rgb(0x7a5a3a), 12); p.speckles(rgb(0x4a3a2a), 8, 2); },
+  dispenser_front: (p) => {
+    p.noiseFill(rgb(0x7a7a7a), 14);
+    p.rect(4, 4, 8, 8, rgb(0x3a3a3a));
+    p.rect(6, 6, 4, 4, rgb(0x1a1a1a));
+  },
+  lever: (p) => {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
+    const wood = rgb(0x8a6a3a);
+    for (let y = 4; y < 16; y++) for (let x = 7; x <= 8; x++) p.set(x, y, wood.r, wood.g, wood.b);
+    const knob = rgb(0x9a9a9a);
+    for (let y = 2; y < 5; y++) for (let x = 6; x <= 9; x++) p.set(x, y, knob.r, knob.g, knob.b);
+  },
+  redstone_torch: (p) => {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
+    const stick = rgb(0x8a6a3a);
+    for (let y = 6; y < 16; y++) for (let x = 7; x <= 8; x++) p.set(x, y, stick.r, stick.g, stick.b);
+    const red = rgb(0xd02020);
+    for (let y = 3; y < 6; y++) for (let x = 6; x <= 9; x++) p.set(x, y, red.r, red.g, red.b);
+  },
+  repeater_block: (p) => {
+    p.noiseFill(rgb(0xbdbdbd), 8);
+    p.rect(6, 3, 4, 3, rgb(0xd02020));
+    p.rect(6, 10, 4, 3, rgb(0xd02020));
+  },
+  iron_door_block: (p) => {
+    p.noiseFill(rgb(0xc0c0c0), 8);
+    p.rect(1, 1, 14, 6, rgb(0xa8a8a8));
+    p.rect(1, 9, 14, 6, rgb(0xa8a8a8));
+    p.rect(12, 7, 2, 2, rgb(0x707070));
+  },
+  iron_bars: (p) => {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
+    const m = rgb(0xb0b0b0);
+    for (let y = 0; y < 16; y++) for (const x of [3, 4, 11, 12]) p.set(x, y, m.r, m.g, m.b);
+    for (const y of [0, 1, 14, 15]) for (let x = 0; x < 16; x++) p.set(x, y, m.r, m.g, m.b);
+  },
+  melon_top: (p) => { p.noiseFill(rgb(0x6f9c3a), 14); p.speckles(rgb(0x4f7a28), 8, 2); },
+  melon_side: (p) => {
+    p.noiseFill(rgb(0x8ab04a), 12);
+    // 竖条纹，西瓜的招牌
+    for (let x = 1; x < 16; x += 4) p.rect(x, 0, 2, 16, rgb(0x4f7a28));
+  },
+  pumpkin_top: (p) => { p.noiseFill(rgb(0xc07818), 12); p.rect(6, 6, 4, 4, rgb(0x6f8a30)); },
+  pumpkin_side: (p) => {
+    p.noiseFill(rgb(0xc07818), 12);
+    for (let x = 1; x < 16; x += 5) p.rect(x, 0, 1, 16, rgb(0x9a5a10));
+  },
+  pumpkin_face: (p) => {
+    p.noiseFill(rgb(0xc07818), 12);
+    for (let x = 1; x < 16; x += 5) p.rect(x, 0, 1, 16, rgb(0x9a5a10));
+    // 两只眼睛一张嘴
+    p.rect(3, 4, 3, 3, rgb(0x3a2408));
+    p.rect(10, 4, 3, 3, rgb(0x3a2408));
+    p.rect(4, 10, 8, 2, rgb(0x3a2408));
+  },
+  jack_o_lantern_face: (p) => {
+    p.noiseFill(rgb(0xc07818), 12);
+    p.rect(3, 4, 3, 3, rgb(0xf8e070));
+    p.rect(10, 4, 3, 3, rgb(0xf8e070));
+    p.rect(4, 10, 8, 2, rgb(0xf8e070));
+  },
+  brewing_stand: (p) => {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
+    const m = rgb(0x9a9a9a);
+    for (let y = 2; y < 16; y++) for (let x = 7; x <= 8; x++) p.set(x, y, m.r, m.g, m.b);
+    const base = rgb(0x7a6a5a);
+    for (let y = 13; y < 16; y++) for (let x = 2; x < 14; x++) p.set(x, y, base.r, base.g, base.b);
+  },
+  cauldron_top: (p) => { p.noiseFill(rgb(0x4a4a4a), 10); p.rect(3, 3, 10, 10, rgb(0x1a1a1a)); },
+  cauldron_bottom: (p) => { p.noiseFill(rgb(0x3a3a3a), 10); },
+  cauldron_side: (p) => { p.noiseFill(rgb(0x4a4a4a), 10); p.rect(0, 0, 16, 2, rgb(0x6a6a6a)); },
+  enchanting_table_top: (p) => { p.noiseFill(rgb(0x2a1a3a), 12); p.speckles(rgb(0xc03060), 6, 2); },
+  enchanting_table_side: (p) => { p.noiseFill(rgb(0x2a1a3a), 12); p.rect(0, 0, 16, 3, rgb(0x8a2a4a)); },
+  sponge: (p) => { p.noiseFill(rgb(0xc6c64a), 20); p.speckles(rgb(0x8a8a2a), 18, 2); },
+  nether_brick: (p) => brickGrid(p, rgb(0x44242a), rgb(0x2a1418), 8, 4, 10),
+  cactus_top: (p) => { p.noiseFill(rgb(0x5a8a3a), 12); p.speckles(rgb(0x3f6a28), 6, 2); },
+  cactus_side: (p) => {
+    p.noiseFill(rgb(0x4f7a30), 12);
+    for (let y = 0; y < 16; y += 4) for (let x = 2; x < 15; x += 5) p.set(x, y, 0xe0, 0xe0, 0xc0);
+  },
+  sugar_cane_block: (p) => plant(p, rgb(0x9ac46a), null, 10),
+  lily_pad: (p) => {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
+    const c = rgb(0xd0d0d0);
+    for (let y = 1; y < 15; y++) {
+      for (let x = 1; x < 15; x++) {
+        const dx = x - 7.5;
+        const dy = y - 7.5;
+        if (dx * dx + dy * dy > 49) continue;
+        // 缺一个口，像睡莲叶
+        if (dx > 0 && Math.abs(dy) < 2) continue;
+        p.set(x, y, c.r, c.g, c.b);
+      }
+    }
+  },
+  vines: (p) => {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
+    const c = rgb(0xd8d8d8);
+    for (let i = 0; i < 5; i++) {
+      let x = 1 + Math.floor(p.rand() * 14);
+      for (let y = 0; y < 16; y++) {
+        p.set(x, y, c.r, c.g, c.b);
+        if (p.rand() < 0.25) x += p.rand() < 0.5 ? -1 : 1;
+        x = Math.max(0, Math.min(15, x));
+      }
+    }
+  },
+  farmland: (p) => {
+    p.noiseFill(rgb(0x6f4a2a), 14);
+    for (let y = 2; y < 16; y += 5) p.rect(0, y, 16, 2, rgb(0x4a3018));
+  },
+  wheat_crop: (p) => plant(p, rgb(0xc8b048), rgb(0xe0c860), 11),
+  nether_wart_block: (p) => plant(p, rgb(0x8a1a2a), rgb(0xb02a3a), 10),
+  furnace_front_lit: (p) => {
+    p.noiseFill(rgb(0x7a7a7a), 14);
+    p.rect(3, 7, 10, 6, rgb(0x30240f));
+    p.rect(4, 9, 8, 4, rgb(0xf0a020));
+  },
+
   // --- 挖掘裂纹，10 级 ---
   //
   // 白底黑纹，由渲染时的乘法混合把它压到方块表面上（见 overlay-renderer.ts）。
