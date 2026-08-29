@@ -21,6 +21,7 @@ import type { Mob } from '../entity/mob.ts';
 import type { ArrowEntity } from '../entity/arrow.ts';
 import type { WorldSave } from '../save/world-save.ts';
 import { installChunkFromSave, saveChunkToSave } from './world-persistence.ts';
+import { onBlockChanged } from './block-ticks.ts';
 
 /** 一次方块变更，供广播使用 */
 export interface BlockChange {
@@ -315,6 +316,13 @@ export class ServerWorld {
 
     this.pendingChanges.push({ x, y, z, state });
     this.updateBlockEntity(x, y, z, stateId(before), stateId(state));
+    // 邻域通知：上面的沙子该掉了、旁边的水该重新流了。
+    //
+    // 放在这里而不是让每个调用方各自记得调 —— 漏掉一处的表现是
+    // "某些方式挖掉的方块下面沙子不掉"，而那种不一致极难注意到。
+    // 世界生成不经过这里（生成器直接写 Chunk 再 addChunk），所以
+    // 不必担心生成几万格时把整片地形排进计划刻队列
+    onBlockChanged(this, x, y, z);
 
     // 光照就地增量更新。
     //

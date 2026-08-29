@@ -100,7 +100,10 @@ export function explode(
           x += dx * STEP;
           y += dy * STEP;
           z += dz * STEP;
-          strength -= STEP * 0.225;
+          // 每步固定扣 0.225，**不是** STEP × 0.225。
+          // MC 的循环增量就是 `f -= 0.22500001F`，与步长无关；
+          // 乘上步长的话每步只扣 0.0675，射线能跑三倍远，爆坑大一倍多
+          strength -= 0.225;
         }
       }
     }

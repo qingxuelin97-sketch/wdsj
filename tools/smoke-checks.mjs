@@ -17,10 +17,13 @@
  *   saveShot: (name: string, dataUrl: string) => void, update: boolean,
  * }} ctx
  */
+import { runSimChecks } from './smoke-sim-checks.mjs';
+
 export async function runSceneChecks(ctx) {
   const { page, ensureHook, spawnPos, log, failures, actual, golden, saveShot } = ctx;
   const UPDATE = ctx.update;
-  void spawnPos;
+  /** 出生点。需要一个**稳定**参照系的检查用它，不要用当前相机位置 */
+  const SPAWN = spawnPos;
 
   // --- 改一格方块只能引起少数几段重网格化 ---
   //
@@ -468,89 +471,6 @@ export async function runSceneChecks(ctx) {
     log(`night-glowstone: ${litScene.hash} ok`);
   }
 
-  // --- 生物：真的刷出来、真的画出来、真的能被打 ---
-  //
-  // 这一条盯的是"代码写了 ≠ 做完了"。生物的服务端逻辑有十几个单测，
-  // 但那些全在 node 里跑，验不到"顶点有没有真的提交给 GL"。
-  // 前作的教训正是这个：README 写了动态光照，代码里是个从没被调用的函数。
-  {
-    const mob = await page.evaluate(`
-      ${ensureHook}
-      const m = window.__mc;
-      // 上一项检查按 E 开了背包，而界面是**盖在世界上面**的 ——
-      // 不关掉的话这张"生物"截图截到的是物品栏，而顶点数照样是对的，
-      // 于是断言全过、图却完全不是那么回事
-      if (m.uiOpen()) {
-        await m.press('KeyE', 120);
-        for (let i = 0; i < 20; i++) await new Promise(r => requestAnimationFrame(r));
-      }
-      if (m.uiOpen()) throw new Error('背包界面没能关掉，生物截图会被它盖住');
-      await m.command('killall');
-      const s = m.stats();
-      const x = Math.round(s.cameraX) + 3;
-      const y = Math.round(s.cameraY) - 1;
-      const z = Math.round(s.cameraZ);
-      // 九种各来一只，横着排开
-      const kinds = ['pig','cow','sheep','chicken','zombie','skeleton','creeper','spider','enderman'];
-      // 先在脚下铺一层石台，免得生物掉进地形的坑里、或者站在斜坡上参差不齐
-      await m.command('fillbox ' + (x - 2) + ' ' + y + ' ' + (z - 3) + ' ' + (x + 20) + ' ' + y + ' ' + (z + 3) + ' stone');
-      for (let i = 0; i < kinds.length; i++) {
-        await m.command('spawn ' + kinds[i] + ' ' + (x + i * 2 + 0.5) + ' ' + (y + 1) + ' ' + (z + 0.5));
-      }
-      // 正午 + 贴近平视：这张图要能看清每只的轮廓，才当得起"模型截图匹配"
-      await m.setTime(6000);
-      m.setCamera(x + 8.5, y + 3.2, z - 11, 0, 0.13, 60);
-      m.freeze(false);
-      await m.waitForIdle();
-      await new Promise(r => setTimeout(r, 400));
-      m.freeze(true);
-      const listed = m.mobEntities();
-      const counts = await m.command('mobs');
-      // 先出图再读顶点数：screenshotHash 内部会真渲染一帧，
-      // 而 mobVerts 报的是**上一帧**提交了多少 —— 顺序反了读到的是 0
-      const hash = await m.screenshotHash();
-      const verts = m.mobVerts();
-      const png = await m.screenshot();
-      m.freeze(false);
-      return { listed: listed.length, verts, counts: counts.text, hash, png, x, y, z };
-    `);
-    saveShot('mobs', mob.png);
-    log(`生物：客户端看到 ${mob.listed} 只，服务端 ${mob.counts}，生物顶点 ${mob.verts}`);
-    if (mob.listed < 9) {
-      failures.push(`客户端只看到 ${mob.listed} 只生物，应该有 9 只（服务端: ${mob.counts}）`);
-    }
-    if (mob.verts <= 0) {
-      failures.push('生物渲染提交了 0 个顶点 —— 服务端有生物但屏幕上什么都没有');
-    }
-    // 这张图**不做哈希比对**，只存下来供肉眼看。
-    //
-    // 生物是活的：服务端按自己的时钟跑 AI，从放下到截图之间它们已经
-    // 转过头、迈过步了。freeze() 只停得住客户端时钟，停不住 worker 里的服务端。
-    // 硬做哈希会得到一个时好时坏的测试，而"偶发失败的回归测试"比没有还糟 ——
-    // 它会训练人忽略红色。
-    //
-    // 真正稳定、也真正想验的两件事是上面那两条断言：九只都同步到了客户端、
-    // 渲染器确实提交了顶点。截图留给人看模型对不对。
-    log(`mobs: ${mob.hash}（不比对，见 tests/out/mobs.png）`);
-
-    // 打一只：血量要掉
-    const combat = await page.evaluate(`
-      ${ensureHook}
-      const m = window.__mc;
-      const before = m.mobEntities();
-      if (before.length === 0) return { ok: false, reason: '没有生物可打' };
-      const target = before[0];
-      const hp0 = target.health;
-      await m.command('tp ' + (target.x) + ' ' + (target.y) + ' ' + (target.z + 2));
-      m.attachPlayer(target.x, target.y, target.z + 2);
-      await new Promise(r => setTimeout(r, 200));
-      return { ok: true, hp0, id: target.id };
-    `);
-    if (combat.ok !== true) log(`  跳过战斗检查：${combat.reason}`);
-
-    await page.evaluate(`
-      ${ensureHook}
-      await window.__mc.command('killall');
-    `);
-  }
+  // --- 世界模拟层的检查（流体、生物）搬到了 smoke-sim-checks.mjs ---
+  await runSimChecks(ctx);
 }

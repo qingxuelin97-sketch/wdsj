@@ -383,6 +383,49 @@ export const RECIPES: Record<string, Recipe> = {
   },
   wheat_crop: (p) => plant(p, rgb(0xc8b048), rgb(0xe0c860), 11),
   nether_wart_block: (p) => plant(p, rgb(0x8a1a2a), rgb(0xb02a3a), 10),
+  // --- 流体与火 ---
+  //
+  // 水画成**接近白的灰度**，颜色交给 TintKind.WATER 在着色器里相乘 ——
+  // 和草叶同一套做法，将来不同群系的水色（沼泽偏绿）不用重画贴图。
+  // 岩浆自己发光，直接画成实色。
+  water: (p) => {
+    p.noiseFill(rgb(0xd8dee8), 6);
+    // 几道横向的浅纹，让静水看得出是液面而不是一块白板
+    for (let y = 2; y < 16; y += 5) p.rect(0, y, 16, 1, rgb(0xc4ccd8));
+  },
+  water_flow: (p) => {
+    p.noiseFill(rgb(0xd0d8e4), 8);
+    // 竖纹：流动的水沿流向拉出条痕
+    for (let x = 1; x < 16; x += 3) p.rect(x, 0, 1, 16, rgb(0xbcc6d4));
+  },
+  lava: (p) => {
+    p.noiseFill(rgb(0xd8600c), 26);
+    // 暗色的结壳斑块，配上亮橙的裂缝 —— 岩浆表面的辨识度全在这个对比上
+    p.speckles(rgb(0x8a2c04), 22, 3);
+    p.speckles(rgb(0xffc23a), 10, 1);
+  },
+  lava_flow: (p) => {
+    p.noiseFill(rgb(0xc85408), 24);
+    for (let x = 0; x < 16; x += 4) p.rect(x, 0, 2, 16, rgb(0xf08a1a));
+    p.speckles(rgb(0x7a2404), 14, 2);
+  },
+  fire: (p) => {
+    // 火是 cutout：底下一片透明，火苗从下往上收窄
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
+    for (let y = 15; y >= 2; y--) {
+      const t = (15 - y) / 13;
+      const halfWidth = Math.max(1, Math.round((1 - t) * 7 + 1));
+      const cx = 8 + Math.round(Math.sin(y * 0.9) * 1.5);
+      for (let x = cx - halfWidth; x <= cx + halfWidth; x++) {
+        if (x < 0 || x > 15) continue;
+        // 外焰橙、内焰黄
+        const edge = Math.abs(x - cx) >= halfWidth - 1;
+        const c = edge ? rgb(0xe05a10) : rgb(0xf8c828);
+        const d = (p.rand() - 0.5) * 30;
+        p.set(x, y, c.r + d, c.g + d, c.b + d);
+      }
+    }
+  },
   furnace_front_lit: (p) => {
     p.noiseFill(rgb(0x7a7a7a), 14);
     p.rect(3, 7, 10, 6, rgb(0x30240f));

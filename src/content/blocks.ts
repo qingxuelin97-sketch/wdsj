@@ -12,6 +12,7 @@ import { defineBlock } from '../core/block/block-def.ts';
 import type { BlockDef } from '../core/block/block-def.ts';
 import { BlockRegistry } from '../core/registry/block-registry.ts';
 import { registerCraftedBlocks } from './blocks-crafted.ts';
+import { registerFluidBlocks, FluidBlocks } from './blocks-fluid.ts';
 import { ModelKind, RenderLayer, TintKind, SoundGroup, ToolKind, ToolTier, Facing } from '../core/block/types.ts';
 import {
   element, slabModel, stairsModel, fenceModel, torchModel, paneModel,
@@ -85,6 +86,11 @@ export const Blocks = {
   // --- M8 批：合成产物、容器，以及后续里程碑要用到的方块 ---
   CHEST: 'chest',
   TNT: 'tnt',
+  WATER: 'water',
+  FLOWING_WATER: 'flowing_water',
+  LAVA: 'lava',
+  FLOWING_LAVA: 'flowing_lava',
+  FIRE: 'fire',
   JUKEBOX: 'jukebox',
   NOTE_BLOCK: 'note_block',
   DISPENSER: 'dispenser',
@@ -123,11 +129,25 @@ export const Blocks = {
 export type BlockName = (typeof Blocks)[keyof typeof Blocks];
 
 /** 石质全立方体的共同参数，避免每个矿石重复写一遍 */
-export function stoneLike(id: number, name: string, hardness: number, texture: string, minTier: ToolTier): BlockDef {
+/**
+ * 石头一族。
+ *
+ * 爆炸抗性默认 **10**，不走 `hardness × 5` 那条通用启发式 —— MC 给整个
+ * 石头族显式写的就是 `setResistance(10.0F)`，而石头的硬度是 1.5，
+ * 按启发式算只有 7.5。差这一点点的后果很具体：实测一发 TNT 在实心石头里
+ * 炸出 137 格，而按 MC 的 10 只炸 60 上下，爆坑大了一倍多。
+ *
+ * 矿石在 MC 里是 5（比石头更脆），调用处显式传。
+ */
+export function stoneLike(
+  id: number, name: string, hardness: number, texture: string, minTier: ToolTier,
+  blastResistance = 10,
+): BlockDef {
   return defineBlock({
     id,
     name,
     hardness,
+    blastResistance,
     tool: ToolKind.PICKAXE,
     minTier,
     textures: texture,
@@ -211,11 +231,11 @@ export function createBlockRegistry(): BlockRegistry {
   );
 
   // --- 矿石。Y 带分布见 core/constants.ts 的 ORE_DISTRIBUTION ---
-  r.register(stoneLike(14, Blocks.GOLD_ORE, 3, 'gold_ore', ToolTier.IRON));
-  r.register(stoneLike(15, Blocks.IRON_ORE, 3, 'iron_ore', ToolTier.STONE));
-  r.register(stoneLike(16, Blocks.COAL_ORE, 3, 'coal_ore', ToolTier.WOOD));
-  r.register(stoneLike(21, Blocks.LAPIS_ORE, 3, 'lapis_ore', ToolTier.STONE));
-  r.register(stoneLike(56, Blocks.DIAMOND_ORE, 3, 'diamond_ore', ToolTier.IRON));
+  r.register(stoneLike(14, Blocks.GOLD_ORE, 3, 'gold_ore', ToolTier.IRON, 5));
+  r.register(stoneLike(15, Blocks.IRON_ORE, 3, 'iron_ore', ToolTier.STONE, 5));
+  r.register(stoneLike(16, Blocks.COAL_ORE, 3, 'coal_ore', ToolTier.WOOD, 5));
+  r.register(stoneLike(21, Blocks.LAPIS_ORE, 3, 'lapis_ore', ToolTier.STONE, 5));
+  r.register(stoneLike(56, Blocks.DIAMOND_ORE, 3, 'diamond_ore', ToolTier.IRON, 5));
   r.register(
     defineBlock({
       id: 73,
@@ -321,6 +341,7 @@ export function createBlockRegistry(): BlockRegistry {
   r.register(stoneLike(121, Blocks.END_STONE, 3, 'end_stone', ToolTier.WOOD));
 
   registerCraftedBlocks(r);
+  registerFluidBlocks(r);
 
   // --- 植物 ---
   r.register(crossPlant(31, Blocks.TALL_GRASS, 'tall_grass', TintKind.GRASS));

@@ -65,10 +65,12 @@ export class OverworldGenerator {
     this.st = {
       air: AIR_STATE,
       stone: s('stone'),
-      // M2 还没有流体方块，先用冰当"水"的占位，M11 会换成真正的水
-      water: s('ice'),
+      // 海平面以下填的是**静止水**（id 9）而不是流动水：生成出来的海本来
+      // 就是稳定的，用流动水的话每一格都会排一条计划刻，一个区块几千条，
+      // 加载一片海就把队列撑爆了
+      water: s('water'),
       ice: s('ice'),
-      lava: s('obsidian'),
+      lava: s('lava'),
       bedrock: s('bedrock'),
       grassBlock: s('grass_block'),
       dirt: s('dirt'),

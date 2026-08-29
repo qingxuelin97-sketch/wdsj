@@ -123,6 +123,21 @@ value: Record<string, unknown>,
         reply(true, String(filled));
         return;
       }
+      case 'countfluid': {
+        // 数一数某个立方体里有多少格流体。冒烟测试用它验"水真的流开了"
+        const [, ax, ay, az, bx2, by2, bz2] = parts;
+        let n = 0;
+        for (let x = Math.min(Number(ax), Number(bx2)); x <= Math.max(Number(ax), Number(bx2)); x++) {
+          for (let y = Math.min(Number(ay), Number(by2)); y <= Math.max(Number(ay), Number(by2)); y++) {
+            for (let z = Math.min(Number(az), Number(bz2)); z <= Math.max(Number(az), Number(bz2)); z++) {
+              const id = core.world.getBlock(x, y, z) & 0xfff;
+              if (id >= 8 && id <= 11) n++;
+            }
+          }
+        }
+        reply(true, String(n));
+        return;
+      }
       case 'spawn': {
         // 自动化与调试用：在指定位置放一只生物
         const [, kind, sx, sy, sz] = parts;
@@ -211,7 +226,14 @@ value: Record<string, unknown>,
 function buildGallery(core: ServerCore, ox: number, oy: number, oz: number): number {
   const ids: number[] = [];
   for (let id = 1; id < core.world.tables.count; id++) {
-    if (core.world.tables.defs[id] != null) ids.push(id);
+    if (core.world.tables.defs[id] == null) continue;
+    // 流体（8..11）与火（51）不进陈列阵：它们**会动**。
+    // 水会流开并盖掉旁边的展品，火会烧掉可燃的邻居再自己熄灭，
+    // 于是这张本该静止的回归截图每次都不一样。
+    // 它们由 tools/smoke-sim-checks.mjs 的瀑布场景单独验
+    if (id >= 8 && id <= 11) continue;
+    if (id === 51) continue;
+    ids.push(id);
   }
 
   // 需要展示多个状态的方块：id -> 要展示的元数据列表

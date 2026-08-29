@@ -34,6 +34,7 @@ import { Window, ARMOR_SLOTS, MAIN_SLOTS, HOTBAR_SLOTS } from './player/player-i
 import { createItemRegistry, type ItemRegistry } from '../content/items.ts';
 import { createCraftingData, type SmeltingRecipe, type CraftingData } from '../content/recipes.ts';
 import { tickBlockEntities } from './world/block-entity-tick.ts';
+import { runScheduledTick } from './world/block-ticks.ts';
 import { onPlayerAction, onUseBlock, advanceDigging } from './player/block-interaction.ts';
 import { onAttackEntity, tickArrows, shootArrow, explodeAt, damagePlayer } from './entity/combat.ts';
 import { ChestEntity, FurnaceEntity, type BlockEntity } from './world/block-entity.ts';
@@ -285,6 +286,13 @@ export class ServerCore {
       if (keys.length > 0) prepared.push({ player, keys });
     }
 
+    // 计划刻：流体流动、沙子下落、火蔓延、TNT 引爆。
+    //
+    // 排在方块实体之前，因为它们改的是**方块**，而方块变更要赶上
+    // 这一刻的光照重算与广播；排在挖掘之后，因为挖掉一格会当场排出
+    // 一批新的计划刻（周围的水要重新流），那些该在下一刻才跑
+    this.runScheduledTicks();
+
     // 方块实体（熔炉）。排在挖掘之后、光照之前：熔炉点火会换方块 id，
     // 那是一次真正的方块变更，得赶上这一刻的光照与广播
     tickBlockEntities(this);
@@ -466,6 +474,23 @@ export class ServerCore {
     const dy = player.y + EYE_HEIGHT - (y + 0.5);
     const dz = player.z - (z + 0.5);
     return dx * dx + dy * dy + dz * dz;
+  }
+
+  /**
+   * 跑掉这一刻到期的计划刻。
+   *
+   * 有上限（队列的 drainDue 默认 1000 条）：一片大水或者一个红石时钟能让
+   * 到期条目在一刻里堆到几万，全做完会让服务端停摆几百毫秒。做不完的留在
+   * 队列里下一刻接着做 —— 表现是水流得慢一点，而不是整个世界卡一下。
+   */
+  private runScheduledTicks(): void {
+    const due = this.world.scheduled.drainDue(this.world.worldAge);
+    for (const t of due) {
+      runScheduledTick(
+        this.world, t.x, t.y, t.z, t.blockId,
+        (x, y, z, power) => { this.explode(x, y, z, power); },
+      );
+    }
   }
 
   /**

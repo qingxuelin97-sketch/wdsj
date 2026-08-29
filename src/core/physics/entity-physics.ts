@@ -105,6 +105,31 @@ function slipperinessBelow(world: BlockView, tables: PhysicsTables, body: Body):
 export interface PhysicsTables extends CollisionTables {
   /** 按方块 id 索引的滑度 */
   readonly slipperiness: Float32Array;
+  /** 1 = 水。水里的运动是另一套常数 */
+  readonly isWater: Uint8Array;
+}
+
+/**
+ * 水里的运动常数，照抄 MC 1.0 的 `EntityLiving.moveEntityWithHeading`。
+ *
+ * 水里的物理是**另一套**：不看脚下的摩擦、不受跳跃冲量、重力小得多，
+ * 而且按住跳跃键是持续上浮而不是起跳一次。这几条一起构成了"游泳"的手感。
+ */
+const WATER_DRAG = 0.8;
+const WATER_ACCEL = 0.02;
+/** 水里的重力，只有陆地上的 1/6 */
+const WATER_GRAVITY = 0.02;
+/** 按住跳跃在水里的上浮速度 */
+const SWIM_UP = 0.04;
+
+/** 身体所在的格子是不是水 */
+function isInWater(world: BlockView, tables: PhysicsTables, body: Body): boolean {
+  const x = Math.floor(body.x);
+  const z = Math.floor(body.z);
+  // 取身体中段那一格：脚尖沾水不算，整个人淹进去才算
+  const y = Math.floor(body.y + body.height * 0.4);
+  const id = stateId(world.getState(x, y, z));
+  return (tables.isWater[id] ?? 0) !== 0;
 }
 
 /**
@@ -130,6 +155,38 @@ function applyInputAcceleration(body: Body, strafe: number, forward: number, acc
 
 const stepBox = makeBox();
 const tryBox = makeBox();
+const waterBox = makeBox();
+
+/**
+ * 水里的一步。
+ *
+ * 与陆地的三处关键差别：
+ *   加速度固定 0.02（不看脚下摩擦），阻力固定 0.8 —— 所以水里又慢又飘
+ *   重力 0.02，只有陆地的 1/4，人是慢慢往下沉的
+ *   跳跃键变成持续上浮，按住就一直往上 —— 这就是"游泳"
+ */
+function stepInWater(
+  world: BlockView, tables: PhysicsTables, body: Body,
+  strafe: number, forward: number, input: MoveInput,
+): void {
+  applyInputAcceleration(body, strafe, forward, WATER_ACCEL * body.speed);
+
+  setBodyBox(waterBox, body.x, body.y, body.z, body.width, body.height);
+  const moved = collideMove(world, tables, waterBox, body.vx, body.vy, body.vz);
+  body.x += moved.dx;
+  body.y += moved.dy;
+  body.z += moved.dz;
+  body.onGround = moved.hitY && body.vy < 0;
+  if (moved.hitX) body.vx = 0;
+  if (moved.hitZ) body.vz = 0;
+
+  body.vx *= WATER_DRAG;
+  body.vy *= WATER_DRAG;
+  body.vz *= WATER_DRAG;
+  body.vy -= WATER_GRAVITY;
+  if (input.jump) body.vy += SWIM_UP;
+  if (moved.hitY && body.vy < 0) body.vy = 0;
+}
 
 /**
  * 推进一个 tick。
@@ -154,6 +211,13 @@ export function stepBody(
   }
   strafe *= INPUT_DECAY;
   forward *= INPUT_DECAY;
+
+  // --- 在水里：整套另算 ---
+  const inWater = isInWater(world, tables, body);
+  if (inWater) {
+    stepInWater(world, tables, body, strafe, forward, input);
+    return { dx: body.x - startX, dy: body.y - startY, dz: body.z - startZ };
+  }
 
   // 起跳。疾跑起跳额外给一份朝向前冲 —— 疾跑跳能跨 4 格靠的就是这 0.2
   if (input.jump && body.onGround) {

@@ -18,6 +18,85 @@ import { dropOf, toolOf, showWindow, syncInventory } from './inventory-actions.t
 import { spawnBlockDrop, scatterContents } from '../entity/item-manager.ts';
 import { ChestEntity, FurnaceEntity } from '../world/block-entity.ts';
 import { EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, WORLD_HEIGHT, REACH_SURVIVAL } from '../../core/constants.ts';
+import { placeFluid } from '../world/fluid.ts';
+import { igniteAt, primeTnt } from '../world/block-ticks.ts';
+
+/**
+ * 右键用掉一件"特殊"物品：水桶、岩浆桶、空桶、打火石。
+ *
+ * 这几件的共同点是**目标不是放方块**，而是改变世界的某种状态。
+ * 混进放置逻辑里的话，"手里拿着水桶点地面"会走到 placesBlock=0 那条
+ * 分支上悄悄什么都不做 —— 而玩家只会觉得桶坏了。
+ *
+ * @param bx/by/bz 被点的方块；px/py/pz 命中面外侧那一格
+ * @returns 是否处理掉了这次右键
+ */
+function useSpecialItem(
+  core: ServerCore, player: ServerPlayer, itemId: number,
+  bx: number, by: number, bz: number,
+  px: number, py: number, pz: number,
+): boolean {
+  const items = core.items;
+  const held = player.inventory.held;
+
+  const swapHeld = (toName: string): void => {
+    const id = core.items.idOf(toName);
+    held.id = id;
+    held.count = 1;
+    held.damage = 0;
+    syncInventory(core, player);
+  };
+
+  if (itemId === items.idOf('water_bucket')) {
+    placeFluid(core.world, px, py, pz, core.registry.idOf('water'), 0);
+    swapHeld('bucket');
+    return true;
+  }
+  if (itemId === items.idOf('lava_bucket')) {
+    placeFluid(core.world, px, py, pz, core.registry.idOf('lava'), 0);
+    swapHeld('bucket');
+    return true;
+  }
+  if (itemId === items.idOf('bucket')) {
+    // 只有**源**才装得进桶。舀流动的水会让玩家凭空造水
+    const state = core.world.getBlock(bx, by, bz);
+    const id = stateId(state);
+    const meta = state >> 12 & 15;
+    if (meta !== 0) return true;
+    if (id === core.registry.idOf('water')) {
+      core.world.setBlock(bx, by, bz, AIR_STATE);
+      swapHeld('water_bucket');
+      return true;
+    }
+    if (id === core.registry.idOf('lava')) {
+      core.world.setBlock(bx, by, bz, AIR_STATE);
+      swapHeld('lava_bucket');
+      return true;
+    }
+    return true;
+  }
+  if (itemId === items.idOf('flint_and_steel')) {
+    if (igniteAt(core.world, px, py, pz)) {
+      held.damage++;
+      const max = items.get(itemId)?.maxDurability ?? 64;
+      if (held.damage >= max) {
+        held.id = 0;
+        held.count = 0;
+      }
+      syncInventory(core, player);
+      return true;
+    }
+    // 点 TNT 也算用途
+    if (stateId(core.world.getBlock(bx, by, bz)) === core.registry.idOf('tnt')) {
+      primeTnt(core.world, bx, by, bz);
+      held.damage++;
+      syncInventory(core, player);
+      return true;
+    }
+    return true;
+  }
+  return false;
+}
 
 /**
  * 触及距离的判定上限（平方）。
@@ -143,9 +222,15 @@ export function onUseBlock(core: ServerCore, player: ServerPlayer, value: Record
     return;
   }
 
-  // 手上得有东西，而且得是能放的方块
+  // 手上得有东西
   const held = player.inventory.held;
   if (isEmpty(held)) return;
+
+  // 桶、打火石这类"用一下"的物品先处理：它们不是放方块，
+  // 走下面的 placesBlock 那条路会什么都不做
+  if (useSpecialItem(core, player, held.id, x, y, z, px, py, pz)) return;
+
+  // 剩下的必须是能放的方块
   const def = core.items.get(held.id);
   const blockId = def?.placesBlock !== undefined && def.placesBlock !== 0
     ? def.placesBlock

@@ -42,6 +42,14 @@ export class BlockTables {
   readonly solid: Uint8Array;
   readonly replaceable: Uint8Array;
   readonly flammability: Uint8Array;
+  /**
+   * 1 = 这一格是水。
+   *
+   * 单独一张表而不是在物理里写 `id === 8 || id === 9`：物理是热路径，
+   * 每 tick 每个实体都要查一次，而且把"哪些 id 是水"散进物理代码里，
+   * 以后加别的液体（M15 的下界岩浆按不同规则算）就要改两个地方。
+   */
+  readonly isWater: Uint8Array;
 
   // --- 渲染（mesher 热路径） ---
   readonly modelKind: Uint8Array;
@@ -83,6 +91,7 @@ export class BlockTables {
     this.solid = new Uint8Array(n);
     this.replaceable = new Uint8Array(n);
     this.flammability = new Uint8Array(n);
+    this.isWater = new Uint8Array(n);
     this.modelKind = new Uint8Array(n);
     this.renderLayer = new Uint8Array(n);
     this.tint = new Uint8Array(n);
@@ -110,6 +119,7 @@ export class BlockTables {
       this.lightEmission[id] = d.lightEmission;
       this.solid[id] = d.solid ? 1 : 0;
       this.replaceable[id] = d.replaceable ? 1 : 0;
+      this.isWater[id] = (id === 8 || id === 9) ? 1 : 0;
       this.flammability[id] = d.flammability;
       this.modelKind[id] = d.modelKind;
       this.renderLayer[id] = d.renderLayer;
