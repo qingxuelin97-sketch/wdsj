@@ -31,6 +31,16 @@ const HEADLESS = !process.argv.includes('--head');
  * 相机位置写成**相对出生点**的偏移。世界由种子生成，出生点会随生成器调整而变，
  * 写死绝对坐标的话每次调参都要重录一遍黄金值，而且很容易录到"相机埋在山里"的画面。
  */
+/**
+ * 每个用例都**必须**钉死时间。
+ *
+ * 不钉的话，画面里的天色与光照取决于"截图那一刻世界跑到了第几 tick"，
+ * 而那取决于加载花了多久 —— 机器快慢、这一版加载优化没优化，都会改变它。
+ * 表现是一整批哈希毫无道理地集体变化，看上去像渲染坏了。
+ * 实际排查过程：世界数据逐格相同、mesher 顶点字节 1007 段全等、
+ * 绘制顺序也有确定的次级键，最后才发现变的是 timeOfDay。
+ */
+const DEFAULT_TIME = 6000; // 正午
 const CASES = [
   { name: 'overview', offset: [0, 34, -40], look: [0, 0.42], fov: 72, size: [640, 360] },
   { name: 'ground', offset: [0, 2, -8], look: [0, 0.08], fov: 70, size: [640, 360] },
@@ -154,7 +164,7 @@ async function main() {
         ${ensureHook}
         const m = window.__mc;
         m.setCanvasSize(${c.size[0]}, ${c.size[1]});
-        ${c.time === undefined ? '' : `await m.setTime(${c.time});`}
+        await m.setTime(${c.time ?? DEFAULT_TIME});
         m.setCamera(
           ${spawnPos.x} + ${c.offset[0]}, ${spawnPos.y} + ${c.offset[1]}, ${spawnPos.z} + ${c.offset[2]},
           ${c.look[0]}, ${c.look[1]}, ${c.fov}
@@ -249,6 +259,39 @@ async function main() {
       } else {
         log(`空中放一格石头 -> ${remesh.airDelta} 段重网格化（整列阴影）ok`);
       }
+    }
+
+    // --- 网格必须是"已收敛"的：强制整场重做，画面不能变 ---
+    //
+    // 这一条抓的是"过期网格"：某个段在邻居还不存在（或已经卸载）时算过一次，
+    // 之后再没被重做过。它不会报错、不会掉帧，只是画面上多一片墙或少一片墙，
+    // 而且只在特定的加载顺序下出现。
+    // 实测这条断言一上来就抓到了两个：区块到达时不重做**斜角**邻居，
+    // 以及区块卸载时完全不重做邻居（视距边缘会看穿世界）。
+    const converged = await page.evaluate(`
+      ${ensureHook}
+      const m = window.__mc;
+      m.setCanvasSize(640, 360);
+      m.freeze(false);
+      await m.setTime(6000);
+      await m.waitForIdle();
+      m.freeze(true);
+      const before = await m.screenshotHash();
+      m.freeze(false);
+      m._remeshAll();
+      await m.waitForIdle();
+      m.freeze(true);
+      const after = await m.screenshotHash();
+      m.freeze(false);
+      return { before, after };
+    `);
+    if (converged.before !== converged.after) {
+      failures.push(
+        `强制重做网格后画面变了：${converged.before} -> ${converged.after}` +
+        ' —— 说明有段的网格是过期的（邻居到达或卸载后没被重做）',
+      );
+    } else {
+      log(`网格已收敛：重做前后同为 ${converged.before}`);
     }
 
     // --- 方块光场景：夜里放一块萤石 ---

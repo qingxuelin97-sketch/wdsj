@@ -13,7 +13,15 @@ import type { ServerWorld } from '../world/server-world.ts';
 import { DEFAULT_RENDER_DISTANCE, SEA_LEVEL } from '../../core/constants.ts';
 
 /** 每 tick 最多推送几个区块，避免一次性把带宽和生成预算打满 */
-const CHUNKS_PER_TICK = 3;
+const CHUNKS_PER_TICK = 8;
+
+/**
+ * 每 tick 往前预取多少个区块的邻域。
+ *
+ * 要大到能让 gen worker 一直有活干：两个 worker、每个区块 9.6 ms，
+ * 一个 50 ms 的 tick 里能做掉约 10 个，所以预取窗口不能比这个小。
+ */
+const PREFETCH_AHEAD = 24;
 
 export class ServerPlayer {
   readonly entityId: number;
@@ -104,10 +112,33 @@ export class ServerPlayer {
    * 表现为新加载的地形一片漆黑，等下一次变更才亮起来。
    */
   prepareChunks(world: ServerWorld): number[] {
+    // 第 1 步：**预取**。沿着待办队列往前走一大段，把它们的 3×3 邻域都下单。
+    //
+    // 这一步和"这个 tick 要发哪几个"是分开的，故意的。生成搬进 worker 之后，
+    // ensureChunk 不再当场返回区块而是下个单，于是"发不出去就停下"会把整条流水线
+    // 卡成串行：下单 -> 等一个 tick -> 收货 -> 发一个 -> 再下单。
+    // 实测那样 RD 8 要 330 个 tick（16.5 秒），而真正的生成工作只有约 1.2 秒。
+    // 预取让 gen worker 始终有活干。
+    for (let i = 0; i < Math.min(this.pending.length, PREFETCH_AHEAD); i++) {
+      const key = this.pending[i]!;
+      const cx = keyToCx(key);
+      const cz = keyToCz(key);
+      for (let dz = -1; dz <= 1; dz++) {
+        for (let dx = -1; dx <= 1; dx++) world.ensureChunk(cx + dx, cz + dz);
+      }
+    }
+
+    // 第 2 步：挑出邻域已经齐全的，本 tick 发它们。
     const ready: number[] = [];
-    while (this.pending.length > 0 && ready.length < CHUNKS_PER_TICK) {
-      const key = this.pending.shift()!;
-      if (this.subscribed.has(key)) continue;
+    let scanned = 0;
+    while (scanned < this.pending.length && ready.length < CHUNKS_PER_TICK && scanned < PREFETCH_AHEAD) {
+      const key = this.pending[scanned]!;
+      scanned++;
+      if (this.subscribed.has(key)) {
+        this.pending.splice(scanned - 1, 1);
+        scanned--;
+        continue;
+      }
       const cx = keyToCx(key);
       const cz = keyToCz(key);
       // 连同 3×3 邻域一起生成，中心区块的天光才是**最终值**。
@@ -124,12 +155,12 @@ export class ServerPlayer {
           if (world.ensureChunk(cx + dx, cz + dz) === null) { complete = false; break; }
         }
       }
-      if (!complete) {
-        // 本 tick 的生成配额用完了：把它放回队首，下个 tick 接着来。
-        // 不能就这么发出去 —— 邻域没齐的话中心区块的天光还不是最终值。
-        this.pending.unshift(key);
-        break;
-      }
+      // 邻域还没齐就跳过它去看下一个 —— 但**不**从队列里拿走，下个 tick 还要来。
+      // 早先这里是 break，于是队首一个没好就整条队列停摆。
+      if (!complete) continue;
+
+      this.pending.splice(scanned - 1, 1);
+      scanned--;
       ready.push(key);
     }
     return ready;

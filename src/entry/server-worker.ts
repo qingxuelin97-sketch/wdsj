@@ -9,31 +9,106 @@
  * （22 ms/区块），实测帧率从静止的 60 掉到移动时的 19。搬进 Worker 后主线程只剩
  * 渲染与网格化派发。
  *
- * tick 时钟目前用 setTimeout 自校正。Worker 里的定时器不受主线程标签页可见性节流，
- * 已经够用；M5 会换成 SharedArrayBuffer + Atomics.wait，那样连浏览器整体降频时
- * 也能守住 20 TPS。
+ * tick 由 clock-worker 敲进来（见那个文件顶部的说明）：worker 里的 setTimeout
+ * 在后台标签页会被彻底掐死，实测前台 20.0 TPS、后台 0。
+ * 没有 SharedArrayBuffer（未跨源隔离）时回落到 setTimeout，并明确记一条日志 ——
+ * 静默降级会让"后台世界不动"变成一个查不出根因的怪现象。
  */
 import { ServerCore } from '../server/server-core.ts';
+import type { ChunkProvider } from '../server/world/chunk-provider.ts';
+import { recommendedGenWorkers, genQueueDepth } from '../server/world/gen-pool-shape.ts';
+import { decodeChunk } from '../core/world/chunk-codec.ts';
+import { chunkKey, type Chunk } from '../core/world/chunk.ts';
 import { createBlockRegistry } from '../content/blocks.ts';
 import { MessagePortTransport } from '../core/net/transport.ts';
 import { MS_PER_TICK } from '../core/constants.ts';
+import { StatSlot, writeStat } from '../core/shared-stats.ts';
 
 interface StartMessage {
   kind: 'start';
   seed: number;
   port: MessagePort;
+  /** 心跳来源。没有它就回落到 setTimeout */
+  clockPort?: MessagePort;
+  /** 共享统计槽 */
+  stats?: SharedArrayBuffer;
 }
 
 interface StopMessage {
   kind: 'stop';
 }
 
+/**
+ * gen worker 池，实现 ChunkProvider。
+ *
+ * 派单用轮询而不是"谁空给谁"：生成耗时几乎恒定（同一份噪声、同样的地形算法），
+ * 轮询就已经均衡，还省掉了维护空闲队列的状态。
+ */
+class GenPool implements ChunkProvider {
+  private readonly workers: Worker[] = [];
+  private readonly pending = new Set<number>();
+  private readonly done: Chunk[] = [];
+  private next = 0;
+  private readonly depth: number;
+
+  constructor(seed: number, count: number) {
+    this.depth = genQueueDepth(count);
+    for (let i = 0; i < count; i++) {
+      const w = new Worker(new URL('./gen-worker.ts', import.meta.url).href, {
+        type: 'module',
+        name: `gen${i}`,
+      });
+      w.onmessage = (ev: MessageEvent): void => {
+        const m = ev.data as { kind: string; cx: number; cz: number; blob: Uint8Array };
+        if (m.kind !== 'chunk') return;
+        this.pending.delete(chunkKey(m.cx, m.cz));
+        this.done.push(decodeChunk(m.cx, m.cz, m.blob));
+      };
+      w.onerror = (ev: ErrorEvent): void => {
+        // 生成 worker 挂掉必须喊出来：静默的话表现为"地形加载到一半就不动了"，
+        // 而那时候已经完全看不出根因
+        console.error(`[gen-worker] ${ev.message}`);
+      };
+      w.postMessage({ kind: 'start', seed });
+      this.workers.push(w);
+    }
+  }
+
+  get inFlight(): number {
+    return this.pending.size;
+  }
+
+  request(cx: number, cz: number): boolean {
+    const key = chunkKey(cx, cz);
+    if (this.pending.has(key)) return true; // 已经在途，别重复下单
+    if (this.pending.size >= this.depth) return false;
+    this.pending.add(key);
+    const w = this.workers[this.next % this.workers.length]!;
+    this.next++;
+    w.postMessage({ kind: 'gen', cx, cz });
+    return true;
+  }
+
+  drain(): Chunk[] {
+    if (this.done.length === 0) return [];
+    return this.done.splice(0, this.done.length);
+  }
+
+  terminate(): void {
+    for (const w of this.workers) w.terminate();
+    this.workers.length = 0;
+  }
+}
+
 let server: ServerCore | null = null;
+let stats: Int32Array | null = null;
+let genPool: GenPool | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 /** 下一次 tick 的目标时刻，用它做漂移校正而不是固定间隔 */
 let nextTickAt = 0;
 
-function loop(): void {
+/** 跑一个 tick 并记录耗时 */
+function runTick(): void {
   if (server === null) return;
   const started = performance.now();
   try {
@@ -44,6 +119,16 @@ function loop(): void {
     throw err;
   }
   server.lastTickMs = performance.now() - started;
+  if (stats !== null) {
+    writeStat(stats, StatSlot.SERVER_TICKS, server.tickCount);
+    writeStat(stats, StatSlot.SERVER_TICK_CENTIMS, Math.round(server.lastTickMs * 100));
+  }
+}
+
+/** 没有心跳线程时的兜底：自校正的 setTimeout 循环 */
+function loop(): void {
+  if (server === null) return;
+  runTick();
 
   // 自校正：按目标时刻推进，而不是每次 +50ms。
   // 后者会把每次的调度延迟累积起来，跑久了 TPS 会持续偏低。
@@ -66,6 +151,20 @@ self.onmessage = (ev: MessageEvent): void => {
     const registry = createBlockRegistry();
     server = new ServerCore({ seed: BigInt(msg.seed), registry });
     server.addClient(new MessagePortTransport(msg.port));
+    stats = msg.stats !== undefined ? new Int32Array(msg.stats) : null;
+
+    // 世界生成搬进独立 worker。留在这条线程上时，加载期间单 tick 的
+    // p50 是 96.9 ms、最大 269.6 ms —— 服务端等于在以 10 TPS 跑。
+    const cores = navigator.hardwareConcurrency ?? 8;
+    genPool = new GenPool(msg.seed, recommendedGenWorkers(cores));
+    server.world.setProvider(genPool);
+
+    if (msg.clockPort !== undefined) {
+      msg.clockPort.onmessage = (): void => runTick();
+      msg.clockPort.start();
+      return;
+    }
+    console.warn('[server-worker] 没有心跳线程，回落到 setTimeout —— 后台标签页会停摆');
     nextTickAt = performance.now() + MS_PER_TICK;
     timer = setTimeout(loop, MS_PER_TICK);
     return;
@@ -74,6 +173,8 @@ self.onmessage = (ev: MessageEvent): void => {
   if (msg.kind === 'stop') {
     if (timer !== null) clearTimeout(timer);
     timer = null;
+    if (genPool !== null) genPool.terminate();
+    genPool = null;
     server = null;
   }
 };

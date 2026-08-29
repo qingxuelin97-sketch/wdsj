@@ -8,6 +8,7 @@ import { ChunkStore } from '../../core/world/block-view.ts';
 import { Chunk, chunkKey, keyToCx, keyToCz, packState, AIR_STATE, stateId } from '../../core/world/chunk.ts';
 import { OverworldGenerator } from './gen/overworld-gen.ts';
 import { LightEngine, LightChannel } from '../../core/light/light-engine.ts';
+import type { ChunkProvider } from './chunk-provider.ts';
 import type { BlockRegistry } from '../../core/registry/block-registry.ts';
 import type { BlockTables } from '../../core/registry/block-tables.ts';
 import { WORLD_HEIGHT, DAY_LENGTH_TICKS, CHUNK_SIZE, SECTIONS_PER_COLUMN } from '../../core/constants.ts';
@@ -47,6 +48,11 @@ export class ServerWorld {
    */
   private readonly lightPending = new Set<number>();
   readonly light: LightEngine;
+  /**
+   * 异步区块来源。挂上之后 ensureChunk 不再当场生成，而是下单等收货。
+   * 为空时（测试、node 服务器）走同线程生成。
+   */
+  private provider: ChunkProvider | null = null;
 
   /**
    * 本 tick 还能生成几个新区块。
@@ -82,10 +88,41 @@ export class ServerWorld {
     this.light = new LightEngine(this.store, this.tables, false);
   }
 
-  /** 确保某个区块已加载，必要时生成它。配额用尽时返回 null */
+  /** 换一个区块来源。传 null 恢复同线程生成 */
+  setProvider(provider: ChunkProvider | null): void {
+    this.provider = provider;
+  }
+
+  /**
+   * 收下异步来源已经生成好的区块。每 tick 开头调一次。
+   * @returns 收了几个
+   */
+  intakeGenerated(): number {
+    if (this.provider === null) return 0;
+    const arrived = this.provider.drain();
+    for (const chunk of arrived) {
+      // 期间可能已经由 forceChunk 同步生成过了；重复收货直接丢弃，
+      // 否则会把一个已经算好光照的区块换成一个没算过的
+      if (this.store.hasChunk(chunk.cx, chunk.cz)) continue;
+      this.store.addChunk(chunk);
+      this.lightPending.add(chunkKey(chunk.cx, chunk.cz));
+    }
+    return arrived.length;
+  }
+
+  /**
+   * 确保某个区块已加载。
+   *
+   * 有异步来源时**不会当场生成**：下个单就返回 null，货到了下个 tick 再说。
+   * 调用方（prepareChunks）本来就要处理"还没好"这种情况。
+   */
   ensureChunk(cx: number, cz: number): Chunk | null {
     const existing = this.store.getChunk(cx, cz);
     if (existing !== null) return existing;
+    if (this.provider !== null) {
+      this.provider.request(cx, cz);
+      return null;
+    }
     if (this.generationQuota > 0 && this.generationBudget <= 0) return null;
     this.generationBudget--;
     const chunk = this.generator.generate(cx, cz);

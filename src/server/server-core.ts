@@ -44,7 +44,8 @@ export class ServerCore {
   readonly registry: BlockRegistry;
   private readonly players = new Map<number, ServerPlayer>();
   private nextEntityId = 1;
-  private tickCount = 0;
+  /** 已经跑过的 tick 数。宿主要把它写进共享统计槽，所以是公开的 */
+  tickCount = 0;
   private readonly timeSyncInterval: number;
   /** 供宿主填写的统计，ServerCore 自己不读挂钟 */
   lastTickMs = 0;
@@ -108,6 +109,8 @@ export class ServerCore {
     this.tickCount++;
     this.world.advanceTime();
     this.world.resetGenerationBudget();
+    // 先收下 gen worker 这一轮送到的区块，再决定要不要下新单
+    this.world.intakeGenerated();
 
     // 区块流水线：先生成，再算光照，最后才推送。
     // 顺序不能颠倒 —— 先推送的话客户端拿到的是光照全 0 的区块。

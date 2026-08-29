@@ -37,6 +37,19 @@ const NODE_GLOBALS = ['process', 'Buffer', '__dirname', '__filename', 'require',
 /** 禁止读挂钟的目录前缀 —— 动画相位必须来自 clock.renderTick */
 const NO_WALLCLOCK_DIRS = ['src/client/render/', 'src/client/mesh/', 'src/server/'];
 
+/**
+ * 客户端不得自己改世界。
+ *
+ * 世界的真相在服务端，客户端只有镜像，且只能被 S_ChunkData / S_ChunkUnload /
+ * S_BlockUpdate 驱动（docs/RULES.md 第 8 条）。一旦客户端有别的写入路径，
+ * 两边就会漂移，而表现出来是"玩家莫名其妙被拉回去"或者"方块闪一下又变回来" ——
+ * 极难定位，因为出问题的地方和写入的地方隔着好几帧。
+ *
+ * 唯一豁免的是 client-world.ts：那三个 onXxx 处理函数就是包驱动的入口。
+ */
+const WORLD_MUTATORS = ['setState', 'addChunk', 'removeChunk', 'createChunk', 'setSkyLight', 'setBlockLight'];
+const WORLD_MUTATOR_EXEMPT = new Set(['src/client/world/client-world.ts']);
+
 function layerOf(file) {
   const m = /^src\/([^/]+)\//.exec(file);
   return m ? m[1] : null;
@@ -106,6 +119,22 @@ for (const file of files) {
       let m;
       while ((m = re.exec(src)) !== null) {
         fail.add(file, lineOf(src, m.index), `${layer} 层不得使用 Node 全局 '${g}'（这些代码要能在浏览器里跑）`);
+      }
+    }
+  }
+
+  // --- 5: 客户端不得有世界写入路径 ---
+  if (layer === 'client' && !WORLD_MUTATOR_EXEMPT.has(file)) {
+    for (const name of WORLD_MUTATORS) {
+      const re = new RegExp(String.raw`\.${name}\s*\(`, 'g');
+      let m;
+      while ((m = re.exec(src)) !== null) {
+        fail.add(
+          file,
+          lineOf(src, m.index),
+          `client 层不得调用 ${name}()：世界只能由服务端的包驱动改变，` +
+          `入口只有 client-world.ts 的 onChunkData / onChunkUnload / onBlockUpdate`,
+        );
       }
     }
   }

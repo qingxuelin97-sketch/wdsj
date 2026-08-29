@@ -27,6 +27,7 @@ import { MessagePortTransport, PacketChannel } from '../core/net/transport.ts';
 import { S2C, C_Handshake, C_Command, C_PlayerMove, C_SetViewDistance, PROTOCOL_VERSION } from '../core/net/packets.ts';
 import { SECTION_SIZE, DEFAULT_RENDER_DISTANCE, TPS } from '../core/constants.ts';
 import { skyColor, sunBrightness } from '../core/world/day-night.ts';
+import { StatSlot, readStat, writeStat, STAT_BYTES } from '../core/shared-stats.ts';
 import { TILE_SIZE } from '../client/render/texgen.ts';
 
 const canvas = document.getElementById('gl') as HTMLCanvasElement | null;
@@ -106,7 +107,51 @@ serverWorker.onerror = (ev: ErrorEvent): void => {
   recordError(`服务端 worker 错误: ${ev.message}`);
 };
 const channel = new MessageChannel();
-serverWorker.postMessage({ kind: 'start', seed, port: channel.port2 }, [channel.port2]);
+
+// 心跳线程。
+//
+// 后台标签页会把 worker 里的 setTimeout 掐死 —— 实测前台 20.0 TPS、后台 0，
+// 世界完全停摆。所以另起一条线程专门睡在 Atomics.wait 上敲拍子；
+// 它阻塞的是自己，服务端 worker 仍然是事件驱动的，MessagePort 照收。
+// 需要 SharedArrayBuffer，也就是需要跨源隔离（dev-server 已经带上 COOP/COEP）。
+let clockWorker: Worker | null = null;
+let clockControl: Int32Array | null = null;
+const clockPorts = new MessageChannel();
+
+if (typeof SharedArrayBuffer === 'function' && self.crossOriginIsolated) {
+  clockWorker = new Worker(new URL('./clock-worker.ts', import.meta.url).href, {
+    type: 'module',
+    name: 'clock',
+  });
+  clockWorker.onerror = (ev: ErrorEvent): void => {
+    console.error(`[clock-worker] ${ev.message}`);
+    recordError(`心跳 worker 错误: ${ev.message}`);
+  };
+  const control = new SharedArrayBuffer(STAT_BYTES);
+  clockControl = new Int32Array(control);
+  clockWorker.postMessage(
+    { kind: 'start', port: clockPorts.port1, control },
+    [clockPorts.port1],
+  );
+  serverWorker.postMessage(
+    { kind: 'start', seed, port: channel.port2, clockPort: clockPorts.port2, stats: control },
+    [channel.port2, clockPorts.port2],
+  );
+} else {
+  // 没有跨源隔离就退回 setTimeout。必须说出来：静默降级的话，
+  // "切到后台世界就不动了"会变成一个查不出根因的怪现象。
+  console.warn('[clock] 无 SharedArrayBuffer（未跨源隔离），服务端回落到 setTimeout 心跳');
+  recordLog('[clock] 无 SAB，回落 setTimeout 心跳：后台标签页 TPS 会掉到 0');
+  serverWorker.postMessage({ kind: 'start', seed, port: channel.port2 }, [channel.port2]);
+}
+
+/** 页面关闭时叫停心跳线程 —— 它睡在 futex 上，不主动叫醒就会一直跑 */
+self.addEventListener('pagehide', () => {
+  if (clockControl !== null) {
+    writeStat(clockControl, StatSlot.CLOCK_STOP, 1);
+    Atomics.notify(clockControl, StatSlot.CLOCK_STOP);
+  }
+});
 
 const net = new PacketChannel(new MessagePortTransport(channel.port1), S2C);
 let spawned = false;
@@ -326,6 +371,11 @@ installTestHook({
   }),
   pumpWorld,
   command: sendCommand,
+  sharedStats: () => (clockControl === null ? null : {
+    beats: readStat(clockControl, StatSlot.CLOCK_BEATS),
+    serverTicks: readStat(clockControl, StatSlot.SERVER_TICKS),
+    tickCentiMs: readStat(clockControl, StatSlot.SERVER_TICK_CENTIMS),
+  }),
   timeOfDay: () => timeOfDay,
   remeshCount: () => world.remeshCount,
   mirrorInfo: (x: number, y: number, z: number) => ({
@@ -334,6 +384,8 @@ installTestHook({
     loaded: world.store.isLoaded(x, z),
   }),
   debugWorld: () => world,
+  remeshAll: () => world.markAllDirty(),
+
 });
 
 // ---------------------------------------------------------------------------

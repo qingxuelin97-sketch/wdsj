@@ -78,12 +78,19 @@ export interface HostBridge {
   command(text: string): Promise<{ ok: boolean; text: string }>;
   /** 服务端权威的当日时间，0..23999 */
   timeOfDay(): number;
+  /**
+   * 直接读共享统计槽。没有 SharedArrayBuffer 时返回 null。
+   * 读它不需要任何消息投递 —— 这正是它能用来诊断"后台是不是停摆"的原因。
+   */
+  sharedStats(): { beats: number; serverTicks: number; tickCentiMs: number } | null;
   /** 累计重网格化过的子区块数，用于验证"改一格只重做少数几段" */
   remeshCount(): number;
   /** 读客户端镜像里的光照与列高，用于和服务端逐项对照 */
   mirrorInfo(x: number, y: number, z: number): { light: string; height: number; loaded: boolean };
   /** 内部世界对象，供排查工具做状态指纹。生产代码不要用 */
   debugWorld(): unknown;
+  /** 强制重做全部网格。排查"网格是否过期"用 */
+  remeshAll(): void;
 }
 
 /** 收集未捕获错误、WebGL 错误、着色器错误，供 assertNoErrors 使用 */
@@ -166,6 +173,8 @@ export function installTestHook(host: HostBridge): void {
     },
 
     timeOfDay: (): number => host.timeOfDay(),
+    sharedStats: (): { beats: number; serverTicks: number; tickCentiMs: number } | null =>
+      host.sharedStats(),
     remeshCount: (): number => host.remeshCount(),
     mirrorLight: (x: number, y: number, z: number): string => host.mirrorInfo(x, y, z).light,
     /** 排查用：客户端镜像在该点的光照与列高 */
@@ -173,6 +182,8 @@ export function installTestHook(host: HostBridge): void {
       host.mirrorInfo(x, y, z),
     /** 排查用：拿到客户端世界镜像。不是稳定接口 */
     _world: (): unknown => host.debugWorld(),
+    /** 排查用：把所有子区块标脏，强制整场重做网格 */
+    _remeshAll: (): void => host.remeshAll(),
 
     /**
      * 比对客户端镜像与服务端的光照。

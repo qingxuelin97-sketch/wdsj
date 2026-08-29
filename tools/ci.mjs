@@ -26,6 +26,9 @@ const steps = [
   { name: 'lint-layers', cmd: NODE, args: [path.join(ROOT, 'tools/lint-layers.mjs')] },
   { name: 'lint-size', cmd: NODE, args: [path.join(ROOT, 'tools/lint-size.mjs')] },
   { name: 'unit tests', cmd: NODE, args: ['--no-warnings', '--test'] },
+  // 后台标签页的 TPS。CI 里只观测 10 秒 —— 足够抓住"彻底停摆"这种回退，
+  // 完整的 60 秒验收用 node tools/bg-tps.mjs 单跑。
+  { name: 'background tps', cmd: NODE, args: ['tools/bg-tps.mjs', '10'] },
 ];
 
 if (!skipSmoke && fs.existsSync(path.join(ROOT, 'tools/smoke.mjs'))) {

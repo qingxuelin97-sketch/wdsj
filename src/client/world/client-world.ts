@@ -102,6 +102,21 @@ export class ClientWorld {
       this.dirty.delete(key);
       this.revs.delete(key);
     }
+
+    // 邻居也要重做 —— 和 onChunkData 完全对称，只是方向相反。
+    //
+    // 它们当初是按"这一侧有实心方块"算的，把朝向本区块的那些面剔掉了。
+    // 本区块一走，那些面就该重新出现，否则视距边缘会**看穿世界**：
+    // 玩家往回走的时候，边上会露出一片能直接望见天空底色的缺口。
+    // 排查时的表象很绕：强制整场重做网格后画面会变，多出上万个面，
+    // 而世界数据、mesher 的顶点字节、绘制顺序全都逐项相同。
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dz === 0) continue;
+        if (!this.store.hasChunk(cx + dx, cz + dz)) continue;
+        for (let sy = 0; sy < SECTIONS_PER_COLUMN; sy++) this.markDirty(cx + dx, sy, cz + dz);
+      }
+    }
   }
 
   /** 处理 S_BlockUpdate */
@@ -146,6 +161,15 @@ export class ClientWorld {
     if (lz === 15) this.markDirty(cx, cy, cz + 1);
     if (ly === 0 && cy > 0) this.markDirty(cx, cy - 1, cz);
     if (ly === 15 && cy < SECTIONS_PER_COLUMN - 1) this.markDirty(cx, cy + 1, cz);
+  }
+
+  /** 把所有已加载的子区块标成脏。排查"网格是不是过期了"用 */
+  markAllDirty(): void {
+    for (const chunk of this.store.chunkValues()) {
+      for (let sy = 0; sy < SECTIONS_PER_COLUMN; sy++) {
+        if (chunk.sections[sy] != null) this.markDirty(chunk.cx, sy, chunk.cz);
+      }
+    }
   }
 
   markDirty(cx: number, cy: number, cz: number): void {
