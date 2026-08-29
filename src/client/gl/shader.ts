@@ -75,6 +75,11 @@ export class Shader {
     if (l !== null) this.gl.uniformMatrix4fv(l, false, value);
   }
 
+  setVec2(name: string, x: number, y: number): void {
+    const loc = this.loc(name);
+    if (loc !== null) this.gl.uniform2f(loc, x, y);
+  }
+
   setVec3(name: string, x: number, y: number, z: number): void {
     const l = this.loc(name);
     if (l !== null) this.gl.uniform3f(l, x, y, z);

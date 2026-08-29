@@ -250,6 +250,11 @@ test('对着方块的某个面放置，新方块落在那一侧', () => {
   assert.equal(server.world.getBlock(tx, ty + 1, tz), AIR_STATE, '目标点上方应是空气');
 
   client.clear();
+  // 现在放置要先有东西在手上 —— 这本身就是对的：M8 之前是凭空变出方块
+  client.channel.send(C_Command, { requestId: 1, text: 'give stone 10' });
+  client.channel.flush();
+  server.tick();
+
   // face 1 = UP，新方块落在被点方块的上面
   client.channel.send(C_UseBlock, { x: tx, y: ty, z: tz, face: 1, hitX: 0.5, hitY: 1, hitZ: 0.5 });
   client.channel.flush();
@@ -270,6 +275,9 @@ test('不能把方块放进自己身体里', () => {
   const fz = Math.floor(player.z);
   const fy = Math.floor(player.y) - 1;
   const before = server.world.getBlock(fx, fy + 1, fz);
+  client.channel.send(C_Command, { requestId: 1, text: 'give stone 10' });
+  client.channel.flush();
+  server.tick();
   client.channel.send(C_UseBlock, { x: fx, y: fy, z: fz, face: 1, hitX: 0.5, hitY: 1, hitZ: 0.5 });
   client.channel.flush();
   server.tick();

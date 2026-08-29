@@ -7,6 +7,7 @@
 import type { BlockTables } from '../../core/registry/block-tables.ts';
 import { TilePainter, TILE_SIZE, TILE_BYTES } from './texgen.ts';
 import { RECIPES } from './tile-recipes.ts';
+import { ITEM_RECIPES } from './item-recipes.ts';
 
 export interface TileAtlas {
   /** 所有层拼接成的连续 RGBA 数据，可直接喂 texSubImage3D */
@@ -27,7 +28,9 @@ export function buildAtlas(names: readonly string[]): TileAtlas {
   const index = new Map<string, number>();
   for (let i = 0; i < names.length; i++) {
     const name = names[i]!;
-    const recipe = RECIPES[name];
+    // 方块贴图与物品图标共用一个纹理数组：UI 里画物品和世界里画方块
+    // 用的是同一个 sampler，省掉一次纹理切换，也省掉一套并行的资源管理
+    const recipe = RECIPES[name] ?? ITEM_RECIPES[name];
     if (recipe === undefined) {
       throw new Error(`贴图 '${name}' 没有配方 —— 在 src/client/render/tile-recipes.ts 里补上`);
     }

@@ -15,12 +15,24 @@ import { PacketChannel, type Transport } from '../core/net/transport.ts';
 import {
   C2S, PROTOCOL_VERSION, PlayerActionKind,
   S_Login, S_TimeUpdate, S_BlockUpdate, S_Disconnect, S_CommandResult, S_Chat, S_ServerStats,
+  S_WindowItems, S_OpenWindow, WindowKind,
 } from '../core/net/packets.ts';
 import { ServerWorld } from './world/server-world.ts';
+import { handleCommand } from './commands.ts';
+import {
+  dropOf, toolOf, giveToPlayer, maxStackOf, syncInventory,
+  onWindowClick, showWindow, closeWindow,
+} from './player/inventory-actions.ts';
 import { ServerPlayer } from './player/server-player.ts';
 import type { BlockRegistry } from '../core/registry/block-registry.ts';
 import { AIR_STATE, packState, chunkKey, stateId } from '../core/world/chunk.ts';
-import { breakProgressPerTick } from '../core/block/breaking.ts';
+import { breakProgressPerTick, canHarvest, type HeldTool } from '../core/block/breaking.ts';
+import {
+  isEmpty, cloneStack, makeStack, ITEM_ID_BASE, type ItemStack,
+} from '../core/item/item-def.ts';
+import { Window, ARMOR_SLOTS, MAIN_SLOTS, HOTBAR_SLOTS } from './player/player-inventory.ts';
+import { createItemRegistry, type ItemRegistry } from '../content/items.ts';
+import { createCraftingData, type CraftingData } from '../content/recipes.ts';
 import { TPS, EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, WORLD_HEIGHT, REACH_SURVIVAL } from '../core/constants.ts';
 
 /**
@@ -30,6 +42,38 @@ import { TPS, EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, WORLD_HEIGHT, REACH_SURVI
  * 而服务端手里是稍旧的位置，卡在边界上时两边会差出零点几格。
  * 卡得太死的话，正常游玩时会偶发"点了没反应"。
  */
+/** 少数几个"掉的不是自己"的方块 */
+const DROP_OVERRIDE: Record<number, number> = {
+  1: 4,    // 石头 -> 圆石
+  2: 3,    // 草方块 -> 泥土
+  13: 13,  // 砾石有几率掉燧石，M9 接上随机掉落表后再说
+  16: 263, // 煤矿 -> 煤
+  21: 351, // 青金石矿 -> 青金石（染料）
+  56: 264, // 钻石矿 -> 钻石
+  73: 331, // 红石矿 -> 红石
+  110: 3,  // 菌丝 -> 泥土
+};
+
+/** 右键这些方块是"打开界面"而不是"放方块" */
+const OPENS_WINDOW: Record<number, WindowKind> = {
+  58: WindowKind.CRAFTING,
+  54: WindowKind.CHEST,
+  61: WindowKind.FURNACE,
+  62: WindowKind.FURNACE,
+};
+
+const WINDOW_TITLES: Record<number, string> = {
+  [WindowKind.INVENTORY]: 'Inventory',
+  [WindowKind.CRAFTING]: 'Crafting',
+  [WindowKind.FURNACE]: 'Furnace',
+  [WindowKind.CHEST]: 'Chest',
+};
+
+/** [start, start+count) 的下标序列 */
+function range(start: number, count: number): number[] {
+  return Array.from({ length: count }, (_, i) => start + i);
+}
+
 const REACH_LIMIT_SQ = (REACH_SURVIVAL + 1.5) ** 2;
 
 /** face 编号到法线。与 core/block/types.ts 的 Facing 一致 */
@@ -56,6 +100,8 @@ export interface ServerStats {
 
 export class ServerCore {
   readonly world: ServerWorld;
+  readonly items: ItemRegistry = createItemRegistry();
+  readonly crafting: CraftingData = createCraftingData();
   readonly registry: BlockRegistry;
   private readonly players = new Map<number, ServerPlayer>();
 
@@ -242,13 +288,19 @@ export class ServerCore {
       case 'C_PlayerMove': return this.onPlayerMove(player, value);
       case 'C_PlayerAction': return this.onPlayerAction(player, value);
       case 'C_UseBlock': return this.onUseBlock(player, value);
+      case 'C_WindowClick': return onWindowClick(this, player, value);
+      case 'C_CloseWindow': return closeWindow(this, player);
+      case 'C_HeldSlot': {
+        player.inventory.selectedHotbar = Math.max(0, Math.min(8, value['slot'] as number));
+        return;
+      }
       case 'C_SetViewDistance': {
         const d = value['distance'] as number;
         player.viewDistance = Math.max(2, Math.min(16, d));
         player.resetSubscriptions();
         return;
       }
-      case 'C_Command': return this.onCommand(player, value);
+      case 'C_Command': return handleCommand(this, player, value);
       case 'C_HeldSlot':
       case 'C_Swing':
       case 'C_KeepAlive':
@@ -313,7 +365,7 @@ export class ServerCore {
   }
 
   /** 玩家眼睛到方块中心的距离平方，用于触及检查 */
-  private reachSq(player: ServerPlayer, x: number, y: number, z: number): number {
+  reachSq(player: ServerPlayer, x: number, y: number, z: number): number {
     const dx = player.x - (x + 0.5);
     const dy = player.y + EYE_HEIGHT - (y + 0.5);
     const dz = player.z - (z + 0.5);
@@ -342,6 +394,11 @@ export class ServerCore {
       return;
     }
 
+    if (action === PlayerActionKind.OPEN_INVENTORY) {
+      showWindow(this, player, WindowKind.INVENTORY);
+      return;
+    }
+
     if (action === PlayerActionKind.CANCEL_DIG || action === PlayerActionKind.FINISH_DIG) {
       // FINISH_DIG 只当作"松手"。破坏与否由服务端自己的进度说了算 ——
       // 信客户端的话，改一行前端就能瞬间挖穿基岩。
@@ -366,16 +423,44 @@ export class ServerCore {
       return;
     }
 
-    // M8 之前手上还没有工具，所以是徒手速度。石头 7.5 秒 —— 慢得真实。
-    player.digProgress += breakProgressPerTick(this.world.tables, id, null);
+    player.digProgress += breakProgressPerTick(
+      this.world.tables, id, toolOf(this, player.inventory.held),
+    );
     if (player.digProgress < 1) return;
 
     player.digging = false;
     player.digProgress = 0;
-    // 挖到什么就拿着什么。M8 接上背包后换成真正的掉落与拾取
-    player.heldBlockId = id;
     this.world.setBlock(x, y, z, AIR_STATE);
+
+    // 掉落物直接进背包。真正的掉落物实体在 M9，那之前先这样接上闭环 ——
+    // 没有它的话挖矿完全没有意义，整个前期玩法都试不了。
+    const drop = dropOf(this, id, player);
+    if (drop !== null) {
+      const left = giveToPlayer(this, player, drop);
+      if (left > 0) this.sendChat(player, `背包满了，${left} 个掉落物没捡起来`);
+      syncInventory(this, player);
+    }
   }
+
+
+
+
+
+
+
+
+
+
+
+  private sendChat(player: ServerPlayer, text: string): void {
+    player.channel.send(S_Chat, { text });
+  }
+
+
+
+
+
+
 
   private onUseBlock(player: ServerPlayer, value: Record<string, unknown>): void {
     const x = value['x'] as number;
@@ -392,6 +477,23 @@ export class ServerCore {
     const pz = z + nz;
     if (py < 0 || py >= WORLD_HEIGHT) return;
 
+    // 右键工作台/箱子/熔炉是"打开"，不是"放置"
+    const targetId = stateId(this.world.getBlock(x, y, z));
+    const opens = OPENS_WINDOW[targetId];
+    if (opens !== undefined) {
+      showWindow(this, player, opens);
+      return;
+    }
+
+    // 手上得有东西，而且得是能放的方块
+    const held = player.inventory.held;
+    if (isEmpty(held)) return;
+    const def = this.items.get(held.id);
+    const blockId = def?.placesBlock !== undefined && def.placesBlock !== 0
+      ? def.placesBlock
+      : (held.id < ITEM_ID_BASE ? held.id : 0);
+    if (blockId === 0 || this.world.tables.defs[blockId] == null) return;
+
     // 只能放进空气里
     if (stateId(this.world.getBlock(px, py, pz)) !== 0) return;
 
@@ -403,194 +505,18 @@ export class ServerCore {
     const overlapY = player.y + PLAYER_HEIGHT > py && player.y < py + 1;
     if (overlapX && overlapY && overlapZ) return;
 
-    this.world.setBlock(px, py, pz, packState(player.heldBlockId));
+    if (!this.world.setBlock(px, py, pz, packState(blockId, held.damage & 15))) return;
+    held.count--;
+    if (held.count <= 0) {
+      held.id = 0;
+      held.damage = 0;
+    }
+    syncInventory(this, player);
   }
 
-  /**
-   * 搭一个方块陈列阵。
-   *
-   * 每一列放一种方块，带元数据的方块横向排开它的几个代表状态 ——
-   * 半砖的上下、楼梯的四个朝向、栅栏的连接、雪层的厚度。
-   * 一张截图就能覆盖"所有形状"，而形状错了在截图里是一眼可见的。
-   *
-   * @returns 摆了多少个方块
-   */
-  private buildGallery(ox: number, oy: number, oz: number): number {
-    const ids: number[] = [];
-    for (let id = 1; id < this.world.tables.count; id++) {
-      if (this.world.tables.defs[id] != null) ids.push(id);
-    }
 
-    // 需要展示多个状态的方块：id -> 要展示的元数据列表
-    const metaVariants = new Map<number, number[]>([
-      [44, [0, 1]],                 // 半砖：下/上
-      [53, [0, 1, 2, 3]],           // 木楼梯：四个朝向
-      [67, [0, 4]],                 // 石楼梯：正/倒
-      [85, [0, 0b0011, 0b1111]],    // 栅栏：孤立 / 两向 / 四向
-      [50, [0, 1, 3]],              // 火把：立地 / 贴两侧
-      [102, [0, 0b0011, 0b1111]],   // 玻璃板
-      [78, [0, 3, 7]],              // 雪层：薄 / 中 / 满
-      [92, [0, 2, 5]],              // 蛋糕：完整 / 吃两口 / 吃五口
-      [64, [0, 4]],                 // 门：关 / 开
-      [96, [0, 4]],                 // 活板门：平放 / 竖起
-      [65, [0, 1, 2, 3]],           // 梯子：四面
-    ]);
 
-    const columns = 10;
-    let placed = 0;
-    let slot = 0;
-    for (const id of ids) {
-      const metas = metaVariants.get(id) ?? [0];
-      const cx = ox + (slot % columns) * 2;
-      const cz = oz + Math.floor(slot / columns) * 2;
-      for (let i = 0; i < metas.length; i++) {
-        // 每个状态往上叠一格，同一列从下往上是同一种方块的不同状态
-        const base = oy + i * 2;
-        // 脚下垫一块石头，非整格的方块才有个明确的参照
-        this.world.setBlock(cx, base - 1, cz, packState(1));
-        if (this.world.setBlock(cx, base, cz, packState(id, metas[i]!))) placed++;
-      }
-      slot++;
-    }
-    return placed;
-  }
 
-  /**
-   * 把所有非立方体形状排成一行，脚下垫石头。
-   *
-   * 这一行是 M7 真正要盯的东西：楼梯朝向、半砖上下、栅栏连接、
-   * 雪层厚度、蛋糕缺口 —— 错了在近景图里一眼可见，在大阵列图里看不出来。
-   */
-  private buildShapeRow(ox: number, oy: number, oz: number): number {
-    const row: [number, number][] = [
-      [44, 0], [44, 1],                       // 半砖 下 / 上
-      [53, 0], [53, 1], [53, 2], [53, 3],     // 木楼梯 四朝向
-      [53, 4],                                // 木楼梯 倒置
-      [85, 0], [85, 0b0011], [85, 0b1111],    // 栅栏 孤立 / 两向 / 四向
-      [50, 0], [50, 1],                       // 火把 立地 / 贴墙
-      [102, 0], [102, 0b0011],                // 玻璃板
-      [78, 0], [78, 3], [78, 7],              // 雪层
-      [92, 0], [92, 3],                       // 蛋糕
-      [64, 0], [64, 4],                       // 门 关 / 开
-      [96, 0], [96, 4],                       // 活板门
-      [26, 0],                                // 床
-      [66, 0],                                // 铁轨
-      [65, 0],                                // 梯子
-    ];
-    // 摆成 7 列的网格而不是一条长队：26 个方块排成一行有 52 格长，
-    // 想拍全就得退到二十多格外，每个方块只剩十几像素，等于白拍
-    const COLS = 7;
-    let placed = 0;
-    for (let i = 0; i < row.length; i++) {
-      const [id, meta] = row[i]!;
-      const x = ox + (i % COLS) * 2;
-      const z = oz + Math.floor(i / COLS) * 2;
-      this.world.setBlock(x, oy - 1, z, packState(1));
-      if (this.world.setBlock(x, oy, z, packState(id, meta))) placed++;
-    }
-    return placed;
-  }
 
-  private onCommand(player: ServerPlayer, value: Record<string, unknown>): void {
-    const requestId = value['requestId'] as number;
-    const text = String(value['text'] ?? '');
-    const reply = (ok: boolean, msg: string): void => {
-      player.channel.send(S_CommandResult, { requestId, ok, text: msg });
-    };
 
-    const parts = text.trim().split(/\s+/);
-    const cmd = parts[0] ?? '';
-    try {
-      switch (cmd) {
-        case 'setblock': {
-          const [, sx, sy, sz, blockName] = parts;
-          const state = packState(this.registry.idOf(String(blockName)));
-          const ok = this.world.setBlock(Number(sx), Number(sy), Number(sz), state);
-          reply(ok, ok ? 'ok' : '区块未加载');
-          return;
-        }
-        case 'getblock': {
-          const [, sx, sy, sz] = parts;
-          const state = this.world.getBlock(Number(sx), Number(sy), Number(sz));
-          const id = state & 0xfff;
-          reply(true, this.registry.get(id)?.name ?? `未知(${id})`);
-          return;
-        }
-        case 'tp': {
-          const [, sx, sy, sz] = parts;
-          player.x = Number(sx);
-          player.y = Number(sy);
-          player.z = Number(sz);
-          player.resetSubscriptions();
-          reply(true, 'ok');
-          return;
-        }
-        case 'time': {
-          const [, sub, val] = parts;
-          if (sub === 'set') {
-            this.world.timeOfDay = ((Number(val) % 24000) + 24000) % 24000;
-          } else if (sub === 'hold') {
-            this.world.daylightCycle = val !== '1' && val !== 'true';
-          }
-          // 立刻回传一次，不等下一个同步周期 —— 自动化就是靠这个知道设定生效了
-          for (const p of this.players.values()) {
-            p.channel.send(S_TimeUpdate, {
-              worldAge: BigInt(this.world.worldAge),
-              timeOfDay: BigInt(this.world.timeOfDay),
-            });
-          }
-          reply(true, String(this.world.timeOfDay));
-          return;
-        }
-        case 'light': {
-          const [, sx, sy, sz] = parts;
-          const x = Number(sx), y = Number(sy), z = Number(sz);
-          reply(true, `${this.world.store.getSkyLight(x, y, z)}/${this.world.store.getBlockLight(x, y, z)}`);
-          return;
-        }
-        case 'settled': {
-          // 自动化用：一次**同步**的服务端状态查询。
-          //
-          // 不能用 S_ServerStats 代替 —— 那是每隔若干 tick 才发一次的，
-          // 相机刚移动完时客户端手里还是移动**之前**的那份统计，
-          // 会读到"没有待推送区块"而误判世界已就绪，然后在截图中途
-          // 才把新区块补上。指令走的是包队列，服务端处理它时
-          // 必定已经处理完了之前的移动包，所以结果一定是新鲜的。
-          reply(true, `${player.pendingCount} ${player.subscribedCount} ${this.world.loadedCount}`);
-          return;
-        }
-        case 'gallery': {
-          // 把每一种方块摆成一个阵列，供单张截图回归。
-          //
-          // 在服务端一次性搭好，而不是让客户端发几十条 setblock ——
-          // 那样每条都是一次往返，顺序还会受调度影响，截图就不确定了。
-          const [, gx, gy, gz] = parts;
-          const ox = Number(gx);
-          const oy = Number(gy);
-          const oz = Number(gz);
-          reply(true, String(this.buildGallery(ox, oy, oz)));
-          return;
-        }
-        case 'shapes': {
-          // 只摆非立方体方块，排成一行，供近距离截图。
-          // 大阵列图里每个方块只有二十来像素，看不出楼梯朝向反没反。
-          const [, sx2, sy2, sz2] = parts;
-          reply(true, String(this.buildShapeRow(Number(sx2), Number(sy2), Number(sz2))));
-          return;
-        }
-        case 'height': {
-          const [, sx, sz] = parts;
-          reply(true, String(this.world.store.getHeight(Number(sx), Number(sz))));
-          return;
-        }
-        case 'stats':
-          reply(true, JSON.stringify(this.stats()));
-          return;
-        default:
-          reply(false, `未知指令: ${cmd}`);
-      }
-    } catch (err) {
-      reply(false, err instanceof Error ? err.message : String(err));
-    }
-  }
 }

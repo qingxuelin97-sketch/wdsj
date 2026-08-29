@@ -8,6 +8,7 @@
 import { PacketChannel } from '../../core/net/transport.ts';
 import { chunkKey, keyToCx, keyToCz } from '../../core/world/chunk.ts';
 import { encodeChunk } from '../../core/world/chunk-codec.ts';
+import { PlayerInventory, type Window } from './player-inventory.ts';
 import { S_ChunkData, S_ChunkUnload } from '../../core/net/packets.ts';
 import type { ServerWorld } from '../world/server-world.ts';
 import { DEFAULT_RENDER_DISTANCE, SEA_LEVEL } from '../../core/constants.ts';
@@ -47,13 +48,18 @@ export class ServerPlayer {
   /** 已累积的进度，0..1 */
   digProgress = 0;
 
+  /** 玩家的物品栏。跨窗口常驻 */
+  readonly inventory = new PlayerInventory();
+  /** 当前打开的窗口。null 表示只有快捷栏可见 */
   /**
-   * 手上拿着的方块 id。
+   * 当前打开的容器界面。null 表示只有快捷栏可见。
    *
-   * M6 的临时替代：还没有物品栏，所以用一个"当前手持方块"顶着，
-   * 破坏一个方块时顺手切到它（相当于自动选取）。M8 接上背包后删掉。
+   * 名字里带 open 不是啰嗦：叫 `window` 会被 lint-layers 当成 DOM 全局拦下来，
+   * 而那条规则正是用来保证 server 层能在 node 里跑的。
    */
-  heldBlockId = 1;
+  openWindow: Window | null = null;
+  /** 窗口 id，每次开新窗口自增，用来丢弃过期的点击包 */
+  windowId = 0;
   onGround = false;
   /** 客户端最后确认的输入序号，用于和解 */
   lastSeq = 0;

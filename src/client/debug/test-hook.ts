@@ -108,6 +108,12 @@ export interface HostBridge {
   startAudio(): void;
   /** 当前存活的粒子数 */
   particleCount(): number;
+  /** 上一帧 UI 画了多少矩形 */
+  uiQuads(): number;
+  /** 当前是否开着某个容器界面 */
+  uiOpen(): boolean;
+  /** 读一个像素，排查用 */
+  pixelAt(x: number, y: number): number[];
   /** 玩家身体状态，物理验收用 */
   playerState(): { x: number; y: number; z: number; onGround: boolean; mode: string };
 }
@@ -346,6 +352,9 @@ export function installTestHook(host: HostBridge): void {
     audioStats: (): { ready: boolean; plays: number } => host.audioStats(),
     startAudio: (): void => host.startAudio(),
     particleCount: (): number => host.particleCount(),
+    uiQuads: (): number => host.uiQuads(),
+    uiOpen: (): boolean => host.uiOpen(),
+    _pixelAt: (x: number, y: number): number[] => host.pixelAt(x, y),
 
     /**
      * 按住鼠标键一段时间。按**墙钟**计时，理由和 press() 一样：

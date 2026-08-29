@@ -220,6 +220,54 @@ export async function runSceneChecks(ctx) {
     }
   }
 
+  // --- 物品栏界面：快捷栏 + 背包 + 合成 ---
+  const gui = await page.evaluate(`
+    ${ensureHook}
+    const m = window.__mc;
+    m.setCanvasSize(640, 480);
+    m.freeze(false);
+    await m.setTime(6000);
+    await m.waitForIdle();
+    m.attachPlayer(${spawnPos.x}, ${spawnPos.y} + 1, ${spawnPos.z});
+    for (let i = 0; i < 200 && !m.playerState().onGround; i++) {
+      await new Promise(r => requestAnimationFrame(r));
+    }
+    // 摆几样东西，让图标、数字、堆叠都出现在画面里
+    await m.command('give planks 32');
+    await m.command('give diamond_pickaxe 1');
+    await m.command('give torch 12');
+    await m.command('give iron_ingot 7');
+    await m.command('give apple 3');
+    for (let i = 0; i < 10; i++) await new Promise(r => requestAnimationFrame(r));
+    const hotbarShot = await m.screenshot();
+    const hotbarHash = await m.screenshotHash();
+
+    // 按 E 开背包
+    await m.press('KeyE', 120);
+    for (let i = 0; i < 20; i++) await new Promise(r => requestAnimationFrame(r));
+    const opened = m.uiOpen();
+    const invShot = await m.screenshot();
+    const invHash = await m.screenshotHash();
+    const quads = m.uiQuads();
+    return { hotbarShot, hotbarHash, invShot, invHash, opened, quads };
+  `);
+  saveShot('ui-hotbar', gui.hotbarShot);
+  saveShot('ui-inventory', gui.invShot);
+  if (!gui.opened) {
+    failures.push('按 E 之后背包界面没打开');
+  } else if (gui.quads < 60) {
+    failures.push(`背包界面只画了 ${gui.quads} 个矩形，格子似乎没画出来`);
+  } else {
+    log(`物品栏界面 ok（${gui.quads} 个矩形）`);
+  }
+  for (const [key, hash] of [['ui-hotbar', gui.hotbarHash], ['ui-inventory', gui.invHash]]) {
+    actual[key] = hash;
+    if (UPDATE) log(`${key}: ${hash} (已记录)`);
+    else if (golden[key] !== undefined && golden[key] !== hash) {
+      failures.push(`${key} 截图哈希不匹配: 期望 ${golden[key]}，实得 ${hash}`);
+    } else log(`${key}: ${hash} ok`);
+  }
+
   // --- 方块陈列阵：一张截图覆盖所有形状 ---
   //
   // M7 的模型系统一加就是十几种非立方体形状。逐个写截图用例不现实，

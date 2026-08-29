@@ -63,6 +63,14 @@ export class BlockRegistry {
     return this.byName.get(name) ?? null;
   }
 
+  /**
+   * 有没有这个名字的方块。
+   * 给"一个名字既可能是方块也可能是物品"的场合用（比如 give 指令）。
+   */
+  hasBlock(name: string): boolean {
+    return this.byName.has(name);
+  }
+
   /** 按名字取 id，找不到时抛错 —— 内容表里写错名字应当立刻炸，而不是静默变成空气 */
   idOf(name: string): number {
     const def = this.byName.get(name);

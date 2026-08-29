@@ -87,6 +87,27 @@ export const C_Command = C2S.add(
   ]),
 );
 
+/**
+ * 点击容器里的一个槽位。
+ *
+ * 客户端**不自己改物品栏**：点了之后等服务端把结果发回来。
+ * 本地预测物品栏在单人下没有收益（延迟是微秒级），却会引入
+ * "客户端以为合成了、服务端说没有"这类极难查的分叉。
+ */
+export const C_WindowClick = C2S.add(
+  definePacket(0x0a, 'C_WindowClick', [
+    ['windowId', 'u8'],
+    ['slot', 'i16'],
+    ['button', 'u8'],
+    ['shift', 'bool'],
+  ]),
+);
+
+/** 关闭当前打开的界面 */
+export const C_CloseWindow = C2S.add(
+  definePacket(0x0b, 'C_CloseWindow', [['windowId', 'u8']]),
+);
+
 export const C_KeepAlive = C2S.add(
   definePacket(0x09, 'C_KeepAlive', [['time', 'i64']]),
 );
@@ -188,6 +209,35 @@ export const S_Chat = S2C.add(
   definePacket(0x88, 'S_Chat', [['text', 'str']]),
 );
 
+/**
+ * 整个窗口的物品，一次全发。
+ *
+ * 不做增量：一个窗口最多几十格，每格 6 字节，全量也就两百来字节，
+ * 而增量同步要维护"客户端以为是什么"的影子状态 —— 那是物品栏 bug
+ * 最经典的来源（影子状态和真状态一旦漂移，表现是物品凭空出现或消失）。
+ */
+export const S_WindowItems = S2C.add(
+  definePacket(0x8d, 'S_WindowItems', [
+    ['windowId', 'u8'],
+    /** 每格 3 个 i32：id / count / damage。手上拿的那一堆排在最后 */
+    ['slots', 'bytes'],
+  ]),
+);
+
+/** 打开一个容器界面 */
+export const S_OpenWindow = S2C.add(
+  definePacket(0x8e, 'S_OpenWindow', [
+    ['windowId', 'u8'],
+    ['kind', 'u8'],
+    ['title', 'str'],
+  ]),
+);
+
+/** 关闭界面（服务端主动，比如箱子被挖了） */
+export const S_CloseWindow = S2C.add(
+  definePacket(0x8f, 'S_CloseWindow', [['windowId', 'u8']]),
+);
+
 /** 指令回执，与 C_Command 的 requestId 对应 */
 export const S_CommandResult = S2C.add(
   definePacket(0x89, 'S_CommandResult', [
@@ -238,11 +288,26 @@ export type LoginPayload = Payload<typeof S_Login.schema>;
 export const PROTOCOL_VERSION = 1;
 
 /** 玩家动作编号 */
+/** 容器界面的种类，决定客户端画哪个布局 */
+export const WindowKind = {
+  /** 玩家背包，带 2×2 合成 */
+  INVENTORY: 0,
+  /** 工作台，3×3 合成 */
+  CRAFTING: 1,
+  /** 熔炉 */
+  FURNACE: 2,
+  /** 箱子 */
+  CHEST: 3,
+} as const;
+export type WindowKind = (typeof WindowKind)[keyof typeof WindowKind];
+
 export const PlayerActionKind = {
   START_DIG: 0,
   CANCEL_DIG: 1,
   FINISH_DIG: 2,
   DROP_ITEM: 3,
+  /** 打开背包界面。窗口由服务端建，客户端只是请求 */
+  OPEN_INVENTORY: 5,
   DROP_STACK: 4,
 } as const;
 export type PlayerActionKind = (typeof PlayerActionKind)[keyof typeof PlayerActionKind];

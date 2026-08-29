@@ -18,6 +18,12 @@ export interface InputSnapshot {
   readonly sprint: boolean;
   readonly sneak: boolean;
   /** 本帧累积的鼠标偏移（弧度），读取后清零 */
+  /** 打开/关闭背包（E） */
+  readonly inventory: boolean;
+  /** 关闭当前界面（Esc） */
+  readonly escape: boolean;
+  /** 按下的数字键 1..9，没按返回 −1 */
+  readonly hotbarKey: number;
   /** 左键：挖掘 */
   readonly attack: boolean;
   /** 右键：放置 / 使用 */
@@ -101,6 +107,12 @@ export class Input {
     canvas.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mouseup', onMouseUp);
     canvas.addEventListener('contextmenu', onContextMenu);
+    const onAbsMove = (ev: MouseEvent): void => {
+      const rect = canvas.getBoundingClientRect();
+      this.absX = ((ev.clientX - rect.left) / rect.width) * canvas.width;
+      this.absY = ((ev.clientY - rect.top) / rect.height) * canvas.height;
+    };
+    window.addEventListener('mousemove', onAbsMove);
     window.addEventListener('mousemove', onMouseMove);
     canvas.addEventListener('click', onClick);
     document.addEventListener('pointerlockchange', onLockChange);
@@ -112,6 +124,7 @@ export class Input {
       () => canvas.removeEventListener('mousedown', onMouseDown),
       () => window.removeEventListener('mouseup', onMouseUp),
       () => canvas.removeEventListener('contextmenu', onContextMenu),
+      () => window.removeEventListener('mousemove', onAbsMove),
       () => window.removeEventListener('mousemove', onMouseMove),
       () => canvas.removeEventListener('click', onClick),
       () => document.removeEventListener('pointerlockchange', onLockChange),
@@ -120,6 +133,15 @@ export class Input {
 
   /** 当前按下的鼠标键 */
   private readonly buttons = new Set<number>();
+  /** 未锁定指针时的绝对鼠标位置（画布坐标） */
+  private absX = 0;
+  private absY = 0;
+
+  /** 供 __mc 注入绝对鼠标位置 */
+  injectPointer(x: number, y: number): void {
+    this.absX = x;
+    this.absY = y;
+  }
   /** 用户手势回调。音频上下文的启动挂在这里 */
   private readonly gestureCallbacks: (() => void)[] = [];
 
@@ -144,6 +166,9 @@ export class Input {
       down: has('KeyQ'),
       sprint: has('ControlLeft'),
       sneak: has('ShiftLeft') || has('ShiftRight'),
+      inventory: has('KeyE'),
+      escape: has('Escape'),
+      hotbarKey: this.hotbarKey(has),
       attack: this.buttons.has(0) || this.injected.has('Mouse0'),
       use: this.buttons.has(2) || this.injected.has('Mouse2'),
       dYaw: this.accYaw,
@@ -161,6 +186,21 @@ export class Input {
 
   injectKeyUp(code: string): void {
     this.injected.delete(code);
+  }
+
+  /** 数字键 1..9 -> 快捷栏下标 0..8 */
+  private hotbarKey(has: (code: string) => boolean): number {
+    for (let i = 0; i < 9; i++) if (has(`Digit${i + 1}`)) return i;
+    return -1;
+  }
+
+  /** 界面打开时鼠标不再被锁定，用的是**绝对**位置 */
+  get pointerX(): number {
+    return this.absX;
+  }
+
+  get pointerY(): number {
+    return this.absY;
   }
 
   /** 供 __mc.click() 使用。0 = 左键，2 = 右键 */

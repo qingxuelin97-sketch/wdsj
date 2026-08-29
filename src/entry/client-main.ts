@@ -15,13 +15,16 @@ import { Input } from '../client/input/input.ts';
 import { installTestHook, recordError, recordLog } from '../client/debug/test-hook.ts';
 import { scheduleFrame } from '../client/frame-scheduler.ts';
 import { BLOCK_VERT_SRC, BLOCK_FRAG_SRC } from '../client/render/block-shader.ts';
-import { buildAtlas, buildFaceLayerTable, tintColorArray } from '../client/render/block-textures.ts';
-import { DESTROY_STAGE_NAMES } from '../client/render/tile-recipes.ts';
+import { tintColorArray } from '../client/render/block-textures.ts';
+import { buildRenderResources } from '../client/render/resources.ts';
 import { ChunkRenderer } from '../client/render/chunk-renderer.ts';
 import { OverlayRenderer } from '../client/render/overlay-renderer.ts';
 import { ParticleRenderer } from '../client/render/particle-renderer.ts';
 import { AudioEngine } from '../client/audio/audio-engine.ts';
 import { Interaction } from '../client/player/interaction.ts';
+import { UiRenderer } from '../client/ui/ui-renderer.ts';
+import { UiController, decodeSlots } from '../client/ui/ui-controller.ts';
+import { createItemRegistry } from '../content/items.ts';
 import { LocalPlayer } from '../client/player/local-player.ts';
 import { type MesherTables } from '../client/mesh/mesher.ts';
 import { MeshWorkerPool, recommendedMeshWorkers } from '../client/mesh/mesh-worker-pool.ts';
@@ -33,7 +36,8 @@ import { Frustum } from '../core/math/frustum.ts';
 import { MessagePortTransport, PacketChannel } from '../core/net/transport.ts';
 import {
   S2C, C_Handshake, C_Command, C_PlayerMove, C_PlayerAction, C_UseBlock,
-  C_SetViewDistance, PROTOCOL_VERSION, PlayerActionKind,
+  C_SetViewDistance, C_WindowClick, C_CloseWindow, C_HeldSlot,
+  PROTOCOL_VERSION, PlayerActionKind, WindowKind,
 } from '../core/net/packets.ts';
 import { SECTION_SIZE, DEFAULT_RENDER_DISTANCE, TPS, REACH_SURVIVAL, MS_PER_TICK } from '../core/constants.ts';
 import { skyColor, sunBrightness } from '../core/world/day-night.ts';
@@ -54,37 +58,13 @@ console.log(`[gl] ${caps.rendererName}`);
 // ---------------------------------------------------------------------------
 const registry = createBlockRegistry();
 const tables = registry.getTables();
-// 除了方块用到的贴图，还要把 10 张挖掘裂纹一并烘进纹理数组 ——
-// 它们不属于任何方块，但要和方块贴图共用同一个 sampler2DArray
-const atlas = buildAtlas([...tables.collectTextureNames(), ...DESTROY_STAGE_NAMES]);
-const faceLayer = buildFaceLayerTable(tables, atlas);
-recordLog(`方块 ${registry.size} 种 · 贴图 ${atlas.layers} 张`);
-
-const mesherTables: MesherTables = {
-  modelKind: tables.modelKind,
-  renderLayer: tables.renderLayer,
-  tint: tables.tint,
-  tintFaces: tables.tintFaces,
-  fullCube: tables.fullCube,
-  cullSameType: tables.cullSameType,
-  opaque: tables.opaque,
-  faceLayer,
-  models: tables.models,
-};
-
-const texture = gl.createTexture();
-gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
-const mipLevels = Math.floor(Math.log2(TILE_SIZE)) + 1;
-gl.texStorage3D(gl.TEXTURE_2D_ARRAY, mipLevels, gl.RGBA8, TILE_SIZE, TILE_SIZE, atlas.layers);
-gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, TILE_SIZE, TILE_SIZE, atlas.layers, gl.RGBA, gl.UNSIGNED_BYTE, atlas.data);
-gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
-gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_LINEAR);
-gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.REPEAT);
-gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.REPEAT);
-if (anisoExt !== null) {
-  gl.texParameterf(gl.TEXTURE_2D_ARRAY, anisoExt.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(4, caps.maxAnisotropy));
-}
+// 贴图集与 GPU 纹理。物品图标也一并烘进去 —— UI 与世界共用一个 sampler
+const itemRegistry = createItemRegistry();
+const { atlas, faceLayer, mesherTables, texture } = buildRenderResources(
+  gl, tables, caps, anisoExt,
+  itemRegistry.all().map((d) => d.texture),
+);
+recordLog(`方块 ${registry.size} 种 · 物品 ${itemRegistry.size} 件 · 贴图 ${atlas.layers} 张`);
 
 // ---------------------------------------------------------------------------
 // 运行时对象
@@ -103,6 +83,27 @@ const shader = new Shader(gl, BLOCK_VERT_SRC, BLOCK_FRAG_SRC, 'block');
 const tintColors = tintColorArray();
 const world = new ClientWorld(tables);
 const overlay = new OverlayRenderer(gl);
+const uiRenderer = new UiRenderer(gl);
+const ui = new UiController();
+
+/**
+ * 物品 id -> 该画哪一层纹理。
+ *
+ * 方块画它的顶面（俯视图在物品栏里最好认），物品画自己的图标。
+ * 两者在同一个纹理数组里，所以 UI 与世界共用一次纹理绑定。
+ */
+const iconLayerOf = (id: number, damage: number): number => {
+  void damage;
+  if (id <= 0) return -1;
+  if (id < 256) return faceLayer[id * 6 + 1] ?? -1;
+  const def = itemRegistry.get(id);
+  if (def === undefined) return -1;
+  return atlas.index.get(def.texture) ?? -1;
+};
+const uiCtx = {
+  iconLayer: iconLayerOf,
+  maxStack: (id: number): number => itemRegistry.get(id)?.maxStack ?? 64,
+};
 const particles = new ParticleRenderer(gl);
 const audio = new AudioEngine();
 input.onUserGesture(() => audio.resume());
@@ -256,6 +257,20 @@ net.onPacket((name, value) => {
       }
       return;
     }
+    case 'S_WindowItems':
+      ui.onWindowItems(value['windowId'] as number, decodeSlots(value['slots'] as Uint8Array));
+      return;
+    case 'S_OpenWindow': {
+      const kind = value['kind'] as WindowKind;
+      // 外部容器的格数：箱子 27，熔炉 3，其余 0
+      const external = kind === WindowKind.CHEST ? 27 : kind === WindowKind.FURNACE ? 3 : 0;
+      ui.onOpenWindow(value['windowId'] as number, kind, external);
+      document.exitPointerLock();
+      return;
+    }
+    case 'S_CloseWindow':
+      ui.onCloseWindow();
+      return;
     case 'S_ServerStats':
       serverStats.tick = value['tick'] as number;
       serverStats.pendingChunks = value['pendingChunks'] as number;
@@ -397,6 +412,10 @@ function renderOnce(): void {
 
   particles.render(camera.viewProjection, camera.yaw, camera.pitch, texture);
   interaction.renderOverlay(overlay, texture);
+
+  // 界面画在最后，且用**虚拟像素**坐标系（见 ui-renderer.ts）
+  ui.draw(uiRenderer, uiCtx);
+  uiRenderer.flush(texture);
 }
 
 installTestHook({
@@ -442,6 +461,14 @@ installTestHook({
   audioStats: () => ({ ready: audio.ready, plays: audio.playCount }),
   startAudio: () => audio.resume(),
   particleCount: () => particles.count,
+  uiQuads: () => uiRenderer.lastQuads,
+  uiOpen: () => ui.open,
+  pixelAt: (x: number, y: number) => {
+    const buf = new Uint8Array(4);
+    // readPixels 的原点在**左下角**，和屏幕坐标相反
+    gl.readPixels(x, canvas!.height - 1 - y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    return [buf[0]!, buf[1]!, buf[2]!, buf[3]!];
+  },
 
 });
 
@@ -463,6 +490,10 @@ const interaction = new Interaction({
 // 主循环
 // ---------------------------------------------------------------------------
 let firstFrameDone = false;
+/** 上一帧的按键状态，用来做边沿触发 */
+let prevInventory = false;
+let prevAttack = false;
+let prevUse = false;
 let hudAccum = 0;
 
 function frame(nowMs: number): void {
@@ -470,7 +501,47 @@ function frame(nowMs: number): void {
   if (!sizeLocked) resizeToDisplay(canvas!, Math.min(window.devicePixelRatio || 1, 2));
 
   const snap = input.sample();
-  if (!clock.frozen && spawned) {
+
+  // --- 界面开关。按键要做**边沿触发**，否则按住 E 会每帧开一次 ---
+  if (snap.inventory && !prevInventory) {
+    if (ui.open) {
+      net.send(C_CloseWindow, { windowId: ui.windowId });
+      ui.onCloseWindow();
+    } else {
+      net.send(C_PlayerAction, {
+        action: PlayerActionKind.OPEN_INVENTORY, x: 0, y: 0, z: 0, face: 0,
+      });
+    }
+  }
+  prevInventory = snap.inventory;
+
+  if (snap.escape && ui.open) {
+    net.send(C_CloseWindow, { windowId: ui.windowId });
+    ui.onCloseWindow();
+  }
+
+  // 数字键切快捷栏
+  if (snap.hotbarKey >= 0 && snap.hotbarKey !== ui.selectedHotbar) {
+    ui.selectedHotbar = snap.hotbarKey;
+    net.send(C_HeldSlot, { slot: snap.hotbarKey });
+  }
+
+  // --- 界面开着时鼠标用来点格子，不动相机也不挖方块 ---
+  if (ui.open) {
+    ui.onMouseMove(input.pointerX, input.pointerY, canvas!.width, canvas!.height);
+    if (snap.attack && !prevAttack) {
+      const click = ui.click(0, snap.sneak);
+      if (click !== null) net.send(C_WindowClick, click);
+    }
+    if (snap.use && !prevUse) {
+      const click = ui.click(1, snap.sneak);
+      if (click !== null) net.send(C_WindowClick, click);
+    }
+  }
+  prevAttack = snap.attack;
+  prevUse = snap.use;
+
+  if (!clock.frozen && spawned && !ui.open) {
     if (player.mode === 'detached') camera.applyFreeFlight(snap, clock.dt, 12);
     player.update(camera, snap, world.store, tables, clock.dt * 1000);
     interaction.update(snap, clock.dt * 1000);
