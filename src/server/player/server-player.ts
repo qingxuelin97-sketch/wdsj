@@ -33,6 +33,27 @@ export class ServerPlayer {
   z = 0.5;
   yaw = 0;
   pitch = 0;
+
+  // --- 挖掘状态 ---
+  //
+  // 服务端自己算进度，**不信客户端的"我挖完了"**。
+  // 客户端只报"开始挖这一格"和"松手了"；破坏的时刻由服务端用同一份
+  // core/block/breaking.ts 的公式判定。否则改一行客户端就能瞬间挖穿基岩。
+  /** 正在挖的方块；digging 为 false 时无意义 */
+  digging = false;
+  digX = 0;
+  digY = 0;
+  digZ = 0;
+  /** 已累积的进度，0..1 */
+  digProgress = 0;
+
+  /**
+   * 手上拿着的方块 id。
+   *
+   * M6 的临时替代：还没有物品栏，所以用一个"当前手持方块"顶着，
+   * 破坏一个方块时顺手切到它（相当于自动选取）。M8 接上背包后删掉。
+   */
+  heldBlockId = 1;
   onGround = false;
   /** 客户端最后确认的输入序号，用于和解 */
   lastSeq = 0;

@@ -16,16 +16,26 @@ import { installTestHook, recordError, recordLog } from '../client/debug/test-ho
 import { scheduleFrame } from '../client/frame-scheduler.ts';
 import { BLOCK_VERT_SRC, BLOCK_FRAG_SRC } from '../client/render/block-shader.ts';
 import { buildAtlas, buildFaceLayerTable, tintColorArray } from '../client/render/block-textures.ts';
+import { DESTROY_STAGE_NAMES } from '../client/render/tile-recipes.ts';
 import { ChunkRenderer } from '../client/render/chunk-renderer.ts';
+import { OverlayRenderer } from '../client/render/overlay-renderer.ts';
+import { ParticleRenderer } from '../client/render/particle-renderer.ts';
+import { AudioEngine } from '../client/audio/audio-engine.ts';
+import { Interaction } from '../client/player/interaction.ts';
+import { LocalPlayer } from '../client/player/local-player.ts';
 import { type MesherTables } from '../client/mesh/mesher.ts';
 import { MeshWorkerPool, recommendedMeshWorkers } from '../client/mesh/mesh-worker-pool.ts';
 import { ClientWorld, type SectionCoord } from '../client/world/client-world.ts';
 import { createBlockRegistry } from '../content/blocks.ts';
 import { extractPaddedNeighborhood } from '../core/world/chunk-codec.ts';
+import { stateId } from '../core/world/chunk.ts';
 import { Frustum } from '../core/math/frustum.ts';
 import { MessagePortTransport, PacketChannel } from '../core/net/transport.ts';
-import { S2C, C_Handshake, C_Command, C_PlayerMove, C_SetViewDistance, PROTOCOL_VERSION } from '../core/net/packets.ts';
-import { SECTION_SIZE, DEFAULT_RENDER_DISTANCE, TPS } from '../core/constants.ts';
+import {
+  S2C, C_Handshake, C_Command, C_PlayerMove, C_PlayerAction, C_UseBlock,
+  C_SetViewDistance, PROTOCOL_VERSION, PlayerActionKind,
+} from '../core/net/packets.ts';
+import { SECTION_SIZE, DEFAULT_RENDER_DISTANCE, TPS, REACH_SURVIVAL, MS_PER_TICK } from '../core/constants.ts';
 import { skyColor, sunBrightness } from '../core/world/day-night.ts';
 import { StatSlot, readStat, writeStat, STAT_BYTES } from '../core/shared-stats.ts';
 import { TILE_SIZE } from '../client/render/texgen.ts';
@@ -44,7 +54,9 @@ console.log(`[gl] ${caps.rendererName}`);
 // ---------------------------------------------------------------------------
 const registry = createBlockRegistry();
 const tables = registry.getTables();
-const atlas = buildAtlas(tables.collectTextureNames());
+// 除了方块用到的贴图，还要把 10 张挖掘裂纹一并烘进纹理数组 ——
+// 它们不属于任何方块，但要和方块贴图共用同一个 sampler2DArray
+const atlas = buildAtlas([...tables.collectTextureNames(), ...DESTROY_STAGE_NAMES]);
 const faceLayer = buildFaceLayerTable(tables, atlas);
 recordLog(`方块 ${registry.size} 种 · 贴图 ${atlas.layers} 张`);
 
@@ -89,6 +101,18 @@ const input = new Input(canvas);
 const shader = new Shader(gl, BLOCK_VERT_SRC, BLOCK_FRAG_SRC, 'block');
 const tintColors = tintColorArray();
 const world = new ClientWorld(tables);
+const overlay = new OverlayRenderer(gl);
+const particles = new ParticleRenderer(gl);
+const audio = new AudioEngine();
+input.onUserGesture(() => audio.resume());
+/** 粒子与音效用的随机源。固定种子，同一次运行里可复现 */
+let soundSeed = 0x1234567;
+const rand = (): number => {
+  soundSeed = (Math.imul(soundSeed, 1664525) + 1013904223) >>> 0;
+  return soundSeed / 0x100000000;
+};
+const player = new LocalPlayer(0.5, 70, 0.5);
+
 
 // ---------------------------------------------------------------------------
 // 服务端：跑在自己的 Worker 里
@@ -186,7 +210,10 @@ net.onPacket((name, value) => {
       const sx = value['spawnX'] as number;
       const sy = value['spawnY'] as number;
       const sz = value['spawnZ'] as number;
-      camera.setPosition(sx, sy + 1.62, sz);
+      // 相机和**身体**都要放到出生点。只挪相机的话，物理下一帧就会
+      // 把相机拽回身体所在的位置（世界原点上空），表现为一出生就掉进虚空
+      player.teleport(sx, sy, sz);
+      camera.setPosition(sx, sy + player.eyeHeight, sz);
       spawned = true;
       console.log(`[net] 登录成功，出生点 ${sx.toFixed(1)} ${sy.toFixed(1)} ${sz.toFixed(1)}`);
       return;
@@ -201,9 +228,20 @@ net.onPacket((name, value) => {
       for (let cy = 0; cy < 8; cy++) renderer.remove(cx, cy, cz);
       return;
     }
-    case 'S_BlockUpdate':
-      world.onBlockUpdate(value['x'] as number, value['y'] as number, value['z'] as number, value['state'] as number);
+    case 'S_BlockUpdate': {
+      const bx = value['x'] as number;
+      const by = value['y'] as number;
+      const bz = value['z'] as number;
+      const newState = value['state'] as number;
+      const oldId = stateId(world.store.getState(bx, by, bz));
+      world.onBlockUpdate(bx, by, bz, newState);
+
+      // 破坏：炸一把碎屑 + 一声破坏音。
+      // 挂在 S_BlockUpdate 上而不是本地挖掘逻辑里，这样别人挖的方块
+      // 也一样有碎屑和声音 —— 多人时这一条是"世界是活的"的主要来源。
+      if (oldId !== 0 && stateId(newState) === 0) interaction.onBlockBroken(bx, by, bz, oldId);
       return;
+    }
     case 'S_TimeUpdate':
       serverTick = Number(value['worldAge'] as bigint);
       timeOfDay = Number(value['timeOfDay'] as bigint);
@@ -355,6 +393,9 @@ function renderOnce(): void {
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
   renderer.render(shader, frustum, camera.position[0]!, camera.position[1]!, camera.position[2]!);
+
+  particles.render(camera.viewProjection, camera.yaw, camera.pitch, texture);
+  interaction.renderOverlay(overlay, texture);
 }
 
 installTestHook({
@@ -385,7 +426,36 @@ installTestHook({
   }),
   debugWorld: () => world,
   remeshAll: () => world.markAllDirty(),
+  detachCamera: () => { player.mode = 'detached'; },
+  attachPlayer: (x: number, y: number, z: number) => {
+    player.mode = 'physics';
+    player.teleport(x, y, z);
+    camera.setPosition(x, y + player.eyeHeight, z);
+  },
+  playerState: () => ({
+    x: player.body.x, y: player.body.y, z: player.body.z,
+    onGround: player.body.onGround, mode: player.mode,
+  }),
+  selectedBlock: () => interaction.selectedBlock(),
+  digProgress: () => interaction.digProgress,
+  audioStats: () => ({ ready: audio.ready, plays: audio.playCount }),
+  startAudio: () => audio.resume(),
+  particleCount: () => particles.count,
 
+});
+
+/**
+ * 选中、挖掘、放置。抽成一个模块是因为 client-main 已经顶到 600 行的硬上限了 ——
+ * 那条规则的用处正是在这种时候：它逼着人把长出来的东西搬走，而不是继续糊。
+ */
+const interaction = new Interaction({
+  camera, world, tables, audio, particles,
+  player,
+  crackLayer0: atlas.index.get('destroy_stage_0') ?? 0,
+  faceLayer,
+  send: (packet, value) => net.send(packet, value),
+  rand,
+  tintColors,
 });
 
 // ---------------------------------------------------------------------------
@@ -399,7 +469,11 @@ function frame(nowMs: number): void {
   if (!sizeLocked) resizeToDisplay(canvas!, Math.min(window.devicePixelRatio || 1, 2));
 
   const snap = input.sample();
-  if (!clock.frozen && spawned) camera.applyFreeFlight(snap, clock.dt, 12);
+  if (!clock.frozen && spawned) {
+    if (player.mode === 'detached') camera.applyFreeFlight(snap, clock.dt, 12);
+    player.update(camera, snap, world.store, tables, clock.dt * 1000);
+    interaction.update(snap, clock.dt * 1000);
+  }
 
   // 服务端在自己的 Worker 里跑，主线程只需按帧把玩家位置报上去
   sendPlayerPosition(snap.sneak, snap.sprint);

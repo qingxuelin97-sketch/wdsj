@@ -91,6 +91,25 @@ export interface HostBridge {
   debugWorld(): unknown;
   /** 强制重做全部网格。排查"网格是否过期"用 */
   remeshAll(): void;
+  /**
+   * 切到自由相机（无重力、可穿墙）。
+   * setCamera 之后必须切过去，否则相机刚摆好下一帧就掉下去了。
+   */
+  detachCamera(): void;
+  /** 切回受物理驱动的玩家，并把身体放到指定位置 */
+  attachPlayer(x: number, y: number, z: number): void;
+  /** 准星指着的方块；没指着任何东西时为 null */
+  selectedBlock(): { x: number; y: number; z: number; face: number } | null;
+  /** 本地挖掘进度 0..1 */
+  digProgress(): number;
+  /** 音频状态：是否就绪、播过多少个音 */
+  audioStats(): { ready: boolean; plays: number };
+  /** 启动音频上下文。正常游玩时由第一次点击触发，自动化里手动调 */
+  startAudio(): void;
+  /** 当前存活的粒子数 */
+  particleCount(): number;
+  /** 玩家身体状态，物理验收用 */
+  playerState(): { x: number; y: number; z: number; onGround: boolean; mode: string };
 }
 
 /** 收集未捕获错误、WebGL 错误、着色器错误，供 assertNoErrors 使用 */
@@ -182,6 +201,11 @@ export function installTestHook(host: HostBridge): void {
       host.mirrorInfo(x, y, z),
     /** 排查用：拿到客户端世界镜像。不是稳定接口 */
     _world: (): unknown => host.debugWorld(),
+    /** 直接按下/松开鼠标键，不等待。要自己控制按住时长时用它 */
+    _injectMouse: (button: number, down: boolean): void => {
+      if (down) host.input.injectMouseDown(button);
+      else host.input.injectMouseUp(button);
+    },
     /** 排查用：把所有子区块标脏，强制整场重做网格 */
     _remeshAll: (): void => host.remeshAll(),
 
@@ -298,13 +322,41 @@ export function installTestHook(host: HostBridge): void {
 
     // --- 相机 ---
     setCamera(x: number, y: number, z: number, yaw: number, pitch: number, fov?: number): void {
+      // 摆相机就意味着"我要自由视角" —— 不切过去的话物理会立刻把它拽到地面上
+      host.detachCamera();
       host.camera.setPosition(x, y, z);
       host.camera.setRotation(yaw, pitch);
       if (fov !== undefined) host.camera.fovDegrees = fov;
     },
     tp(x: number, y: number, z: number, yaw?: number, pitch?: number): void {
+      host.detachCamera();
       host.camera.setPosition(x, y, z);
       if (yaw !== undefined) host.camera.setRotation(yaw, pitch ?? host.camera.pitch);
+    },
+
+    /** 切回受物理驱动的玩家。物理验收（走一秒走多远、跳多高）要用这个 */
+    attachPlayer(x: number, y: number, z: number): void {
+      host.attachPlayer(x, y, z);
+    },
+    playerState: (): { x: number; y: number; z: number; onGround: boolean; mode: string } =>
+      host.playerState(),
+    selectedBlock: (): { x: number; y: number; z: number; face: number } | null =>
+      host.selectedBlock(),
+    digProgress: (): number => host.digProgress(),
+    audioStats: (): { ready: boolean; plays: number } => host.audioStats(),
+    startAudio: (): void => host.startAudio(),
+    particleCount: (): number => host.particleCount(),
+
+    /**
+     * 按住鼠标键一段时间。按**墙钟**计时，理由和 press() 一样：
+     * 按帧数的话真实帧率低于 60 时会误报超时。
+     */
+    async click(button: number, ms = 100): Promise<void> {
+      host.input.injectMouseDown(button);
+      const until = Date.now() + ms;
+      while (Date.now() < until) await nextFrame();
+      host.input.injectMouseUp(button);
+      await nextFrame();
     },
 
     // --- 输入合成 ---

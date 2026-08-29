@@ -9,7 +9,8 @@
  * `core/registry/block-tables.ts` 里的扁平 typed array，mesher / 光照 / 碰撞 / 射线
  * 只读那些数组。见 docs/RULES.md 第 6 条。
  */
-import type { ToolKind, ToolTier, RenderLayer, TintKind, SoundGroup, ModelKind } from './types.ts';
+import { ToolKind } from './types.ts';
+import type { ToolTier, RenderLayer, TintKind, SoundGroup, ModelKind } from './types.ts';
 import type { BlockHooks } from './block-hooks.ts';
 import type { Aabb } from '../math/aabb.ts';
 import { FRICTION_DEFAULT } from '../constants.ts';
@@ -66,6 +67,15 @@ export interface BlockDef {
   readonly tool: ToolKind | null;
   /** 掉落所需的最低工具等级 */
   readonly minTier: ToolTier;
+  /**
+   * 收获是否**必须**有对口工具。
+   *
+   * 和 minTier 是两件事：minTier=WOOD 是 0，而 ToolTier 里没有"无"这一档，
+   * 所以光靠 minTier 表达不出"徒手就能挖到"。MC 里这是按材质定的
+   * （岩石/金属要工具，泥土/木头/羊毛不要），这里默认按"是否用镐"推导，
+   * 正好覆盖 1.0 的全部方块；个别方块可以显式覆盖。
+   */
+  readonly requiresTool: boolean;
   /** 爆炸抗性 */
   readonly blastResistance: number;
 
@@ -120,7 +130,7 @@ export interface BlockDef {
 /** 构造 BlockDef 时的可选字段默认值 */
 export type BlockDefInput = Omit<
   BlockDef,
-  'blastResistance' | 'solid' | 'opaque' | 'opacity' | 'lightEmission' | 'replaceable' | 'flammability' | 'renderLayer' | 'tint' | 'soundGroup' | 'modelKind' | 'minTier' | 'tool' | 'hardness' | 'slipperiness'
+  'blastResistance' | 'solid' | 'opaque' | 'opacity' | 'lightEmission' | 'replaceable' | 'flammability' | 'renderLayer' | 'tint' | 'soundGroup' | 'modelKind' | 'minTier' | 'tool' | 'hardness' | 'slipperiness' | 'requiresTool'
 > &
   Partial<BlockDef>;
 
@@ -137,6 +147,7 @@ export function defineBlock(input: BlockDefInput): BlockDef {
     slipperiness: input.slipperiness ?? FRICTION_DEFAULT,
     tool: input.tool ?? null,
     minTier: input.minTier ?? 0,
+    requiresTool: input.requiresTool ?? input.tool === ToolKind.PICKAXE,
     blastResistance: input.blastResistance ?? (input.hardness ?? 1) * 5,
     solid: input.solid ?? true,
     opaque,

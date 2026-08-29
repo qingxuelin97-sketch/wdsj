@@ -5,7 +5,7 @@
  * 这与 MC 的做法一致，也是让不同群系共用同一张贴图的前提。现在就画成灰度，
  * M4 接入群系色表时不必重画。
  */
-import { TilePainter, rgb, type Rgb } from './texgen.ts';
+import { TilePainter, rgb, mulberry32, fnv1a, type Rgb } from './texgen.ts';
 
 type Recipe = (p: TilePainter) => void;
 
@@ -192,6 +192,59 @@ export const RECIPES: Record<string, Recipe> = {
   rose: (p) => plant(p, rgb(0x4f7f2f), rgb(0xd02020), 10),
   brown_mushroom: (p) => mushroom(p, rgb(0x9b6b4b), false),
   red_mushroom: (p) => mushroom(p, rgb(0xc23a2a), true),
+
+  // --- 挖掘裂纹，10 级 ---
+  //
+  // 白底黑纹，由渲染时的乘法混合把它压到方块表面上（见 overlay-renderer.ts）。
+  // 裂纹从中心向外生长：每一级都包含上一级的全部线条，再多几条分叉 ——
+  // 关键是**同一格方块的裂纹图案在 10 级之间必须是连续的**，
+  // 每级各画各的会让裂纹在挖掘过程中不停跳动，非常廉价。
+  ...destroyStages(),
 };
 
+/** 生成 destroy_stage_0..9。它们共用一套从中心生长的裂纹骨架 */
+function destroyStages(): Record<string, (p: TilePainter) => void> {
+  const out: Record<string, (p: TilePainter) => void> = {};
+  for (let stage = 0; stage < 10; stage++) {
+    out[`destroy_stage_${stage}`] = (p): void => {
+      // 全透明的白底：alpha 0 的地方在着色器里会被还原成"不压暗"
+      for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 255, 255, 255, 0);
+
+      // 用固定种子生成裂纹骨架，保证 10 级之间图案一致
+      const rand = mulberry32(fnv1a('destroy_crack'));
+      const branches = 5;
+      const grow = (stage + 1) / 10;
+      for (let b = 0; b < branches; b++) {
+        let x = 8 + Math.floor((rand() - 0.5) * 3);
+        let y = 8 + Math.floor((rand() - 0.5) * 3);
+        const angle = (b / branches) * Math.PI * 2 + rand() * 0.7;
+        let dx = Math.cos(angle);
+        let dy = Math.sin(angle);
+        const steps = Math.round(11 * grow);
+        for (let i = 0; i < steps; i++) {
+          // 越往后越暗，中心最黑
+          const dark = 40 + Math.floor(80 * (i / 12));
+          p.set(Math.round(x), Math.round(y), dark, dark, dark, 255);
+          // 偶尔加粗一格，让裂纹不是一条细游标
+          if (rand() < 0.35) p.set(Math.round(x) + 1, Math.round(y), dark, dark, dark, 255);
+          x += dx;
+          y += dy;
+          // 走偏一点，直线看着像划痕不像裂纹
+          dx += (rand() - 0.5) * 0.55;
+          dy += (rand() - 0.5) * 0.55;
+          const len = Math.hypot(dx, dy) || 1;
+          dx /= len;
+          dy /= len;
+          if (x < 0 || x > 15 || y < 0 || y > 15) break;
+        }
+      }
+    };
+  }
+  return out;
+}
+
 export const TILE_NAMES: readonly string[] = Object.keys(RECIPES);
+
+/** 10 张挖掘裂纹的贴图名。它们不属于任何方块，要由入口显式塞进图集 */
+export const DESTROY_STAGE_NAMES: readonly string[] =
+  Array.from({ length: 10 }, (_, i) => `destroy_stage_${i}`);

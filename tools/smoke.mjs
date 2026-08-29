@@ -261,6 +261,150 @@ async function main() {
       }
     }
 
+    // --- 玩家物理：按住 W 一秒，位移必须命中黄金值 ---
+    //
+    // 这是把 core 的物理真正接到键盘上的验收。单测已经证明公式对了，
+    // 这里证明"按键 -> 输入快照 -> stepBody -> 相机"这条链路没接错。
+    const walk = await page.evaluate(`
+      ${ensureHook}
+      const m = window.__mc;
+      m.freeze(false);
+      await m.waitForIdle();
+      // 回到出生点站定。不能用当前相机位置 —— 前面的用例把相机摆到几十格高空了
+      m.attachPlayer(${spawnPos.x}, ${spawnPos.y} + 1, ${spawnPos.z});
+      let landed = false;
+      for (let i = 0; i < 200 && !landed; i++) {
+        await new Promise(r => requestAnimationFrame(r));
+        landed = m.playerState().onGround;
+      }
+      const before = m.playerState();
+      // **逐帧**采样：按墙钟切窗口的话，采样点落在帧的中间会把一帧的位移
+      // 劈给两个窗口，速度看上去忽高忽低。逐帧采样没有这个问题。
+      const track = [];
+      const pressed = m.press('KeyW', 1000);
+      let last = { t: performance.now(), x: before.x, z: before.z };
+      while (true) {
+        await new Promise(r => requestAnimationFrame(r));
+        const st = m.playerState();
+        const now = performance.now();
+        const dt = (now - last.t) / 1000;
+        if (dt > 0) track.push({ dt, d: Math.hypot(st.x - last.x, st.z - last.z) });
+        last = { t: now, x: st.x, z: st.z };
+        if (track.length > 400) break;
+        if (track.reduce((a, b) => a + b.dt, 0) > 1.0) break;
+      }
+      await pressed;
+      const after = m.playerState();
+
+      // 取"第一帧动起来"到"最后一帧还在动"之间的**整段**，
+      // 把中间没动的帧也算进时间里 —— 物理是 20 Hz 的，高帧率下本来就有
+      // 若干帧位置不变，只挑动了的帧算速度会算出好几倍的值。
+      let first = -1;
+      let last2 = -1;
+      for (let i = 0; i < track.length; i++) {
+        if (track[i].d > track[i].dt * 1.0) { if (first < 0) first = i; last2 = i; }
+      }
+      // 按**物理 tick** 度量，不按墙钟。
+      //
+      // 物理固定 20 Hz，画面可能 180 fps —— 位置只在 tick 边界上跳，
+      // 中间的帧位移是 0。任何按墙钟切窗口的算法都会被这个量化打败：
+      // 整段平均受起步加速段和撞墙那一下的影响，滑窗取最大又必然偏高。
+      // 而"每个 tick 走了多远"是个干净的量：稳态下它恒等于 4.317/20 = 0.2159。
+      //
+      // 取中位数，起步的几步和撞墙被截断的最后一步都会被排除掉。
+      const steps = track.filter((f) => f.d > 0.01).map((f) => f.d).sort((a, b) => a - b);
+      const movingFrames = steps.length;
+      const best = steps.length > 0 ? steps[Math.floor(steps.length / 2)] * 20 : 0;
+      return {
+        before, after,
+        frames: track.length,
+        movingFrames,
+        span: last2 - first + 1,
+        speed: best,
+        dist: Math.hypot(after.x - before.x, after.z - before.z),
+      };
+    `);
+    {
+      // 断言**稳态速度**而不是一秒的总位移：出生点周围是天然地形，
+      // 走两格就可能撞上一棵树。撞墙是对的行为，不该让它把物理验收判失败。
+      // 取各个 100ms 窗口位移的中位数换算成格/秒 —— 起步的加速段和
+      // 撞墙后的 0 都会被中位数排除掉。
+      const speed = walk.speed;
+      if (!walk.before.onGround) {
+        failures.push(`按 W 之前玩家应该已经站稳了，实得 onGround=${walk.before.onGround}`);
+      } else if (walk.after.mode !== 'physics') {
+        failures.push(`按 W 期间玩家应处于物理模式，实得 ${walk.after.mode}`);
+      } else if (walk.span < 10) {
+        failures.push(`按住 W 几乎没动：移动区间只有 ${walk.span} 帧（共 ${walk.frames} 帧）`);
+      } else if (Math.abs(speed - 4.317) > 0.15) {
+        failures.push(
+          `行走稳态速度 ${speed.toFixed(3)} 格/秒，MC 是 4.317` +
+          `（${walk.movingFrames} 个 tick 有位移，共走 ${walk.dist.toFixed(2)} 格）`,
+        );
+      } else {
+        log(`按住 W：每 tick 走 ${(speed / 20).toFixed(4)} 格 = ${speed.toFixed(3)} 格/秒（MC 4.317）ok`);
+      }
+    }
+
+    // --- 挖掘闭环：选中 -> 裂纹 -> 破坏 ---
+    const dig = await page.evaluate(`
+      ${ensureHook}
+      const m = window.__mc;
+      m.freeze(false);
+      await m.waitForIdle();
+      m.startAudio();
+      m.attachPlayer(${spawnPos.x}, ${spawnPos.y} + 1, ${spawnPos.z});
+      for (let i = 0; i < 200 && !m.playerState().onGround; i++) {
+        await new Promise(r => requestAnimationFrame(r));
+      }
+      m.look(0, 1.2);
+      for (let i = 0; i < 5; i++) await new Promise(r => requestAnimationFrame(r));
+      const sel = m.selectedBlock();
+      if (sel === null) return { sel: null };
+      const beforeName = (await m.command('getblock ' + sel.x + ' ' + sel.y + ' ' + sel.z)).text;
+
+      // 按住左键，边挖边记裂纹级别
+      const stages = new Set();
+      m._injectMouse(0, true);
+      const digStart = Date.now();
+      while (Date.now() - digStart < 6000) {
+        await new Promise(r => requestAnimationFrame(r));
+        const p = m.digProgress();
+        if (p > 0) stages.add(Math.min(9, Math.floor(p * 10)));
+        const now = (await m.command('getblock ' + sel.x + ' ' + sel.y + ' ' + sel.z)).text;
+        if (now !== beforeName) break;
+      }
+      m._injectMouse(0, false);
+      // 破坏的那一刻应该炸出碎屑。要立刻看，粒子一秒左右就没了
+      const particlesAfterBreak = m.particleCount();
+      const audioAfter = m.audioStats();
+      await m.waitForIdle();
+      const afterName = (await m.command('getblock ' + sel.x + ' ' + sel.y + ' ' + sel.z)).text;
+      return {
+        sel, beforeName, afterName,
+        stages: [...stages].sort((a, b) => a - b),
+        particles: particlesAfterBreak,
+        audio: audioAfter,
+      };
+    `);
+    if (dig.sel === null) {
+      failures.push('低头看脚下时应该选中一个方块，实得 null');
+    } else if (dig.afterName === dig.beforeName) {
+      failures.push(`按住左键 4 秒没挖动 ${dig.beforeName}（${dig.sel.x},${dig.sel.y},${dig.sel.z}）`);
+    } else if (dig.stages.length < 4) {
+      failures.push(`裂纹只出现了 ${dig.stages.length} 级（${dig.stages}），10 级叠加没生效`);
+    } else if (dig.particles <= 0) {
+      failures.push('破坏方块后没有碎屑粒子');
+    } else {
+      log(
+        `挖掉 ${dig.beforeName} -> ${dig.afterName}，裂纹 ${dig.stages.length} 级，` +
+        `碎屑 ${dig.particles} 粒，音频${dig.audio.ready ? `已响 ${dig.audio.plays} 次` : '未启用（无头环境常见）'} ok`,
+      );
+      if (dig.audio.ready && dig.audio.plays === 0) {
+        failures.push('音频上下文已就绪但一个音都没播 —— 材质音没接上');
+      }
+    }
+
     // --- 网格必须是"已收敛"的：强制整场重做，画面不能变 ---
     //
     // 这一条抓的是"过期网格"：某个段在邻居还不存在（或已经卸载）时算过一次，
@@ -275,6 +419,11 @@ async function main() {
       m.freeze(false);
       await m.setTime(6000);
       await m.waitForIdle();
+      // 等碎屑落完。前面的挖掘用例炸出来的粒子还活着的话，
+      // 两次截图之间它们会自己消失，看上去就像"网格过期了"
+      for (let i = 0; i < 200 && m.particleCount() > 0; i++) {
+        await new Promise(r => requestAnimationFrame(r));
+      }
       m.freeze(true);
       const before = await m.screenshotHash();
       m.freeze(false);

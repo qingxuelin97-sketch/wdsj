@@ -24,6 +24,8 @@ export class BlockTables {
   readonly slipperiness: Float32Array;
   /** 碰撞盒高度，1 = 整格。半砖之类由 M7 的模型系统填 */
   readonly collisionHeight: Float32Array;
+  /** 收获是否必须有对口工具（1 = 是）。石头必须用镐，泥土徒手就行 */
+  readonly requiresTool: Uint8Array;
   readonly tool: Int8Array; // -1 表示任意工具
   readonly minTier: Uint8Array;
   readonly blastResistance: Float32Array;
@@ -70,6 +72,7 @@ export class BlockTables {
     this.hardness = new Float32Array(n);
     this.slipperiness = new Float32Array(n);
     this.collisionHeight = new Float32Array(n).fill(1);
+    this.requiresTool = new Uint8Array(n);
     this.tool = new Int8Array(n).fill(-1);
     this.minTier = new Uint8Array(n);
     this.blastResistance = new Float32Array(n);
@@ -97,6 +100,7 @@ export class BlockTables {
       this.defs[id] = d;
       this.hardness[id] = d.hardness;
       this.slipperiness[id] = d.slipperiness;
+      this.requiresTool[id] = d.requiresTool ? 1 : 0;
       this.tool[id] = d.tool ?? -1;
       this.minTier[id] = d.minTier;
       this.blastResistance[id] = d.blastResistance;

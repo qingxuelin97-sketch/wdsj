@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { ServerCore } from '../../src/server/server-core.ts';
 import { createBlockRegistry } from '../../src/content/blocks.ts';
 import { LoopbackTransport, PacketChannel } from '../../src/core/net/transport.ts';
-import { S2C, C_Handshake, C_PlayerMove, C_PlayerAction, C_Command, C_SetViewDistance, PROTOCOL_VERSION, PlayerActionKind } from '../../src/core/net/packets.ts';
+import { S2C, C_Handshake, C_PlayerMove, C_PlayerAction, C_UseBlock, C_Command, C_SetViewDistance, PROTOCOL_VERSION, PlayerActionKind } from '../../src/core/net/packets.ts';
 import { decodeChunk } from '../../src/core/world/chunk-codec.ts';
 import { AIR_STATE, packState, stateId } from '../../src/core/world/chunk.ts';
 
@@ -175,16 +175,105 @@ test('挖掉方块会广播 S_BlockUpdate', () => {
 
   client.clear();
   client.channel.send(C_PlayerAction, {
-    action: PlayerActionKind.FINISH_DIG,
+    action: PlayerActionKind.START_DIG,
     x: target![0], y: target![1], z: target![2], face: 1,
   });
   client.channel.flush();
   server.tick();
 
+  // 刚开始挖不该立刻破坏 —— 进度由服务端自己按硬度累加
+  assert.notEqual(
+    server.world.getBlock(target![0], target![1], target![2]), AIR_STATE,
+    '开始挖的第一 tick 不该就破坏了',
+  );
+
+  // 徒手挖草/土（硬度 0.5、不需要工具）约 15 tick
+  for (let i = 0; i < 200; i++) {
+    server.tick();
+    if (server.world.getBlock(target![0], target![1], target![2]) === AIR_STATE) break;
+  }
+
+  assert.equal(
+    server.world.getBlock(target![0], target![1], target![2]), AIR_STATE,
+    `200 tick 内应该挖穿；玩家在 ${[...server.playersForTest()][0]!.digProgress.toFixed(3)} 进度上停住了`,
+  );
   const update = client.last('S_BlockUpdate');
   assert.ok(update !== undefined, '挖掉方块后应收到 S_BlockUpdate');
   assert.equal(update!['state'], AIR_STATE);
-  assert.equal(server.world.getBlock(target![0], target![1], target![2]), AIR_STATE);
+});
+
+test('客户端说"我挖完了"不算数 —— 破坏时刻由服务端说了算', () => {
+  // 这条是防作弊的底线：信客户端的话，改一行前端就能瞬间挖穿基岩。
+  const { server, client } = makePair();
+  for (let i = 0; i < 40; i++) server.tick();
+  const login = client.last('S_Login')!;
+  const px = Math.floor(login['spawnX'] as number);
+  const pz = Math.floor(login['spawnZ'] as number);
+  const py = Math.floor(login['spawnY'] as number);
+  let target: [number, number, number] | null = null;
+  for (let y = py; y > py - 6 && target === null; y--) {
+    if (server.world.getBlock(px, y, pz) !== AIR_STATE) target = [px, y, pz];
+  }
+  assert.ok(target !== null);
+  const before = server.world.getBlock(target![0], target![1], target![2]);
+
+  // 直接发 FINISH_DIG，中间不经过 START_DIG 与等待
+  client.channel.send(C_PlayerAction, {
+    action: PlayerActionKind.FINISH_DIG,
+    x: target![0], y: target![1], z: target![2], face: 1,
+  });
+  client.channel.flush();
+  for (let i = 0; i < 5; i++) server.tick();
+  assert.equal(server.world.getBlock(target![0], target![1], target![2]), before,
+    '光发 FINISH_DIG 不该破坏任何东西');
+});
+
+test('对着方块的某个面放置，新方块落在那一侧', () => {
+  const { server, client } = makePair();
+  for (let i = 0; i < 40; i++) server.tick();
+  const login = client.last('S_Login')!;
+  const px = Math.floor(login['spawnX'] as number);
+  const pz = Math.floor(login['spawnZ'] as number);
+  const py = Math.floor(login['spawnY'] as number);
+  let ground: [number, number, number] | null = null;
+  for (let y = py; y > py - 6 && ground === null; y--) {
+    if (server.world.getBlock(px, y, pz) !== AIR_STATE) ground = [px, y, pz];
+  }
+  assert.ok(ground !== null);
+
+  // 挑一个离玩家水平两格、脚下有地的位置，避免"把自己封进方块"被拒
+  const tx = ground![0] + 2;
+  const tz = ground![2];
+  let ty = ground![1];
+  while (ty > 0 && server.world.getBlock(tx, ty, tz) === AIR_STATE) ty--;
+  assert.notEqual(server.world.getBlock(tx, ty, tz), AIR_STATE, '目标点脚下应有方块');
+  assert.equal(server.world.getBlock(tx, ty + 1, tz), AIR_STATE, '目标点上方应是空气');
+
+  client.clear();
+  // face 1 = UP，新方块落在被点方块的上面
+  client.channel.send(C_UseBlock, { x: tx, y: ty, z: tz, face: 1, hitX: 0.5, hitY: 1, hitZ: 0.5 });
+  client.channel.flush();
+  server.tick();
+
+  assert.notEqual(server.world.getBlock(tx, ty + 1, tz), AIR_STATE, '上方应该多出一个方块');
+  const update = client.last('S_BlockUpdate');
+  assert.ok(update !== undefined, '放置也要广播 S_BlockUpdate');
+  assert.equal(update!['y'], ty + 1);
+});
+
+test('不能把方块放进自己身体里', () => {
+  const { server, client } = makePair();
+  for (let i = 0; i < 40; i++) server.tick();
+  const player = [...server.playersForTest()][0]!;
+  // 玩家脚下那一格的正上方就是玩家自己站的位置
+  const fx = Math.floor(player.x);
+  const fz = Math.floor(player.z);
+  const fy = Math.floor(player.y) - 1;
+  const before = server.world.getBlock(fx, fy + 1, fz);
+  client.channel.send(C_UseBlock, { x: fx, y: fy, z: fz, face: 1, hitX: 0.5, hitY: 1, hitZ: 0.5 });
+  client.channel.flush();
+  server.tick();
+  assert.equal(server.world.getBlock(fx, fy + 1, fz), before, '不该把自己封在方块里');
 });
 
 test('挖掘有触及距离检查，够不着的方块动不了', () => {

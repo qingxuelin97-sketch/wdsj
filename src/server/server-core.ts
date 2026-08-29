@@ -19,8 +19,23 @@ import {
 import { ServerWorld } from './world/server-world.ts';
 import { ServerPlayer } from './player/server-player.ts';
 import type { BlockRegistry } from '../core/registry/block-registry.ts';
-import { AIR_STATE, packState, chunkKey } from '../core/world/chunk.ts';
-import { TPS } from '../core/constants.ts';
+import { AIR_STATE, packState, chunkKey, stateId } from '../core/world/chunk.ts';
+import { breakProgressPerTick } from '../core/block/breaking.ts';
+import { TPS, EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, WORLD_HEIGHT, REACH_SURVIVAL } from '../core/constants.ts';
+
+/**
+ * 触及距离的判定上限（平方）。
+ *
+ * 比 4.5 格的标称值放宽一些：客户端是按自己**预测**的位置发包的，
+ * 而服务端手里是稍旧的位置，卡在边界上时两边会差出零点几格。
+ * 卡得太死的话，正常游玩时会偶发"点了没反应"。
+ */
+const REACH_LIMIT_SQ = (REACH_SURVIVAL + 1.5) ** 2;
+
+/** face 编号到法线。与 core/block/types.ts 的 Facing 一致 */
+const FACE_NORMALS: readonly (readonly [number, number, number])[] = [
+  [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0],
+];
 
 /** 每多少 tick 扫描一次并卸载无人问津的区块 */
 
@@ -43,6 +58,11 @@ export class ServerCore {
   readonly world: ServerWorld;
   readonly registry: BlockRegistry;
   private readonly players = new Map<number, ServerPlayer>();
+
+  /** 测试用：遍历在线玩家。生产代码不要用 */
+  playersForTest(): Iterable<ServerPlayer> {
+    return this.players.values();
+  }
   private nextEntityId = 1;
   /** 已经跑过的 tick 数。宿主要把它写进共享统计槽，所以是公开的 */
   tickCount = 0;
@@ -111,6 +131,12 @@ export class ServerCore {
     this.world.resetGenerationBudget();
     // 先收下 gen worker 这一轮送到的区块，再决定要不要下新单
     this.world.intakeGenerated();
+
+    // 挖掘进度：服务端自己算，每 tick 推进一步。
+    //
+    // 必须排在下面 drainChanges 之前 —— 否则这一 tick 破坏的方块要等到
+    // **下一** tick 才广播出去，玩家会看到挖穿后方块还杵在那里闪一下。
+    for (const player of this.players.values()) this.advanceDigging(player);
 
     // 区块流水线：先生成，再算光照，最后才推送。
     // 顺序不能颠倒 —— 先推送的话客户端拿到的是光照全 0 的区块。
@@ -286,28 +312,98 @@ export class ServerCore {
     player.onGround = value['onGround'] as boolean;
   }
 
+  /** 玩家眼睛到方块中心的距离平方，用于触及检查 */
+  private reachSq(player: ServerPlayer, x: number, y: number, z: number): number {
+    const dx = player.x - (x + 0.5);
+    const dy = player.y + EYE_HEIGHT - (y + 0.5);
+    const dz = player.z - (z + 0.5);
+    return dx * dx + dy * dy + dz * dz;
+  }
+
   private onPlayerAction(player: ServerPlayer, value: Record<string, unknown>): void {
     const action = value['action'] as number;
     const x = value['x'] as number;
     const y = value['y'] as number;
     const z = value['z'] as number;
 
-    if (action === PlayerActionKind.FINISH_DIG) {
+    if (action === PlayerActionKind.START_DIG) {
       const state = this.world.getBlock(x, y, z);
       if (!this.world.isBreakable(state)) return;
-      // 触及距离检查：防止客户端声称挖掉了很远的方块
-      const dx = player.x - (x + 0.5);
-      const dy = player.y + 1.62 - (y + 0.5);
-      const dz = player.z - (z + 0.5);
-      if (dx * dx + dy * dy + dz * dz > 8 * 8) return;
-      this.world.setBlock(x, y, z, AIR_STATE);
+      // 触及距离多给一点余量：客户端是按自己预测的位置发的，
+      // 卡得正好在 4.5 格上时不该被判成作弊
+      if (this.reachSq(player, x, y, z) > REACH_LIMIT_SQ) return;
+      player.digging = true;
+      player.digX = x;
+      player.digY = y;
+      player.digZ = z;
+      player.digProgress = 0;
+      // 硬度为 0 的（火把、花）一下就断，不必等下一 tick
+      this.advanceDigging(player);
+      return;
+    }
+
+    if (action === PlayerActionKind.CANCEL_DIG || action === PlayerActionKind.FINISH_DIG) {
+      // FINISH_DIG 只当作"松手"。破坏与否由服务端自己的进度说了算 ——
+      // 信客户端的话，改一行前端就能瞬间挖穿基岩。
+      player.digging = false;
+      player.digProgress = 0;
     }
   }
 
+  /** 推进一个玩家的挖掘进度；够了就破坏 */
+  private advanceDigging(player: ServerPlayer): void {
+    if (!player.digging) return;
+    const { digX: x, digY: y, digZ: z } = player;
+    const state = this.world.getBlock(x, y, z);
+    const id = stateId(state);
+    if (id === 0 || !this.world.isBreakable(state)) {
+      player.digging = false;
+      return;
+    }
+    // 挖到一半人走开了就停下
+    if (this.reachSq(player, x, y, z) > REACH_LIMIT_SQ) {
+      player.digging = false;
+      return;
+    }
+
+    // M8 之前手上还没有工具，所以是徒手速度。石头 7.5 秒 —— 慢得真实。
+    player.digProgress += breakProgressPerTick(this.world.tables, id, null);
+    if (player.digProgress < 1) return;
+
+    player.digging = false;
+    player.digProgress = 0;
+    // 挖到什么就拿着什么。M8 接上背包后换成真正的掉落与拾取
+    player.heldBlockId = id;
+    this.world.setBlock(x, y, z, AIR_STATE);
+  }
+
   private onUseBlock(player: ServerPlayer, value: Record<string, unknown>): void {
-    // M8 接上物品栏后才知道该放什么方块。现在只做触及检查的骨架。
-    void player;
-    void value;
+    const x = value['x'] as number;
+    const y = value['y'] as number;
+    const z = value['z'] as number;
+    const face = value['face'] as number;
+
+    if (this.reachSq(player, x, y, z) > REACH_LIMIT_SQ) return;
+
+    // face 是命中面的法线编号，新方块落在那一侧
+    const [nx, ny, nz] = FACE_NORMALS[face] ?? [0, 0, 0];
+    const px = x + nx;
+    const py = y + ny;
+    const pz = z + nz;
+    if (py < 0 || py >= WORLD_HEIGHT) return;
+
+    // 只能放进空气里
+    if (stateId(this.world.getBlock(px, py, pz)) !== 0) return;
+
+    // 不能把自己封在方块里：玩家碰撞盒与目标格重叠时拒绝。
+    // 少了这一条，对着脚下点一下就会被卡进方块，然后被挤到旁边去。
+    const half = PLAYER_WIDTH / 2;
+    const overlapX = player.x + half > px && player.x - half < px + 1;
+    const overlapZ = player.z + half > pz && player.z - half < pz + 1;
+    const overlapY = player.y + PLAYER_HEIGHT > py && player.y < py + 1;
+    if (overlapX && overlapY && overlapZ) return;
+
+    this.world.setBlock(px, py, pz, packState(player.heldBlockId));
   }
 
   private onCommand(player: ServerPlayer, value: Record<string, unknown>): void {
