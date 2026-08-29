@@ -14,7 +14,7 @@
 import { PacketChannel, type Transport } from '../core/net/transport.ts';
 import {
   C2S, PROTOCOL_VERSION, PlayerActionKind,
-  S_Login, S_TimeUpdate, S_BlockUpdate, S_Disconnect, S_CommandResult, S_Chat,
+  S_Login, S_TimeUpdate, S_BlockUpdate, S_Disconnect, S_CommandResult, S_Chat, S_ServerStats,
 } from '../core/net/packets.ts';
 import { ServerWorld } from './world/server-world.ts';
 import { ServerPlayer } from './player/server-player.ts';
@@ -108,6 +108,7 @@ export class ServerCore {
   tick(): void {
     this.tickCount++;
     this.world.advanceTime();
+    this.world.resetGenerationBudget();
 
     // 区块流水线：先生成，再算光照，最后才推送。
     // 顺序不能颠倒 —— 先推送的话客户端拿到的是光照全 0 的区块。
@@ -132,6 +133,19 @@ export class ServerCore {
           player.channel.send(S_BlockUpdate, { x: c.x, y: c.y, z: c.z, state: c.state });
         }
       }
+    }
+
+    // 服务端状态：每 tick 都发。它很小（10 字节），但让主线程随时知道
+    // 服务端还有多少活没干完 —— 这是 waitForIdle 判定世界安定的必要依据。
+    const pending = this.pendingChunkCount();
+    const loaded = this.world.loadedCount;
+    for (const player of this.players.values()) {
+      player.channel.send(S_ServerStats, {
+        tick: this.tickCount,
+        pendingChunks: Math.min(65535, pending),
+        loadedChunks: Math.min(65535, loaded),
+        tickMicros: Math.min(65535, Math.round(this.lastTickMs * 100)),
+      });
     }
 
     // 时间同步
@@ -220,7 +234,7 @@ export class ServerCore {
     const spawn = this.world.generator.findSpawn();
     // findSpawn 只看得到**装饰前**的地形阶段，所以它可能把人放在一棵树的树干里。
     // 这里用完整生成的区块再校正一次：向上找到第一处有两格空隙的位置。
-    this.world.ensureChunk(Math.floor(spawn.x) >> 4, Math.floor(spawn.z) >> 4);
+    this.world.forceChunk(Math.floor(spawn.x) >> 4, Math.floor(spawn.z) >> 4);
     const bx = Math.floor(spawn.x);
     const bz = Math.floor(spawn.z);
     let sy = Math.floor(spawn.y);

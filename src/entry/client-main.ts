@@ -17,15 +17,15 @@ import { scheduleFrame } from '../client/frame-scheduler.ts';
 import { BLOCK_VERT_SRC, BLOCK_FRAG_SRC } from '../client/render/block-shader.ts';
 import { buildAtlas, buildFaceLayerTable, tintColorArray } from '../client/render/block-textures.ts';
 import { ChunkRenderer } from '../client/render/chunk-renderer.ts';
-import { meshSection, PADDED_VOLUME, PADDED_AREA, type MesherTables } from '../client/mesh/mesher.ts';
+import { type MesherTables } from '../client/mesh/mesher.ts';
+import { MeshWorkerPool, recommendedMeshWorkers } from '../client/mesh/mesh-worker-pool.ts';
 import { ClientWorld, type SectionCoord } from '../client/world/client-world.ts';
 import { createBlockRegistry } from '../content/blocks.ts';
 import { extractPaddedNeighborhood } from '../core/world/chunk-codec.ts';
 import { Frustum } from '../core/math/frustum.ts';
-import { LoopbackTransport, PacketChannel } from '../core/net/transport.ts';
+import { MessagePortTransport, PacketChannel } from '../core/net/transport.ts';
 import { S2C, C_Handshake, C_PlayerMove, C_SetViewDistance, PROTOCOL_VERSION } from '../core/net/packets.ts';
-import { ServerCore } from '../server/server-core.ts';
-import { SECTION_SIZE, DEFAULT_RENDER_DISTANCE, MS_PER_TICK, TPS } from '../core/constants.ts';
+import { SECTION_SIZE, DEFAULT_RENDER_DISTANCE, TPS } from '../core/constants.ts';
 import { TILE_SIZE } from '../client/render/texgen.ts';
 
 const canvas = document.getElementById('gl') as HTMLCanvasElement | null;
@@ -89,15 +89,29 @@ const tintColors = tintColorArray();
 const world = new ClientWorld();
 
 // ---------------------------------------------------------------------------
-// 服务端（M2 同线程，M5 搬进 worker）
+// 服务端：跑在自己的 Worker 里
+//
+// 世界生成一次要 22 ms，放在主线程时玩家一移动帧率就从 60 掉到 19。
+// 搬进 Worker 后主线程只剩渲染与网格化派发。
+// 这里唯一变的是 Transport 实现，ServerCore 及其以下的代码一行没动 —— 这正是
+// 当初把传输抽象成接口的目的。
 // ---------------------------------------------------------------------------
-const server = new ServerCore({ seed: BigInt(seed), registry });
-const [clientSide, serverSide] = LoopbackTransport.createPair();
-server.addClient(serverSide);
+const serverWorker = new Worker(new URL('./server-worker.ts', import.meta.url).href, {
+  type: 'module',
+  name: 'server',
+});
+serverWorker.onerror = (ev: ErrorEvent): void => {
+  console.error(`[server-worker] ${ev.message}`);
+  recordError(`服务端 worker 错误: ${ev.message}`);
+};
+const channel = new MessageChannel();
+serverWorker.postMessage({ kind: 'start', seed, port: channel.port2 }, [channel.port2]);
 
-const net = new PacketChannel(clientSide, S2C);
+const net = new PacketChannel(new MessagePortTransport(channel.port1), S2C);
 let spawned = false;
 let serverTick = 0;
+/** 服务端最近一次上报的状态。主线程读不到 worker 内部，只能靠它 */
+const serverStats = { tick: 0, pendingChunks: 0, loadedChunks: 0, tickMs: 0 };
 
 net.onPacket((name, value) => {
   switch (name) {
@@ -126,6 +140,12 @@ net.onPacket((name, value) => {
     case 'S_TimeUpdate':
       serverTick = Number(value['worldAge'] as bigint);
       return;
+    case 'S_ServerStats':
+      serverStats.tick = value['tick'] as number;
+      serverStats.pendingChunks = value['pendingChunks'] as number;
+      serverStats.loadedChunks = value['loadedChunks'] as number;
+      serverStats.tickMs = (value['tickMicros'] as number) / 100;
+      return;
     case 'S_Chat':
       console.log(`[chat] ${value['text'] as string}`);
       return;
@@ -147,13 +167,21 @@ net.flush();
 // ---------------------------------------------------------------------------
 // 网格化
 // ---------------------------------------------------------------------------
-// 输入缓冲复用，避免每个任务分配 18 KB
-const jobBlocks = new Uint16Array(PADDED_VOLUME);
-const jobLight = new Uint8Array(PADDED_VOLUME);
-const jobBiomes = new Uint8Array(PADDED_AREA);
 const dirtyBatch: SectionCoord[] = [];
-/** 每帧最多网格化几个子区块。太多会掉帧，太少地形出现得慢 */
-const MESH_BUDGET_PER_FRAME = 6;
+/**
+ * 每帧最多**派发**几个网格化任务。
+ * 派发本身很便宜（一次 5832 项的复制 + postMessage），真正的计算在 worker 里，
+ * 所以这个数可以比同步版本大得多。
+ */
+const MESH_DISPATCH_PER_FRAME = 6;
+/** 在飞任务的上限，避免玩家快速移动时把队列堆到几千 */
+const MAX_IN_FLIGHT = 48;
+
+const meshPool = new MeshWorkerPool(mesherTables, {
+  scriptUrl: new URL('./mesh-worker.ts', import.meta.url).href,
+  workers: Number(params.get('meshWorkers') ?? recommendedMeshWorkers()),
+});
+console.log(`[mesh] ${meshPool.workerCount} 个网格 worker`);
 
 const SKY = { r: 0.62, g: 0.76, b: 0.98 };
 let sizeLocked = false;
@@ -172,35 +200,52 @@ function sendPlayerPosition(sneak = false, sprint = false): void {
   net.flush();
 }
 
-/** 手动推进一步模拟。供 __mc.waitForIdle 精确驱动世界，不依赖帧率 */
+/**
+ * 推进一步客户端侧的工作，供 __mc.waitForIdle 使用。
+ *
+ * 服务端已经在自己的 Worker 里按 20 TPS 自走，主线程驱动不了它，
+ * 所以这里只做"把位置报上去 + 派发网格化"，服务端的进度靠 S_ServerStats 观察。
+ */
 function pumpWorld(): void {
   sendPlayerPosition();
-  server.tick();
   meshDirtySections();
 }
 
+/** 网格化结果回来：先验 rev，过期的直接丢 */
+meshPool.setResultHandler((result) => {
+  const currentRev = world.revOf(result.cx, result.cy, result.cz);
+  if (result.rev < currentRev) {
+    // 玩家快速挖放时同一段会连续产生任务，回来的顺序不保证 —— 旧结果必须丢弃，
+    // 否则会把过期的网格盖到新状态上（docs/RULES.md 第 11 条）
+    meshPool.noteDiscarded();
+    return;
+  }
+  if (result.layers.length > 0) renderer.upload(result);
+  else renderer.remove(result.cx, result.cy, result.cz);
+  meshedTotal++;
+});
+
+/** 把脏的子区块派发给 worker 池 */
 function meshDirtySections(): void {
+  if (meshPool.pendingJobs >= MAX_IN_FLIGHT) return;
+  const budget = Math.min(MESH_DISPATCH_PER_FRAME, MAX_IN_FLIGHT - meshPool.pendingJobs);
   const p = camera.position;
-  world.takeDirty(MESH_BUDGET_PER_FRAME, p[0]!, p[1]!, p[2]!, dirtyBatch);
+  world.takeDirty(budget, p[0]!, p[1]!, p[2]!, dirtyBatch);
   for (const { cx, cy, cz } of dirtyBatch) {
     if (!world.hasContent(cx, cy, cz)) {
       renderer.remove(cx, cy, cz);
       continue;
     }
+    const buffers = meshPool.acquireBuffers();
     extractPaddedNeighborhood(
       (x, y, z) => world.store.getState(x, y, z),
       (x, y, z) => (world.store.getSkyLight(x, y, z) << 4) | world.store.getBlockLight(x, y, z),
       (x, z) => world.store.getBiome(x, z),
       cx, cy, cz,
-      jobBlocks, jobLight, jobBiomes,
+      buffers.blocks, buffers.light, buffers.biomes,
     );
-    const result = meshSection(
-      { cx, cy, cz, rev: world.revOf(cx, cy, cz), blocks: jobBlocks, light: jobLight, biomes: jobBiomes },
-      mesherTables,
-    );
-    if (result.layers.length > 0) renderer.upload(result);
-    else renderer.remove(cx, cy, cz);
-    meshedTotal++;
+    // 缓冲的所有权转移给 worker，之后不能再碰
+    meshPool.submit(cx, cy, cz, world.revOf(cx, cy, cz), buffers);
   }
 }
 
@@ -240,7 +285,12 @@ installTestHook({
   setSizeLock: (locked: boolean) => {
     sizeLocked = locked;
   },
-  idleStats: () => ({ dirty: world.dirtyCount, chunks: world.chunkCount, serverPending: server.pendingChunkCount() }),
+  idleStats: () => ({
+    // 在飞的网格化任务也算"未安定"——否则会在结果还没回来时就判定世界已就绪
+    dirty: world.dirtyCount + meshPool.pendingJobs,
+    chunks: world.chunkCount,
+    serverPending: serverStats.pendingChunks,
+  }),
   pumpWorld,
   debugWorld: () => world,
 });
@@ -250,7 +300,6 @@ installTestHook({
 // ---------------------------------------------------------------------------
 let firstFrameDone = false;
 let hudAccum = 0;
-let tickAccum = 0;
 
 function frame(nowMs: number): void {
   clock.advance(nowMs);
@@ -259,18 +308,8 @@ function frame(nowMs: number): void {
   const snap = input.sample();
   if (!clock.frozen && spawned) camera.applyFreeFlight(snap, clock.dt, 12);
 
-  // 以固定步长驱动服务端。M5 之后这段由 worker 里的 SAB 时钟负责。
-  tickAccum += clock.dt * 1000;
-  let ticks = 0;
-  while (tickAccum >= MS_PER_TICK && ticks < 4) {
-    server.tick();
-    tickAccum -= MS_PER_TICK;
-    ticks++;
-  }
-  // 追不上时丢弃积压，避免卡顿之后疯狂补 tick 造成二次卡顿
-  if (tickAccum > MS_PER_TICK * 8) tickAccum = 0;
-
-  if (ticks > 0) sendPlayerPosition(snap.sneak, snap.sprint);
+  // 服务端在自己的 Worker 里跑，主线程只需按帧把玩家位置报上去
+  sendPlayerPosition(snap.sneak, snap.sprint);
 
   meshDirtySections();
   renderOnce();
@@ -286,9 +325,9 @@ function frame(nowMs: number): void {
     hudAccum = 0;
     const p = camera.position;
     hud.textContent =
-      `fps ${clock.fps.toFixed(0)}  (${clock.frameMs.toFixed(1)} ms)  服务端 tick ${serverTick}\n` +
-      `xyz ${p[0]!.toFixed(1)} ${p[1]!.toFixed(1)} ${p[2]!.toFixed(1)}\n` +
-      `区块 ${world.chunkCount}  待网格 ${world.dirtyCount}  已网格 ${meshedTotal}\n` +
+      `fps ${clock.fps.toFixed(0)} (${clock.frameMs.toFixed(1)}ms)  服务端 ${serverStats.tick}t ${serverStats.tickMs.toFixed(1)}ms\n` +
+      `xyz ${p[0]!.toFixed(1)} ${p[1]!.toFixed(1)} ${p[2]!.toFixed(1)}  世界时间 ${serverTick % 24000}\n` +
+      `区块 ${world.chunkCount}/${serverStats.loadedChunks}  待网格 ${world.dirtyCount}  在飞 ${meshPool.pendingJobs}  待推 ${serverStats.pendingChunks}\n` +
       `段 ${renderer.sectionsDrawn}/${renderer.sectionCount}  draws ${renderer.drawCalls}\n` +
       `面 ${renderer.quadsDrawn}  显存 ${(renderer.totalBytes / 1048576).toFixed(1)} MB`;
   }
@@ -304,5 +343,5 @@ if (err !== gl.NO_ERROR) {
   console.error(msg);
 }
 
-console.log(`[boot] 服务端同线程启动，种子 ${seed}，渲染距离 ${renderDistance}，${TPS} TPS`);
+console.log(`[boot] 服务端 worker 启动，种子 ${seed}，渲染距离 ${renderDistance}，${TPS} TPS`);
 scheduleFrame(frame);

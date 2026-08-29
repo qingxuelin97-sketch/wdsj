@@ -122,10 +122,21 @@ test('区块推送有节流，不会一 tick 全发完', () => {
   client.channel.send(C_SetViewDistance, { distance: 4 });
   client.channel.flush();
   client.clear();
+
+  // 头几个 tick 可能一个都推不出去：推送一个区块需要它完整的 3×3 邻域，
+  // 而每 tick 的生成配额可能不够一次凑齐 9 个新区块。
+  let firstBatch = 0;
+  for (let i = 0; i < 5; i++) {
+    server.tick();
+    firstBatch = client.of('S_ChunkData').length;
+    if (firstBatch > 0) break;
+  }
+  assert.ok(firstBatch > 0, '5 个 tick 内应该开始推送');
+
+  client.clear();
   server.tick();
-  const firstTick = client.of('S_ChunkData').length;
-  assert.ok(firstTick > 0, '第一 tick 应该开始推送');
-  assert.ok(firstTick <= 4, `一 tick 推了 ${firstTick} 个区块，节流没生效`);
+  const oneTick = client.of('S_ChunkData').length;
+  assert.ok(oneTick <= 4, `一 tick 推了 ${oneTick} 个区块，节流没生效`);
 });
 
 test('玩家跨区块移动会推送新区块并卸载旧区块', () => {

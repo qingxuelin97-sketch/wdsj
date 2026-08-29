@@ -64,7 +64,12 @@ export class CaveCarver {
 
   constructor(seed: bigint) {
     this.seed = seed;
-    this.dirNoise = noiseFromSeed(seed, 0x5ca4, 3);
+    // 2 倍频：这条噪声只用来平滑地扰动隧道方向，不需要多少细节层次。
+    // 3 倍频时每步要 6 次 Perlin 调用，而一次区块生成有上万步 ——
+    // 实测洞穴占掉整个生成流程的 66%，是首要的优化点。
+    // 不用 1 倍频是因为倍频越少标准差越大（实测 1 倍频 σ 明显高于 3 倍频），
+    // 扰动过强会让隧道很快钻出 y 范围，洞穴总量反而掉下去。
+    this.dirNoise = noiseFromSeed(seed, 0x5ca4, 2);
   }
 
   /** 区块专属的确定性 RNG */
@@ -161,7 +166,16 @@ export class CaveCarver {
       y += Math.sin(pitch);
       z += Math.sin(yaw) * cp;
 
-      if (y < 5 || y > 100) break;
+      // 触到上下边界时**反弹**而不是终止。
+      // 直接 break 会让相当一部分隧道半途而废，洞穴总量和连通性都掉一截；
+      // 反弹则让它沿着边界继续延伸，更像真实的洞穴系统。
+      if (y < 6) {
+        y = 6;
+        pitch = Math.abs(pitch);
+      } else if (y > 96) {
+        y = 96;
+        pitch = -Math.abs(pitch);
+      }
 
       // 半径随位置起伏，形成宽窄相间的洞道与偶尔的大厅
       const widen = 1 + this.dirNoise.noise2(phase * 0.5, step * 0.04) * 0.8;
@@ -226,6 +240,8 @@ export class CaveCarver {
 
     let x = startX;
     let z = startZ;
+    const baseX = target.cx * CHUNK_SIZE;
+    const baseZ = target.cz * CHUNK_SIZE;
     const minX = target.cx * CHUNK_SIZE - 12;
     const maxX = minX + CHUNK_SIZE + 24;
     const minZ = target.cz * CHUNK_SIZE - 12;
@@ -242,6 +258,11 @@ export class CaveCarver {
       const taper = Math.sin(along * Math.PI);
       const halfWidth = (1.2 + this.dirNoise.noise2(step * 0.1, phase) * 1.4) * taper;
       if (halfWidth <= 0.4) continue;
+
+      // 先按最大可能宽度做一次水平剔除，避免为整段 y（可能 46 层）逐层调用 carveSphere
+      const maxW = halfWidth * 1.25;
+      if (x + maxW < baseX || x - maxW > baseX + CHUNK_SIZE ||
+          z + maxW < baseZ || z - maxW > baseZ + CHUNK_SIZE) continue;
 
       for (let y = topY - depth; y <= topY; y++) {
         // 越靠上越宽，形成 V 形剖面

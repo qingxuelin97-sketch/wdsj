@@ -172,7 +172,10 @@ export function installTestHook(host: HostBridge): void {
         host.pumpWorld();
         pumps++;
         const s = host.idleStats();
-        if (s.dirty === 0 && s.serverPending === 0 && s.chunks === lastChunks) {
+        // chunks > 0 是必要的下限条件：服务端跑在自己的 Worker 里，启动要一点时间，
+        // 在它开始推送之前三项统计全是 0 且纹丝不动，会被误判成"世界已就绪"，
+        // 于是拿到一个空场景（实测 quads=0）。
+        if (s.chunks > 0 && s.dirty === 0 && s.serverPending === 0 && s.chunks === lastChunks) {
           stable++;
           // 稳定 200 步才算安定：区块卸载扫描每 100 tick 才跑一次，
           // 少于这个数就可能在扫描之前返回，留下一批本该卸载的区块
@@ -202,23 +205,36 @@ export function installTestHook(host: HostBridge): void {
     },
 
     // --- 输入合成 ---
+    /**
+     * 按住某个键一段时间。
+     *
+     * 按**墙钟**计时而不是帧数：按帧数的话，"按住 1 秒"实际等的是 60 帧，
+     * 一旦真实帧率低于 60（移动中要网格化新区块时很常见）就会超时报错，
+     * 而那其实是正常的性能表现，不是故障。
+     */
     async press(code: string, ms = 100): Promise<void> {
       host.input.injectKeyDown(code);
       try {
-        const frames = Math.max(1, Math.round((ms / 1000) * 60));
-        const target = host.clock.renderTick + frames;
-        // 帧数上限之外再加一个墙钟上限：冻结状态下 renderTick 根本不推进，
-        // 没有这道保险就会永久挂死（而不是报错），那种"测试卡住"最难排查。
-        const deadline = Date.now() + ms + 3000;
-        while (host.clock.renderTick < target) {
-          if (Date.now() > deadline) {
-            throw new Error(`press('${code}') 超时：renderTick 未推进（clock.frozen=${host.clock.frozen}）`);
-          }
-          await nextFrame();
-        }
+        const deadline = Date.now() + ms;
+        while (Date.now() < deadline) await nextFrame();
       } finally {
         host.input.injectKeyUp(code);
       }
+    },
+
+    /**
+     * 采样若干帧的运行指标。
+     *
+     * 用帧回调而不是 setInterval：后台标签页的定时器会被节流到 1 Hz 甚至更低，
+     * 采出来的曲线完全失真（实测 71 秒只采到 6 个点）。
+     */
+    async sampleFrames(frames: number): Promise<McStats[]> {
+      const out: McStats[] = [];
+      for (let i = 0; i < frames; i++) {
+        await nextFrame();
+        out.push(api.stats());
+      }
+      return out;
     },
     look(dYaw: number, dPitch: number): void {
       host.input.injectLook(dYaw, dPitch);

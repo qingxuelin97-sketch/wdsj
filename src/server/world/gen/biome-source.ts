@@ -95,6 +95,10 @@ export class BiomeSource {
    *
    * 对 5×5 邻域的群系做加权平均，让群系边界处的地形高度**连续过渡**而不是硬跳。
    * 这一步是"地形看上去像 MC"和"像被刀切过"的分界线。
+   *
+   * 单点版本，只在零散查询时用。批量场景（地形网格）走 fillBiomeGrid +
+   * heightParamsFromGrid —— 那里相邻采样点的 5×5 邻域是完全重合的，
+   * 逐点算等于把同一个 biomeAt 重复算 25 遍。
    */
   heightParamsAt(x: number, z: number, out: { base: number; variation: number }): void {
     let baseSum = 0;
@@ -105,6 +109,53 @@ export class BiomeSource {
         // 采样间隔 4 格，5×5 邻域覆盖 ±8 格，足够抹平边界又不至于糊掉群系特征
         const id = this.biomeAt(x + dx * 4, z + dz * 4);
         // 高斯型权重，中心权重最大
+        const w = 1 / (1 + dx * dx + dz * dz);
+        baseSum += this.tables.baseHeight[id]! * w;
+        varSum += this.tables.heightVariation[id]! * w;
+        weightSum += w;
+      }
+    }
+    out.base = baseSum / weightSum;
+    out.variation = varSum / weightSum;
+  }
+
+  /**
+   * 批量算一片群系网格。
+   *
+   * @param originX/originZ 网格左下角的世界坐标
+   * @param step  采样间隔（格）
+   * @param n     网格边长（点数）
+   * @param out   长度 n*n 的输出
+   *
+   * 地形生成时每个密度网格点都要一个 5×5 的群系邻域做加权平均，而相邻网格点的
+   * 采样点是同一批。先把扩展后的网格一次算好，625 次 biomeAt 就降到 81 次。
+   */
+  fillBiomeGrid(originX: number, originZ: number, step: number, n: number, out: Uint8Array): void {
+    for (let iz = 0; iz < n; iz++) {
+      for (let ix = 0; ix < n; ix++) {
+        out[iz * n + ix] = this.biomeAt(originX + ix * step, originZ + iz * step);
+      }
+    }
+  }
+
+  /**
+   * 从预算好的群系网格里取某点的高度参数。
+   * (gx,gz) 是该点在网格里的下标，函数会读它周围 5×5 的邻域。
+   */
+  heightParamsFromGrid(
+    grid: Uint8Array, n: number, gx: number, gz: number,
+    out: { base: number; variation: number },
+  ): void {
+    let baseSum = 0;
+    let varSum = 0;
+    let weightSum = 0;
+    for (let dz = -2; dz <= 2; dz++) {
+      const sz = gz + dz;
+      if (sz < 0 || sz >= n) continue;
+      for (let dx = -2; dx <= 2; dx++) {
+        const sx = gx + dx;
+        if (sx < 0 || sx >= n) continue;
+        const id = grid[sz * n + sx]!;
         const w = 1 / (1 + dx * dx + dz * dz);
         baseSum += this.tables.baseHeight[id]! * w;
         varSum += this.tables.heightVariation[id]! * w;

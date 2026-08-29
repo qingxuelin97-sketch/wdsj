@@ -77,7 +77,7 @@ export class ChunkRenderer {
     }
     const mesh: SectionMesh = { cx: result.cx, cy: result.cy, cz: result.cz, rev: result.rev, layers };
     this.meshes.set(key, mesh);
-    this.recountBytes();
+    for (const l of layers) if (l !== null) this.totalBytes += l.bytes;
   }
 
   private createLayerMesh(data: MeshLayerData): LayerMesh | null {
@@ -113,25 +113,17 @@ export class ChunkRenderer {
     if (mesh === undefined) return;
     this.disposeSection(mesh);
     this.meshes.delete(key);
-    this.recountBytes();
   }
 
   private disposeSection(mesh: SectionMesh): void {
     const gl = this.gl;
     for (const layer of mesh.layers) {
       if (layer === null) continue;
+      this.totalBytes -= layer.bytes;
       gl.deleteVertexArray(layer.vao);
       gl.deleteBuffer(layer.vbo);
       gl.deleteBuffer(layer.ebo);
     }
-  }
-
-  private recountBytes(): void {
-    let total = 0;
-    for (const mesh of this.meshes.values()) {
-      for (const layer of mesh.layers) if (layer !== null) total += layer.bytes;
-    }
-    this.totalBytes = total;
   }
 
   dispose(): void {

@@ -63,6 +63,9 @@ const FALLOFF = 0.5;
 /** 世界顶部这么多格内强制收敛到空气，避免地形贴到天花板 */
 const TOP_CLAMP = 16;
 
+/** 群系网格边长：密度网格 5×5，每点读 ±2 邻域，所以要 5+4=9 */
+const BIOME_GRID_N = NX + 4;
+
 export class TerrainGen {
   private readonly limitA: OctaveNoise;
   private readonly limitB: OctaveNoise;
@@ -75,6 +78,11 @@ export class TerrainGen {
   /** 粗网格密度缓存，每列复用，避免每次分配 425 个 float */
   private readonly grid = new Float32Array(NX * NY * NZ);
   private readonly heightParams = { base: 0, variation: 0 };
+  /**
+   * 扩展的群系网格：密度网格是 5×5，但每个点要读 ±2 的邻域，所以要 9×9。
+   * 一次算好 81 个点，代替逐点算 25 次（共 625 次）biomeAt。
+   */
+  private readonly biomeGrid = new Uint8Array(BIOME_GRID_N * BIOME_GRID_N);
 
   constructor(seed: bigint, biomes: BiomeSource) {
     this.limitA = noiseFromSeed(seed, 0x1a11, 4);
@@ -122,12 +130,21 @@ export class TerrainGen {
 
   /** 为一列区块填充粗网格 */
   private buildGrid(cx: number, cz: number): void {
+    // 先一次性算好 9×9 的群系网格（覆盖密度网格及其 ±2 邻域）
+    this.biomes.fillBiomeGrid(
+      cx * CHUNK_SIZE - 2 * GRID_XZ,
+      cz * CHUNK_SIZE - 2 * GRID_XZ,
+      GRID_XZ,
+      BIOME_GRID_N,
+      this.biomeGrid,
+    );
+
     for (let iz = 0; iz < NZ; iz++) {
       for (let ix = 0; ix < NX; ix++) {
         const wx = cx * CHUNK_SIZE + ix * GRID_XZ;
         const wz = cz * CHUNK_SIZE + iz * GRID_XZ;
-        // 每个 (x,z) 只算一次群系高度参数，17 个 y 复用
-        this.biomes.heightParamsAt(wx, wz, this.heightParams);
+        // 群系网格里的下标要加上 2 的偏移（网格从 -2 开始）
+        this.biomes.heightParamsFromGrid(this.biomeGrid, BIOME_GRID_N, ix + 2, iz + 2, this.heightParams);
         const base = this.heightParams.base;
         const variation = this.heightParams.variation;
         for (let iy = 0; iy < NY; iy++) {

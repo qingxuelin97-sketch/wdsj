@@ -118,8 +118,17 @@ export class ServerPlayer {
       // 截图回归直接失效。
       //
       // 天光传播最远 15 格，而区块宽 16 格，所以 3×3 邻域足以定死中心的光照。
-      for (let dz = -1; dz <= 1; dz++) {
-        for (let dx = -1; dx <= 1; dx++) world.ensureChunk(cx + dx, cz + dz);
+      let complete = true;
+      for (let dz = -1; dz <= 1 && complete; dz++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (world.ensureChunk(cx + dx, cz + dz) === null) { complete = false; break; }
+        }
+      }
+      if (!complete) {
+        // 本 tick 的生成配额用完了：把它放回队首，下个 tick 接着来。
+        // 不能就这么发出去 —— 邻域没齐的话中心区块的天光还不是最终值。
+        this.pending.unshift(key);
+        break;
       }
       ready.push(key);
     }

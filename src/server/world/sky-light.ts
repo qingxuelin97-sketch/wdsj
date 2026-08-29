@@ -63,6 +63,15 @@ export function computeSkyLight(store: ChunkStore, opacity: Uint8Array, only?: I
     const baseZ = chunk.cz * CHUNK_SIZE;
     for (let z = 0; z < CHUNK_SIZE; z++) {
       for (let x = 0; x < CHUNK_SIZE; x++) {
+        const wx = baseX + x;
+        const wz = baseZ + z;
+        // 四个水平邻居里最高的地表。只有 y 低于它，光才可能需要横向渗过去；
+        // 高于它的格子四周全是开阔天空，早就是满值了。
+        const maxNeighborHeight = Math.max(
+          store.getHeight(wx + 1, wz), store.getHeight(wx - 1, wz),
+          store.getHeight(wx, wz + 1), store.getHeight(wx, wz - 1),
+        );
+
         let level = MAX_LIGHT;
         for (let y = WORLD_HEIGHT - 1; y >= 0; y--) {
           const id = stateId(chunk.getState(x, y, z));
@@ -73,8 +82,16 @@ export function computeSkyLight(store: ChunkStore, opacity: Uint8Array, only?: I
           if (level === 0) break;
           const section = chunk.sections[y >> 4];
           if (section != null) section.setSkyLight(x, y & 15, z, level);
-          // 只有还有余量的格子才值得作为泛洪源
-          if (level > 1) queue.push(packPos(baseX + x, y, baseZ + z));
+
+          // 入队条件很关键。
+          //
+          // 把每个有光的格子都当种子，一个区块就是三万多个，十几个区块就是几十万，
+          // BFS 光是出队检查邻居就足以把服务端拖到 1 TPS（实测）。
+          //
+          // 实际上开阔地带的格子四周也都是满值，往外传播不会改变任何东西。
+          // 只有当某个水平邻居的地表比自己高时（即那一侧是暗的），
+          // 这个格子才真正需要作为传播源。
+          if (level > 1 && y < maxNeighborHeight) queue.push(packPos(wx, y, wz));
         }
       }
     }
