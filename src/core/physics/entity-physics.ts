@@ -59,6 +59,15 @@ export interface Body {
   onGround: boolean;
   width: number;
   height: number;
+  /**
+   * 移动速度倍率。玩家是 1，生物按自己的定义换算（见 server/entity/mob.ts）。
+   *
+   * 放在 Body 上而不是 MoveInput 上：它是这个实体的固有属性，
+   * 不随某一帧的输入变化。这样玩家与生物就能真正共用同一个 stepBody ——
+   * 计划里那条"服务端模拟、客户端预测、生物 AI 共用同一个 stepEntity"，
+   * 差的就是这一个字段。
+   */
+  speed: number;
 }
 
 /** 一帧的移动意图 */
@@ -75,7 +84,7 @@ export interface MoveInput {
 export function makeBody(x: number, y: number, z: number, yaw = 0): Body {
   return {
     x, y, z, vx: 0, vy: 0, vz: 0, yaw,
-    onGround: false, width: PLAYER_WIDTH, height: PLAYER_HEIGHT,
+    onGround: false, width: PLAYER_WIDTH, height: PLAYER_HEIGHT, speed: 1,
   };
 }
 
@@ -157,9 +166,9 @@ export function stepBody(
 
   // 摩擦取自**脚下**方块，且在加速之前先算一次
   const friction = body.onGround ? slipperinessBelow(world, tables, body) * AIR_FRICTION : AIR_FRICTION;
-  const accel = body.onGround
+  const accel = (body.onGround
     ? MOVE_FACTOR_GROUND * (input.sprint ? SPRINT_MULTIPLIER : 1) * (0.16277136 / (friction * friction * friction))
-    : MOVE_FACTOR_AIR * (input.sprint ? SPRINT_MULTIPLIER : 1);
+    : MOVE_FACTOR_AIR * (input.sprint ? SPRINT_MULTIPLIER : 1)) * body.speed;
   applyInputAcceleration(body, strafe, forward, accel);
 
   // --- 位移与碰撞 ---

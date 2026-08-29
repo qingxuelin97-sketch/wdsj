@@ -122,6 +122,10 @@ export interface HostBridge {
   wipeSave(): Promise<{ ok: boolean; chunks: number }>;
   /** 视野里有多少掉落物，以及它们的内容 */
   itemEntities(): { id: number; x: number; y: number; z: number; item: number; count: number }[];
+  /** 视野里有多少生物 */
+  mobEntities(): { id: number; type: number; x: number; y: number; z: number; health: number }[];
+  /** 上一帧生物渲染提交了多少顶点。用来验"真的画出来了" */
+  mobVerts(): number;
 }
 
 /** 收集未捕获错误、WebGL 错误、着色器错误，供 assertNoErrors 使用 */
@@ -211,6 +215,11 @@ export function installTestHook(host: HostBridge): void {
     /** 当前视野里的掉落物 */
     itemEntities: (): { id: number; x: number; y: number; z: number; item: number; count: number }[] =>
       host.itemEntities(),
+    /** 当前视野里的生物 */
+    mobEntities: (): { id: number; type: number; x: number; y: number; z: number; health: number }[] =>
+      host.mobEntities(),
+    /** 上一帧生物渲染提交的顶点数 */
+    mobVerts: (): number => host.mobVerts(),
     sharedStats: (): { beats: number; serverTicks: number; tickCentiMs: number } | null =>
       host.sharedStats(),
     remeshCount: (): number => host.remeshCount(),

@@ -85,3 +85,37 @@ export function placeSound(group: SoundGroup): SoundSpec {
   const base = digSound(group);
   return { ...base, gain: base.gain * 0.8 };
 }
+
+/**
+ * 生物的叫声。
+ *
+ * 仍然只用那两个原语，靠**低通截止 + 音调滑向**区分种类：
+ *   苦力怕的嘶声 = 高截止的长噪声，没有音调 —— 那是纯粹的"漏气"声
+ *   僵尸的哼声 = 低截止 + 下滑的音调
+ *   骷髅的咔哒 = 短促、高截止、几乎没有音调段（骨头相碰）
+ *   动物的叫声 = 有明确音调，且**向上**滑（问句一样的语调）
+ *
+ * 音高按体型缩放（见 mobHurtSound 的 sizeScale）：同一份参数，
+ * 鸡叫得比牛尖，不需要为每种生物各写一套。
+ */
+export const MobSound = {
+  /** 苦力怕点着引信 */
+  CREEPER_HISS: { noiseDuration: 0.9, cutoff: 4200, toneStart: 0, toneEnd: 0, toneDuration: 0, gain: 0.32 },
+  /** 爆炸 */
+  EXPLODE: { noiseDuration: 0.75, cutoff: 500, toneStart: 90, toneEnd: 30, toneDuration: 0.5, gain: 0.75 },
+  /** 通用受伤 */
+  HURT: { noiseDuration: 0.12, cutoff: 1800, toneStart: 320, toneEnd: 190, toneDuration: 0.16, gain: 0.34 },
+  /** 通用死亡：比受伤长、滑得更低 */
+  DEATH: { noiseDuration: 0.2, cutoff: 1400, toneStart: 300, toneEnd: 110, toneDuration: 0.32, gain: 0.38 },
+  /** 弓弦 */
+  BOW: { noiseDuration: 0.06, cutoff: 2600, toneStart: 700, toneEnd: 260, toneDuration: 0.1, gain: 0.26 },
+} as const;
+
+/**
+ * 受伤/死亡声，按体型调音高。
+ * @param sizeScale 体型倍率：鸡 ~0.5，牛 ~1.3，末影人 ~1.6
+ */
+export function mobVoicePitch(sizeScale: number): number {
+  // 音高与体型成反比，并夹在 0.6..1.8 之间 —— 超出这个范围就不像动物了
+  return Math.max(0.6, Math.min(1.8, 1 / Math.max(0.4, sizeScale)));
+}

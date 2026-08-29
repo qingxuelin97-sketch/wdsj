@@ -15,7 +15,13 @@ import { Input } from '../client/input/input.ts';
 import { installTestHook, recordError, recordLog } from '../client/debug/test-hook.ts';
 import { scheduleFrame } from '../client/frame-scheduler.ts';
 import { ClientEntities } from '../client/entity/client-entities.ts';
+import { ClientMobs } from '../client/entity/client-mobs.ts';
 import { ItemEntityRenderer } from '../client/render/item-entity-renderer.ts';
+import { MobRenderer } from '../client/render/mob-renderer.ts';
+import { EntityView } from './entity-view.ts';
+import { mobModelOf, WOOL_COLORS } from '../content/mob-models.ts';
+import { MobType, mobDefOf } from '../content/mobs.ts';
+import { MobSound, mobVoicePitch } from '../core/audio/sound-spec.ts';
 import { BLOCK_VERT_SRC, BLOCK_FRAG_SRC } from '../client/render/block-shader.ts';
 import { tintColorArray } from '../client/render/block-textures.ts';
 import { buildRenderResources } from '../client/render/resources.ts';
@@ -34,12 +40,13 @@ import { ClientWorld, type SectionCoord } from '../client/world/client-world.ts'
 import { createBlockRegistry } from '../content/blocks.ts';
 import { extractPaddedNeighborhood } from '../core/world/chunk-codec.ts';
 import { stateId } from '../core/world/chunk.ts';
+import { raycastBlocks } from '../core/physics/raycast.ts';
 import { Frustum } from '../core/math/frustum.ts';
 import { startServerHost } from './server-host.ts';
 import { installPacketHandlers } from './net-handlers.ts';
 import {
   S2C, C_Handshake, C_Command, C_PlayerMove, C_PlayerAction, C_UseBlock,
-  C_SetViewDistance, C_WindowClick, C_CloseWindow, C_HeldSlot,
+  C_SetViewDistance, C_WindowClick, C_CloseWindow, C_HeldSlot, C_AttackEntity,
   PROTOCOL_VERSION, PlayerActionKind, WindowKind,
   ENTITY_POS_SCALE, SPAWN_ITEM_STRIDE, ENTITY_MOVE_STRIDE,
 } from '../core/net/packets.ts';
@@ -110,7 +117,16 @@ const uiCtx = {
 };
 const particles = new ParticleRenderer(gl);
 const entities = new ClientEntities();
+const mobs = new ClientMobs();
 const itemEntityRenderer = new ItemEntityRenderer(gl);
+const mobRenderer = new MobRenderer(gl);
+/** 实体的绘制与拾取。见 entry/entity-view.ts */
+const entityView = new EntityView({
+  entities, mobs, itemEntityRenderer, mobRenderer,
+  world, tables, faceLayer, iconLayer: iconLayerOf,
+});
+/** 玩家血量，服务端权威 */
+const vitals = { health: 20, maxHealth: 20 };
 /**
  * 掉落物的 20 Hz 刻累加器。
  *
@@ -142,6 +158,8 @@ const host = startServerHost({
   // 截图回归必须关掉存档：存了的话"同一个种子跑两次"会得到不同的世界 ——
   // 第二次读的是第一次留下的状态，包括玩家走过的位置与挖掉的方块
   persist: params.get('persist') !== '0',
+  // 同理：野生的怪会走进画面，让同一个机位每次截出来都不一样
+  spawnMobs: params.get('mobs') !== '0',
   recordError,
   recordLog,
 });
@@ -200,7 +218,23 @@ const interaction = new Interaction({
 });
 
 installPacketHandlers(net, {
-  world, entities, ui, renderer, interaction,
+  world, entities, mobs, ui, renderer, interaction,
+  onEntityEvent: (entityId, event) => {
+    if (event === 2) {
+      audio.play(MobSound.EXPLODE, 0, 1);
+      return;
+    }
+    const m = mobs.get(entityId);
+    if (m === undefined) return;
+    // 受伤与死亡共用两条参数，音高按体型缩放 —— 大家伙声音更低
+    const def = mobDefOf(m.type);
+    const pitch = mobVoicePitch(def === null ? 1 : def.height / 1.8);
+    audio.play(event === 1 ? MobSound.DEATH : MobSound.HURT, 0, pitch);
+  },
+  onHealth: (health, maxHealth) => {
+    vitals.health = health;
+    vitals.maxHealth = maxHealth;
+  },
   onLogin: (x, y, z) => {
     // 相机和**身体**都要放到出生点。只挪相机的话，物理下一帧就会
     // 把相机拽回身体所在的位置（世界原点上空），表现为一出生就掉进虚空
@@ -317,50 +351,6 @@ function meshDirtySections(): void {
   }
 }
 
-/**
- * 把视野里的掉落物攒进 ItemEntityRenderer。
- *
- * 方块掉落物取自己六个面的贴图画成小方块，物品取图标画成朝向相机的方片 ——
- * 判据是"这个 id 在方块表里有定义吗"，与物品栏图标那条路一致。
- */
-function drawItemEntities(): void {
-  itemEntityRenderer.begin();
-  if (entities.size === 0) return;
-  // 相机的右向量与上向量，画方片时用
-  const cy = Math.cos(camera.yaw);
-  const sy = Math.sin(camera.yaw);
-  const cp = Math.cos(camera.pitch);
-  const sp = Math.sin(camera.pitch);
-  const right = [cy, 0, -sy];
-  const up = [sy * sp, cp, cy * sp];
-  const faces: number[] = [0, 0, 0, 0, 0, 0];
-
-  for (const e of entities.values()) {
-    const [x, y, z] = ClientEntities.interpolate(e, entityPartialTick);
-    // 亮度取所在格的光照，掉落物才会跟着环境明暗走 —— 洞里捡到的东西
-    // 和地面上捡到的一样亮的话，看着很出戏
-    const bx = Math.floor(x);
-    const by = Math.floor(y);
-    const bz = Math.floor(z);
-    const sky = world.store.getSkyLight(bx, by, bz);
-    const block = world.store.getBlockLight(bx, by, bz);
-    const light = Math.max(0.15, Math.max(sky * sunBrightness(timeOfDay), block * 1.5) / 15);
-
-    const isBlock = e.itemId > 0 && e.itemId < 256 && tables.defs[e.itemId] != null;
-    if (isBlock) {
-      for (let f = 0; f < 6; f++) faces[f] = faceLayer[e.itemId * 6 + f] ?? -1;
-    }
-    itemEntityRenderer.push({
-      x, y, z,
-      age: e.age + entityPartialTick,
-      phase: e.phase,
-      faceLayers: isBlock ? faces : null,
-      spriteLayer: iconLayerOf(e.itemId, e.damage),
-      light,
-    }, right, up);
-  }
-}
-
 function renderOnce(): void {
   const w = canvas!.width;
   const h = canvas!.height;
@@ -392,8 +382,14 @@ function renderOnce(): void {
   gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
   renderer.render(shader, frustum, camera.position[0]!, camera.position[1]!, camera.position[2]!);
 
-  drawItemEntities();
+  entityView.draw({
+    partialTick: entityPartialTick,
+    timeOfDay,
+    cameraYaw: camera.yaw,
+    cameraPitch: camera.pitch,
+  });
   itemEntityRenderer.render(camera.viewProjection, texture);
+  mobRenderer.render(camera.viewProjection);
   particles.render(camera.viewProjection, camera.yaw, camera.pitch, texture);
   interaction.renderOverlay(overlay, texture);
 
@@ -409,6 +405,10 @@ installTestHook({
   itemEntities: () => [...entities.values()].map((e) => ({
     id: e.entityId, x: e.x, y: e.y, z: e.z, item: e.itemId, count: e.count,
   })),
+  mobEntities: () => [...mobs.values()].map((m) => ({
+    id: m.entityId, type: m.type, x: m.x, y: m.y, z: m.z, health: m.health,
+  })),
+  mobVerts: () => mobRenderer.lastVerts,
   drawStats: () => ({ drawCalls: renderer.drawCalls, quads: renderer.quadsDrawn }),
   setSizeLock: (locked: boolean) => {
     sizeLocked = locked;
@@ -468,6 +468,8 @@ let firstFrameDone = false;
 /** 上一帧的按键状态，用来做边沿触发 */
 let prevInventory = false;
 let prevAttack = false;
+/** 上一帧世界交互里的左键状态，用来做边沿触发 */
+let prevAttackWorld = false;
 let prevUse = false;
 let hudAccum = 0;
 
@@ -519,8 +521,19 @@ function frame(nowMs: number): void {
   if (!clock.frozen && spawned && !ui.open) {
     if (player.mode === 'detached') camera.applyFreeFlight(snap, clock.dt, 12);
     player.update(camera, snap, world.store, tables, clock.dt * 1000);
-    interaction.update(snap, clock.dt * 1000);
+
+    // 左键按下的那一下：先看有没有指着生物。
+    // 有的话打生物、**不**挖方块 —— 与 MC 一致，否则站在怪面前挖矿
+    // 会一边挖一边打，两个动作抢同一个按键
+    const hitMob = snap.attack && !prevAttackWorld ? entityView.pickMob(camera, entityPartialTick) : -1;
+    if (hitMob >= 0) {
+      net.send(C_AttackEntity, { entityId: hitMob });
+      interaction.stopDigging();
+    } else {
+      interaction.update(snap, clock.dt * 1000);
+    }
   }
+  prevAttackWorld = snap.attack;
 
   // 掉落物按固定 20 Hz 推进；freeze() 之后一起停住，截图才可复现
   if (!clock.frozen) {
@@ -528,8 +541,15 @@ function frame(nowMs: number): void {
     // 上限 5 刻：切回后台标签页再回来时累加器可能积了好几秒，
     // 一次补完会让所有掉落物瞬移，还不如丢掉
     let steps = 0;
+    // 苦力怕点着引信：放一声嘶。这是整个游戏里最重要的一条音频提示 ——
+    // 玩家往往先听见它，再看见那团绿色
+    for (const id of mobs.drainJustLit()) {
+      void id;
+      audio.play(MobSound.CREEPER_HISS, 0, 1);
+    }
     while (entityAccumMs >= MS_PER_TICK && steps < 5) {
       entities.tick();
+      mobs.tick();
       entityAccumMs -= MS_PER_TICK;
       steps++;
     }

@@ -15,7 +15,7 @@ import { PacketChannel, type Transport } from '../core/net/transport.ts';
 import {
   C2S, PROTOCOL_VERSION, PlayerActionKind,
   S_Login, S_TimeUpdate, S_BlockUpdate, S_Disconnect, S_CommandResult, S_Chat, S_ServerStats,
-  S_WindowItems, S_OpenWindow, S_WindowProgress, WindowKind,
+  S_WindowItems, S_OpenWindow, S_WindowProgress, S_EntityEvent, S_PlayerHealth, WindowKind,
 } from '../core/net/packets.ts';
 import { ServerWorld } from './world/server-world.ts';
 import { handleCommand } from './commands.ts';
@@ -35,9 +35,16 @@ import { createItemRegistry, type ItemRegistry } from '../content/items.ts';
 import { createCraftingData, type SmeltingRecipe, type CraftingData } from '../content/recipes.ts';
 import { tickBlockEntities } from './world/block-entity-tick.ts';
 import { onPlayerAction, onUseBlock, advanceDigging } from './player/block-interaction.ts';
+import { onAttackEntity, tickArrows, shootArrow, explodeAt, damagePlayer } from './entity/combat.ts';
 import { ChestEntity, FurnaceEntity, type BlockEntity } from './world/block-entity.ts';
 import { tickItems, broadcastItems, spawnBlockDrop, scatterContents } from './entity/item-manager.ts';
 import { saveAllChunks } from './world/world-persistence.ts';
+import { MobManager } from './entity/mob-manager.ts';
+import { ArrowEntity, ARROW_SPEED, type ArrowEntity as Arrow } from './entity/arrow.ts';
+import { explode } from './entity/explosion.ts';
+import type { Mob } from './entity/mob.ts';
+import type { TargetRef } from './entity/goal.ts';
+import { setBodyBox, makeBox } from './../core/physics/block-collision.ts';
 import { TPS, EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, WORLD_HEIGHT, REACH_SURVIVAL } from '../core/constants.ts';
 
 /**
@@ -79,7 +86,8 @@ function range(start: number, count: number): number[] {
   return Array.from({ length: count }, (_, i) => start + i);
 }
 
-const REACH_LIMIT_SQ = (REACH_SURVIVAL + 1.5) ** 2;
+/** 箭命中判定复用的盒子。每刻可能有几十支箭，别每支都新建 */
+const arrowScratch = makeBox();
 
 /** face 编号到法线。与 core/block/types.ts 的 Facing 一致 */
 const FACE_NORMALS: readonly (readonly [number, number, number])[] = [
@@ -108,6 +116,10 @@ export class ServerCore {
   readonly items: ItemRegistry = createItemRegistry();
   readonly crafting: CraftingData = createCraftingData();
   readonly registry: BlockRegistry;
+  /** 生物：生成、AI、同步 */
+  readonly mobs: MobManager;
+  /** 飞在空中的箭 */
+  readonly arrows = new Map<number, Arrow>();
   private readonly players = new Map<number, ServerPlayer>();
 
   /** 测试用：遍历在线玩家。生产代码不要用 */
@@ -142,11 +154,25 @@ export class ServerCore {
   constructor(opts: ServerOptions) {
     this.registry = opts.registry;
     this.world = new ServerWorld(BigInt(opts.seed), opts.registry);
+    this.mobs = new MobManager(this);
     this.timeSyncInterval = opts.timeSyncInterval ?? TPS;
     // 掉落物与玩家共用一个 id 空间：两边各发一号会让客户端把一个掉落物
     // 当成某个玩家的更新，而那种错乱看起来完全不像同步问题
     this.world.allocEntityId = () => this.nextEntityId++;
     for (const r of this.crafting.smelting) this.smeltingByInput.set(r.input, r);
+    // 存档要能带上生物与箭。ServerWorld 不认识 MobManager，所以走钩子
+    this.world.mobsInChunk = (cx, cz) => this.mobs.inChunk(cx, cz);
+    this.world.arrowsInChunk = (cx, cz) => {
+      const out: Arrow[] = [];
+      for (const a of this.arrows.values()) {
+        if ((Math.floor(a.x) >> 4) === cx && (Math.floor(a.z) >> 4) === cz) out.push(a);
+      }
+      return out;
+    };
+    this.world.installLoadedMobs = (mobs, arrows) => {
+      for (const m of mobs) this.mobs.adopt(m);
+      for (const a of arrows) this.arrows.set(a.entityId, a);
+    };
   }
 
   get tickNumber(): number {
@@ -266,6 +292,10 @@ export class ServerCore {
     // 掉落物：物理、合并、拾取
     tickItems(this);
 
+    // 生物：AI、物理、生成、同步
+    this.mobs.tick();
+    tickArrows(this);
+
     // 光照重算（M4 会换成局部增量）
     this.world.updateLighting();
 
@@ -364,6 +394,7 @@ export class ServerCore {
       case 'C_PlayerMove': return this.onPlayerMove(player, value);
       case 'C_PlayerAction': return onPlayerAction(this, player, value);
       case 'C_UseBlock': return onUseBlock(this, player, value);
+      case 'C_AttackEntity': return onAttackEntity(this, player, value);
       case 'C_WindowClick': return onWindowClick(this, player, value);
       case 'C_CloseWindow': return closeWindow(this, player);
       case 'C_HeldSlot': {
@@ -437,7 +468,6 @@ export class ServerCore {
     return dx * dx + dy * dy + dz * dz;
   }
 
-
   /**
    * 定出生点。
    *
@@ -462,8 +492,30 @@ export class ServerCore {
     this.spawnZ = spawn.z;
   }
 
-  private sendChat(player: ServerPlayer, text: string): void {
+  sendChat(player: ServerPlayer, text: string): void {
     player.channel.send(S_Chat, { text });
+  }
+
+  playerById(id: number): ServerPlayer | undefined {
+    return this.players.get(id);
+  }
+
+  // --- 战斗的薄转发。实现在 entity/combat.ts，这里只是让调用方
+  //     （生物 AI、指令、测试）不必认识那个模块 ---
+
+  /** 炸一下。苦力怕与（M11 的）TNT 共用 */
+  explode(x: number, y: number, z: number, power: number, sourceId = -1): void {
+    explodeAt(this, x, y, z, power, sourceId);
+  }
+
+  /** 骷髅放箭 */
+  shootArrow(mob: Mob, target: TargetRef): void {
+    shootArrow(this, mob, target);
+  }
+
+  /** 玩家掉血 */
+  damagePlayer(player: ServerPlayer, amount: number, fromX: number, fromZ: number): void {
+    damagePlayer(this, player, amount, fromX, fromZ);
   }
 
 }

@@ -84,3 +84,15 @@ export function skyColor(timeOfDay: number): { r: number; g: number; b: number }
 export function sunAngleRadians(timeOfDay: number): number {
   return celestialAngle(timeOfDay) * Math.PI * 2;
 }
+
+/**
+ * 是不是白天。
+ *
+ * 判据用 `skyLightSubtracted` 而不是"时间在 0..12000 之间"：真正决定
+ * 僵尸烧不烧、怪刷不刷的是**天光被扣掉多少**，而那条曲线在日出日落
+ * 前后各有一段过渡。用时间硬切的话，怪会在日出那一刻整齐地烧起来，
+ * 而 MC 里是天亮的过程中陆续烧。
+ */
+export function isDaytime(timeOfDay: number): boolean {
+  return skyLightSubtracted(timeOfDay) <= 3;
+}

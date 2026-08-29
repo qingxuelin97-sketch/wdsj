@@ -152,24 +152,24 @@ export function broadcastItems(core: ServerCore, destroyedElsewhere: readonly nu
     for (const item of world.items.values()) {
       if (!player.isSubscribed(Math.floor(item.x) >> 4, Math.floor(item.z) >> 4)) continue;
       seen.add(item.entityId);
-      if (player.knownEntities.has(item.entityId)) {
+      if (player.knownItems.has(item.entityId)) {
         // 位置没变就不发。掉落物落地之后就一动不动，而它们是会堆积的 ——
         // 每 tick 无条件发一遍等于给静止的物品交带宽税
         if (item.vx !== 0 || item.vy !== 0 || item.vz !== 0) moves.push(item);
       } else {
         spawns.push(item);
-        player.knownEntities.add(item.entityId);
+        player.knownItems.add(item.entityId);
       }
     }
 
     const destroys: number[] = [];
-    for (const id of player.knownEntities) {
+    for (const id of player.knownItems) {
       if (!seen.has(id)) destroys.push(id);
     }
     for (const id of destroyedElsewhere) {
-      if (player.knownEntities.has(id) && !destroys.includes(id)) destroys.push(id);
+      if (player.knownItems.has(id) && !destroys.includes(id)) destroys.push(id);
     }
-    for (const id of destroys) player.knownEntities.delete(id);
+    for (const id of destroys) player.knownItems.delete(id);
 
     if (spawns.length > 0) {
       const buf = new DataView(new ArrayBuffer(spawns.length * SPAWN_ITEM_STRIDE));

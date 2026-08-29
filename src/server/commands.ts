@@ -107,6 +107,54 @@ value: Record<string, unknown>,
         reply(true, String(buildShapeRow(core, Number(sx2), Number(sy2), Number(sz2))));
         return;
       }
+      case 'fillbox': {
+        // 在服务端一次性填一片，而不是让客户端发几百条 setblock ——
+        // 那样每一条都要走一轮消息往返，一个 20×20 的平台要几百帧才铺完
+        const [, ax, ay, az, bx, by, bz, blockName] = parts;
+        const state = packState(core.registry.idOf(String(blockName)));
+        let filled = 0;
+        for (let x = Math.min(Number(ax), Number(bx)); x <= Math.max(Number(ax), Number(bx)); x++) {
+          for (let y = Math.min(Number(ay), Number(by)); y <= Math.max(Number(ay), Number(by)); y++) {
+            for (let z = Math.min(Number(az), Number(bz)); z <= Math.max(Number(az), Number(bz)); z++) {
+              if (core.world.setBlock(x, y, z, state)) filled++;
+            }
+          }
+        }
+        reply(true, String(filled));
+        return;
+      }
+      case 'spawn': {
+        // 自动化与调试用：在指定位置放一只生物
+        const [, kind, sx, sy, sz] = parts;
+        const x = sx === undefined ? player.x : Number(sx);
+        const y = sy === undefined ? player.y : Number(sy);
+        const z = sz === undefined ? player.z : Number(sz);
+        const mob = core.mobs.spawnByName(String(kind), x, y, z);
+        reply(mob !== null, mob === null ? `没有这种生物: ${String(kind)}` : String(mob.entityId));
+        return;
+      }
+      case 'killall': {
+        const [, kind] = parts;
+        const n = core.mobs.removeAll(kind === undefined ? undefined : String(kind));
+        reply(true, String(n));
+        return;
+      }
+      case 'mobs': {
+        // 当前有多少只，各是什么。断言用
+        const counts = new Map<string, number>();
+        for (const m of core.mobs.mobs.values()) {
+          counts.set(m.def.name, (counts.get(m.def.name) ?? 0) + 1);
+        }
+        const parts2 = [...counts.entries()].sort().map(([k, v]) => `${k}=${v}`);
+        reply(true, parts2.length === 0 ? 'none' : parts2.join(' '));
+        return;
+      }
+      case 'explode': {
+        const [, sx, sy, sz, power] = parts;
+        core.explode(Number(sx), Number(sy), Number(sz), Number(power ?? 3));
+        reply(true, 'ok');
+        return;
+      }
       case 'give': {
         // 自动化与调试用：直接把东西塞进背包
         const [, what, howMany] = parts;

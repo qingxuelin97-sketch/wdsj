@@ -38,6 +38,8 @@ interface StartMessage {
   stats?: SharedArrayBuffer;
   /** 是否落盘。测试里可以关掉，免得一次跑测污染上一次的世界 */
   persist?: boolean;
+  /** 是否自然生成生物。截图回归要关掉，见 MobManager.naturalSpawning */
+  spawnMobs?: boolean;
 }
 
 interface StopMessage {
@@ -201,6 +203,10 @@ async function start(msg: StartMessage): Promise<void> {
   const registry = createBlockRegistry();
   const core = new ServerCore({ seed: BigInt(msg.seed), registry });
   stats = msg.stats !== undefined ? new Int32Array(msg.stats) : null;
+  if (msg.spawnMobs === false) {
+    core.mobs.naturalSpawning = false;
+    console.log('[mobs] 已按参数关闭自然生成，只有 spawn 指令能放怪');
+  }
 
   // persist=0 时**根本不挂存档**，而不是挂一个内存后端。
   //

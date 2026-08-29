@@ -16,18 +16,24 @@
 import { Chunk, ChunkSection } from '../../core/world/chunk.ts';
 import { rleEncode16, rleEncode8, rleDecode16, rleDecode8 } from '../../core/world/rle.ts';
 import {
-  nbt, encodeNbt, decodeNbt, getInt, getBytes, getList, getCompound, TagType, type NbtValue,
+  nbt, encodeNbt, decodeNbt, getInt, getBytes, getList, getCompound, getString, TagType, type NbtValue,
 } from '../../core/nbt/nbt.ts';
 import { CHUNK_SIZE, SECTION_VOLUME, SECTIONS_PER_COLUMN } from '../../core/constants.ts';
 import { BlockEntity, blockEntityFromNbt } from '../world/block-entity.ts';
 import { ItemEntity, itemEntityFromNbt } from '../entity/item-entity.ts';
+import { Mob, mobFromNbt } from '../entity/mob.ts';
+import { ArrowEntity, arrowFromNbt } from '../entity/arrow.ts';
+import { mobDefOf } from '../../content/mobs.ts';
 import type { ScheduledTick } from '../world/scheduled-ticks.ts';
 
 /** 一个区块存盘时要带上的一切 */
 export interface ChunkSaveData {
   chunk: Chunk;
   blockEntities: readonly BlockEntity[];
+  /** 掉落物、生物、箭混装在同一个 Entities 列表里，靠 id 字段分流 */
   items: readonly ItemEntity[];
+  mobs: readonly Mob[];
+  arrows: readonly ArrowEntity[];
   tileTicks: readonly ScheduledTick[];
 }
 
@@ -35,6 +41,8 @@ export interface ChunkLoadResult {
   chunk: Chunk;
   blockEntities: BlockEntity[];
   items: ItemEntity[];
+  mobs: Mob[];
+  arrows: ArrowEntity[];
   tileTicks: ScheduledTick[];
 }
 
@@ -72,7 +80,11 @@ export function encodeChunkNbt(data: ChunkSaveData, worldAge: number): Uint8Arra
       Biomes: nbt.bytes(chunk.biomes),
       Sections: nbt.list(TagType.COMPOUND, sections),
       TileEntities: nbt.list(TagType.COMPOUND, data.blockEntities.map((e) => e.toNbt())),
-      Entities: nbt.list(TagType.COMPOUND, data.items.map((e) => e.toNbt())),
+      Entities: nbt.list(TagType.COMPOUND, [
+        ...data.items.map((e) => e.toNbt()),
+        ...data.mobs.map((e) => e.toNbt()),
+        ...data.arrows.map((e) => e.toNbt()),
+      ]),
       TileTicks: nbt.list(TagType.COMPOUND, tileTicks),
     }),
   }));
@@ -125,9 +137,27 @@ export function decodeChunkNbt(
   }
 
   const items: ItemEntity[] = [];
+  const mobs: Mob[] = [];
+  const arrows: ArrowEntity[] = [];
   for (const t of getList(level, 'Entities')) {
-    const e = itemEntityFromNbt(allocEntityId(), t);
-    if (e !== null) items.push(e);
+    switch (getString(t, 'id')) {
+      case 'Mob': {
+        const m = mobFromNbt(allocEntityId(), t, mobDefOf);
+        if (m !== null) mobs.push(m);
+        break;
+      }
+      case 'Arrow': {
+        const a = arrowFromNbt(allocEntityId(), t);
+        if (a !== null) arrows.push(a);
+        break;
+      }
+      default: {
+        // 没有 id 字段的按掉落物处理：那是 M9 存下来的老格式
+        const e = itemEntityFromNbt(allocEntityId(), t);
+        if (e !== null) items.push(e);
+        break;
+      }
+    }
   }
 
   const tileTicks: ScheduledTick[] = [];
@@ -140,5 +170,5 @@ export function decodeChunkNbt(
     });
   }
 
-  return { chunk, blockEntities, items, tileTicks };
+  return { chunk, blockEntities, items, mobs, arrows, tileTicks };
 }

@@ -53,6 +53,17 @@ export const C_PlayerAction = C2S.add(
   ]),
 );
 
+/**
+ * 攻击一个实体。
+ *
+ * 单独一个包而不是复用 C_PlayerAction：那个包的载荷是方块坐标，
+ * 硬塞一个实体 id 进去会让两种含义共用同一组字段 ——
+ * 而"同一个字段在不同情况下是不同的东西"正是协议最容易腐化的地方。
+ */
+export const C_AttackEntity = C2S.add(
+  definePacket(0x0c, 'C_AttackEntity', [['entityId', 'u32']]),
+);
+
 /** 对方块使用手上的物品（放置 / 右键交互） */
 export const C_UseBlock = C2S.add(
   definePacket(0x04, 'C_UseBlock', [
@@ -316,6 +327,50 @@ export const S_WindowProgress = S2C.add(
     ['cookTime', 'u16'],
   ]),
 );
+
+/**
+ * 一批生物的出现。
+ *
+ * 每项 23 字节：entityId(u32) type(u8) variant(u8) x/y/z(i32×3)
+ * yaw(i16) headYaw(i16) health(u8)。
+ * 朝向用 1/1000 弧度的定点数 —— 生物转头差千分之一弧度没人看得出来。
+ */
+export const S_SpawnMobs = S2C.add(
+  definePacket(0x94, 'S_SpawnMobs', [['entries', 'bytes']]),
+);
+
+/**
+ * 生物的位置与状态。
+ *
+ * 每项 22 字节：entityId(u32) x/y/z(i32×3) yaw(i16) headYaw(i16)
+ * flags(u8) health(u8)。flags 位：1 受伤闪红 / 2 着火 / 4 苦力怕鼓起 / 8 正在死。
+ * 这几位都是**表现**用的，客户端拿它决定怎么画，不参与任何判定。
+ */
+export const S_MobMoves = S2C.add(
+  definePacket(0x95, 'S_MobMoves', [['entries', 'bytes']]),
+);
+
+/** 生物受伤 / 死亡的音效与粒子提示 */
+export const S_EntityEvent = S2C.add(
+  definePacket(0x96, 'S_EntityEvent', [
+    ['entityId', 'u32'],
+    /** 0 = 受伤，1 = 死亡，2 = 爆炸 */
+    ['event', 'u8'],
+  ]),
+);
+
+/** 玩家血量与饥饿。M12 会把饥饿真正接上，这里先把血量通道打通 */
+export const S_PlayerHealth = S2C.add(
+  definePacket(0x97, 'S_PlayerHealth', [
+    ['health', 'u8'],
+    ['maxHealth', 'u8'],
+  ]),
+);
+
+/** S_SpawnMobs 里每项的字节数 */
+export const SPAWN_MOB_STRIDE = 23;
+/** S_MobMoves 里每项的字节数 */
+export const MOB_MOVE_STRIDE = 22;
 
 /** 掉落物坐标的定点数精度：1/32 格 */
 export const ENTITY_POS_SCALE = 32;

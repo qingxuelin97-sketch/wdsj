@@ -138,7 +138,7 @@ export class Interaction {
     this.usePressed = input.use;
   }
 
-  private stopDigging(): void {
+  stopDigging(): void {
     const t = this.digTarget;
     if (t === null) return;
     this.d.send(C_PlayerAction as never, {

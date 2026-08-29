@@ -10,10 +10,14 @@
  * 依赖用一个显式的上下文对象传进来，不用闭包：谁能被包驱动，签名上写着。
  */
 import type { PacketChannel } from '../core/net/transport.ts';
-import { WindowKind, ENTITY_POS_SCALE, SPAWN_ITEM_STRIDE, ENTITY_MOVE_STRIDE } from '../core/net/packets.ts';
+import {
+  WindowKind, ENTITY_POS_SCALE, SPAWN_ITEM_STRIDE, ENTITY_MOVE_STRIDE,
+  SPAWN_MOB_STRIDE, MOB_MOVE_STRIDE,
+} from '../core/net/packets.ts';
 import { stateId } from '../core/world/chunk.ts';
 import type { ClientWorld } from '../client/world/client-world.ts';
 import type { ClientEntities } from '../client/entity/client-entities.ts';
+import type { ClientMobs } from '../client/entity/client-mobs.ts';
 import type { UiController } from '../client/ui/ui-controller.ts';
 import type { ChunkRenderer } from '../client/render/chunk-renderer.ts';
 import type { Interaction } from '../client/player/interaction.ts';
@@ -22,6 +26,7 @@ import type { ItemStack } from '../core/item/item-def.ts';
 export interface PacketContext {
   readonly world: ClientWorld;
   readonly entities: ClientEntities;
+  readonly mobs: ClientMobs;
   readonly ui: UiController;
   readonly renderer: ChunkRenderer;
   readonly interaction: Interaction;
@@ -35,6 +40,10 @@ export interface PacketContext {
   onCommandResult(requestId: number, ok: boolean, text: string): void;
   /** 从网络包里解出槽位数组 */
   decodeSlots(bytes: Uint8Array): ItemStack[];
+  /** 生物受伤 / 死亡 / 爆炸，用来放音效与粒子 */
+  onEntityEvent(entityId: number, event: number): void;
+  /** 玩家血量变化 */
+  onHealth(health: number, maxHealth: number): void;
   /** 有窗口打开时要解除指针锁 */
   releasePointer(): void;
   recordError(msg: string): void;
@@ -107,7 +116,21 @@ export function installPacketHandlers(net: PacketChannel, ctx: PacketContext): v
         ctx.entities.onMove(value['entries'] as Uint8Array, ENTITY_MOVE_STRIDE, ENTITY_POS_SCALE);
         return;
       case 'S_DestroyEntities':
+        // 掉落物与生物共用一条销毁通道：id 是全局唯一的，两边各删一次即可
         ctx.entities.onDestroy(value['entries'] as Uint8Array);
+        ctx.mobs.onDestroy(value['entries'] as Uint8Array);
+        return;
+      case 'S_SpawnMobs':
+        ctx.mobs.onSpawn(value['entries'] as Uint8Array, SPAWN_MOB_STRIDE, ENTITY_POS_SCALE);
+        return;
+      case 'S_MobMoves':
+        ctx.mobs.onMove(value['entries'] as Uint8Array, MOB_MOVE_STRIDE, ENTITY_POS_SCALE);
+        return;
+      case 'S_EntityEvent':
+        ctx.onEntityEvent(value['entityId'] as number, value['event'] as number);
+        return;
+      case 'S_PlayerHealth':
+        ctx.onHealth(value['health'] as number, value['maxHealth'] as number);
         return;
       case 'S_WindowProgress':
         ctx.ui.onWindowProgress(

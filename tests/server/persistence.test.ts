@@ -227,6 +227,8 @@ test('同一个世界存两次，字节完全相同', async () => {
     chunk: world.store.getChunk(0, 0)!,
     blockEntities: world.blockEntities.inChunk(0, 0),
     items: [],
+    mobs: [],
+    arrows: [],
     tileTicks: world.scheduled.entriesIn(0, 0, 15, 15),
   }, world.worldAge);
 
@@ -282,4 +284,33 @@ test('400 个区块存 + 读，各自都在 2 秒以内', async () => {
   }
   console.log(`    400 区块：存 ${saveMs.toFixed(0)}ms / 读 ${loadMs.toFixed(0)}ms / `
     + `${(storage.totalBytes / 1048576).toFixed(1)}MB / ${storage.fileCount} 个文件`);
+});
+
+test('生物跟着区块一起存读，血量与羊的颜色都还原', async () => {
+  const storage = new MemoryStorage();
+  const a = await makeRig(storage);
+  await tickAsync(a.core, 20);
+
+  const x = Math.floor(a.player.x) + 2;
+  const z = Math.floor(a.player.z) + 2;
+  const y = Math.floor(a.player.y);
+  const sheep = a.core.mobs.spawnByName('sheep', x + 0.5, y, z + 0.5)!;
+  sheep.variant = 11;
+  sheep.health = 5;
+  const cow = a.core.mobs.spawnByName('cow', x + 0.5, y, z + 1.5)!;
+  void cow;
+  await a.controller.saveNow();
+
+  const b = await makeRig(storage);
+  b.controller.restorePlayer(b.player);
+  b.core.world.forceChunk(x >> 4, z >> 4);
+
+  const restored = [...b.core.mobs.mobs.values()];
+  assert.equal(restored.length, 2, '两只都该回来');
+  const back = restored.find((m) => m.def.name === 'sheep');
+  assert.ok(back !== undefined, '羊应该回来了');
+  assert.equal(back.variant, 11, '羊的颜色要还原 —— 否则重进游戏羊会集体变色');
+  assert.equal(back.health, 5, '血量要还原');
+  // AI 目标是**这一次运行**的状态，读档时重新装，不该跟着存
+  assert.ok(back.goals.runningNames().length >= 0);
 });

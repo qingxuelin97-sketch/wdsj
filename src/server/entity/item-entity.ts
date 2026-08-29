@@ -130,6 +130,9 @@ export class ItemEntity {
 
   toNbt(): NbtValue {
     return nbt.compound({
+      // 判别字段。存档里 Entities 是一个混装列表（掉落物、生物、箭），
+      // 读的时候靠它分流 —— MC 用的也是这个字段名
+      id: nbt.string('Item'),
       Age: nbt.short(this.age),
       PickupDelay: nbt.short(this.pickupDelay),
       Pos: nbt.list(TagType.DOUBLE, [nbt.double(this.x), nbt.double(this.y), nbt.double(this.z)]),

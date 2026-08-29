@@ -34,6 +34,8 @@ export interface ServerHostOptions {
   seed: number;
   /** 要不要落盘 */
   persist: boolean;
+  /** 要不要自然生成生物 */
+  spawnMobs: boolean;
   /** 出错时往哪报 */
   recordError(msg: string): void;
   recordLog(msg: string): void;
@@ -51,6 +53,7 @@ export function startServerHost(opts: ServerHostOptions): ServerHost {
   const channel = new MessageChannel();
 
   const persist = opts.persist;
+  const spawnMobs = opts.spawnMobs;
   const seed = opts.seed;
 
   /** 存盘请求的回执，按 requestId 对上 */
@@ -105,7 +108,7 @@ export function startServerHost(opts: ServerHostOptions): ServerHost {
       [clockPorts.port1],
     );
     serverWorker.postMessage(
-      { kind: 'start', seed, port: channel.port2, clockPort: clockPorts.port2, stats: control, persist },
+      { kind: 'start', seed, port: channel.port2, clockPort: clockPorts.port2, stats: control, persist, spawnMobs },
       [channel.port2, clockPorts.port2],
     );
   } else {
@@ -113,7 +116,7 @@ export function startServerHost(opts: ServerHostOptions): ServerHost {
     // "切到后台世界就不动了"会变成一个查不出根因的怪现象。
     console.warn('[clock] 无 SharedArrayBuffer（未跨源隔离），服务端回落到 setTimeout 心跳');
     opts.recordLog('[clock] 无 SAB，回落 setTimeout 心跳：后台标签页 TPS 会掉到 0');
-    serverWorker.postMessage({ kind: 'start', seed, port: channel.port2, persist }, [channel.port2]);
+    serverWorker.postMessage({ kind: 'start', seed, port: channel.port2, persist, spawnMobs }, [channel.port2]);
   }
 
 

@@ -26,7 +26,7 @@ import { EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, WORLD_HEIGHT, REACH_SURVIVAL }
  * 而服务端手里是稍旧的位置，卡在边界上时两边会差出零点几格。
  * 卡得太死的话，正常游玩时会偶发"点了没反应"。
  */
-const REACH_LIMIT_SQ = (REACH_SURVIVAL + 1.5) ** 2;
+export const REACH_LIMIT_SQ = (REACH_SURVIVAL + 1.5) ** 2;
 
 /** face 编号到法线。与 core/block/types.ts 的 Facing 一致 */
 const FACE_NORMALS: readonly (readonly [number, number, number])[] = [

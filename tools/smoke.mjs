@@ -101,11 +101,11 @@ async function main() {
     chrome = await launchChrome({ port: 9333, headless: HEADLESS });
     log(`Chrome ${chrome.version['Browser']}`);
 
-    // persist=0 必须带上。存档一旦开着，"同一个种子跑两次"就不再等价 ——
+    // persist=0 与 mobs=0 都必须带上。存档一旦开着，"同一个种子跑两次"就不再等价 ——
     // 第二次读的是第一次留下的世界（含玩家走过的位置、挖掉的方块、
     // 甚至跑到第几 tick），全部截图哈希会集体漂移，而且第一次跑总是通过、
     // 之后每次都失败，看上去像"随机坏掉"。存档本身另有 persist-check.mjs 验。
-    page = await openPage(9333, `http://127.0.0.1:${PORT}/?test=smoke&seed=1234&radius=2&persist=0`);
+    page = await openPage(9333, `http://127.0.0.1:${PORT}/?test=smoke&seed=1234&radius=2&persist=0&mobs=0`);
 
     // --- 等游戏就绪 ---
     const boot = await page.evaluate(`

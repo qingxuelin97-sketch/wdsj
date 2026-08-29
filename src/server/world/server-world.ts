@@ -17,6 +17,8 @@ import { BlockEntityStore } from './block-entity-store.ts';
 import { blockEntityKindFor, createBlockEntity, type BlockEntity } from './block-entity.ts';
 import { ScheduledTickQueue } from './scheduled-ticks.ts';
 import type { ItemEntity } from '../entity/item-entity.ts';
+import type { Mob } from '../entity/mob.ts';
+import type { ArrowEntity } from '../entity/arrow.ts';
 import type { WorldSave } from '../save/world-save.ts';
 import { installChunkFromSave, saveChunkToSave } from './world-persistence.ts';
 
@@ -93,6 +95,18 @@ export class ServerWorld {
     let n = 1;
     return () => n++;
   })();
+
+  /**
+   * 生物与箭的存档钩子。
+   *
+   * 它们归 ServerCore 的 MobManager 管，而 ServerWorld 不认识 MobManager ——
+   * 反过来引用会让"世界"依赖"实体管理器"，而实体管理器本来就要依赖世界。
+   * 所以这里留三个函数，由 ServerCore 在构造时接上；不接的话（纯世界测试）
+   * 存档里就是没有实体，正是想要的行为。
+   */
+  mobsInChunk: (cx: number, cz: number) => Iterable<Mob> = () => [];
+  arrowsInChunk: (cx: number, cz: number) => Iterable<ArrowEntity> = () => [];
+  installLoadedMobs: (mobs: readonly Mob[], arrows: readonly ArrowEntity[]) => void = () => { /* 默认丢弃 */ };
   /**
    * 异步区块来源。挂上之后 ensureChunk 不再当场生成，而是下单等收货。
    * 为空时（测试、node 服务器）走同线程生成。
