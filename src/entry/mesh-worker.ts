@@ -26,6 +26,8 @@ self.onmessage = (ev: MessageEvent): void => {
       cullSameType: new Uint8Array(msg.tables.cullSameType),
       opaque: new Uint8Array(msg.tables.opaque),
       faceLayer: new Uint16Array(msg.tables.faceLayer),
+      // 模型表是结构化克隆过来的，已经是 typed array，直接用
+      models: msg.models,
     };
     return;
   }

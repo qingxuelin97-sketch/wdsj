@@ -12,6 +12,11 @@ import { defineBlock } from '../core/block/block-def.ts';
 import type { BlockDef } from '../core/block/block-def.ts';
 import { BlockRegistry } from '../core/registry/block-registry.ts';
 import { ModelKind, RenderLayer, TintKind, SoundGroup, ToolKind, ToolTier, Facing } from '../core/block/types.ts';
+import {
+  element, slabModel, stairsModel, fenceModel, torchModel, paneModel,
+  layerModel, cakeModel, doorModel, bedModel, railModel,
+  type ModelElement,
+} from '../core/block/block-model.ts';
 import { NO_COLLISION } from '../core/math/aabb.ts';
 
 /** 方块名常量，代码里一律用它引用方块，不写裸字符串 */
@@ -59,6 +64,22 @@ export const Blocks = {
   GLOWSTONE: 'glowstone',
   STONE_BRICKS: 'stone_bricks',
   MYCELIUM: 'mycelium',
+
+  // --- M7 的非立方体方块 ---
+  STONE_SLAB: 'stone_slab',
+  DOUBLE_STONE_SLAB: 'double_stone_slab',
+  OAK_STAIRS: 'oak_stairs',
+  COBBLESTONE_STAIRS: 'cobblestone_stairs',
+  FENCE: 'fence',
+  TORCH: 'torch',
+  LADDER: 'ladder',
+  GLASS_PANE: 'glass_pane',
+  SNOW_LAYER: 'snow_layer',
+  CAKE: 'cake',
+  WOODEN_DOOR: 'wooden_door',
+  TRAPDOOR: 'trapdoor',
+  BED: 'bed',
+  RAIL: 'rail',
   END_STONE: 'end_stone',
   TALL_GRASS: 'tall_grass',
   DEAD_BUSH: 'dead_bush',
@@ -98,6 +119,26 @@ function crossPlant(id: number, name: string, texture: string, tint: TintKind = 
     randomTick: true,
     flammability: 60,
   });
+}
+
+/** 楼梯朝向：元数据低 2 位。顺序与 MC 一致 */
+const STAIR_FACING: readonly Facing[] = [Facing.EAST, Facing.WEST, Facing.SOUTH, Facing.NORTH];
+/** 贴墙火把的朝向：元数据 1..4 */
+const TORCH_WALL: readonly Facing[] = [Facing.EAST, Facing.WEST, Facing.SOUTH, Facing.NORTH];
+/** 梯子贴在哪一面 */
+const LADDER_FACING: readonly Facing[] = [Facing.NORTH, Facing.SOUTH, Facing.WEST, Facing.EAST];
+/** 门贴在哪一面 */
+const DOOR_FACING: readonly Facing[] = [Facing.EAST, Facing.SOUTH, Facing.WEST, Facing.NORTH];
+
+/** 梯子：贴在某一面的一层薄片，只画朝屋里的那一面 */
+function ladderElement(facing: Facing): ModelElement {
+  const t = 2;
+  switch (facing) {
+    case Facing.NORTH: return element([0, 0, 0], [16, 16, t], [-1, -1, -1, 3, -1, -1], false);
+    case Facing.SOUTH: return element([0, 0, 16 - t], [16, 16, 16], [-1, -1, 2, -1, -1, -1], false);
+    case Facing.WEST: return element([0, 0, 0], [t, 16, 16], [-1, -1, -1, -1, -1, 5], false);
+    default: return element([16 - t, 0, 0], [16, 16, 16], [-1, -1, -1, -1, 4, -1], false);
+  }
 }
 
 /** 建立并冻结方块注册表 */
@@ -262,6 +303,111 @@ export function createBlockRegistry(): BlockRegistry {
     defineBlock({ id: 110, name: Blocks.MYCELIUM, hardness: 0.6, tool: ToolKind.SHOVEL, textures: { up: 'mycelium_top', down: 'dirt', side: 'mycelium_side' }, soundGroup: SoundGroup.GRASS, randomTick: true }),
   );
   r.register(stoneLike(121, Blocks.END_STONE, 3, 'end_stone', ToolTier.WOOD));
+
+  // ---------------------------------------------------------------------
+  // 非立方体方块（M7）
+  //
+  // 这一批全部靠 modelFor：形状由元数据算出来，碰撞盒由模型推导，
+  // mesher 一行分支都不用加。加一种新形状 = 写一个返回 BlockModel 的函数。
+  // ---------------------------------------------------------------------
+
+  // 半砖：元数据最低位是"上半砖还是下半砖"
+  r.register(defineBlock({
+    id: 44, name: Blocks.STONE_SLAB, hardness: 2, tool: ToolKind.PICKAXE, minTier: ToolTier.WOOD,
+    textures: { up: 'stone_slab_top', down: 'stone_slab_top', side: 'stone_slab_side' },
+    opaque: false, soundGroup: SoundGroup.STONE,
+    modelFor: (meta) => slabModel((meta & 1) === 0),
+  }));
+  r.register(defineBlock({
+    id: 43, name: Blocks.DOUBLE_STONE_SLAB, hardness: 2, tool: ToolKind.PICKAXE, minTier: ToolTier.WOOD,
+    textures: { up: 'stone_slab_top', down: 'stone_slab_top', side: 'stone_slab_side' },
+    soundGroup: SoundGroup.STONE,
+  }));
+
+  // 楼梯：低 2 位是朝向，第 3 位是上下颠倒
+  const stairs = (id: number, name: string, tex: string, sound: SoundGroup, tool: ToolKind): BlockDef =>
+    defineBlock({
+      id, name, hardness: 2, tool, minTier: ToolTier.WOOD,
+      textures: tex, opaque: false, soundGroup: sound,
+      modelFor: (meta) => stairsModel(STAIR_FACING[meta & 3]!, (meta & 4) !== 0),
+    });
+  r.register(stairs(53, Blocks.OAK_STAIRS, 'planks', SoundGroup.WOOD, ToolKind.AXE));
+  r.register(stairs(67, Blocks.COBBLESTONE_STAIRS, 'cobblestone', SoundGroup.STONE, ToolKind.PICKAXE));
+
+  // 栅栏：元数据低 4 位是 N/S/W/E 四个方向的连接
+  r.register(defineBlock({
+    id: 85, name: Blocks.FENCE, hardness: 2, tool: ToolKind.AXE,
+    textures: 'planks', opaque: false, soundGroup: SoundGroup.WOOD, flammability: 20,
+    modelFor: (meta) => fenceModel([(meta & 1) !== 0, (meta & 2) !== 0, (meta & 4) !== 0, (meta & 8) !== 0]),
+  }));
+
+  // 火把：元数据 0 = 立地，1..4 = 贴在某一侧的墙上
+  r.register(defineBlock({
+    id: 50, name: Blocks.TORCH, hardness: 0, textures: 'torch',
+    renderLayer: RenderLayer.CUTOUT, opaque: false, solid: false, lightEmission: 14,
+    soundGroup: SoundGroup.WOOD, collisionShape: NO_COLLISION,
+    modelFor: (meta) => torchModel(meta === 0 ? null : TORCH_WALL[(meta - 1) & 3]!),
+  }));
+
+  r.register(defineBlock({
+    id: 65, name: Blocks.LADDER, hardness: 0.4, tool: ToolKind.AXE,
+    textures: 'ladder', renderLayer: RenderLayer.CUTOUT, opaque: false, solid: false,
+    soundGroup: SoundGroup.LADDER, collisionShape: NO_COLLISION,
+    modelFor: (meta) => ({ elements: [ladderElement(LADDER_FACING[meta & 3]!)] }),
+  }));
+
+  r.register(defineBlock({
+    id: 102, name: Blocks.GLASS_PANE, hardness: 0.3,
+    textures: 'glass', renderLayer: RenderLayer.CUTOUT, opaque: false,
+    soundGroup: SoundGroup.GLASS,
+    modelFor: (meta) => paneModel([(meta & 1) !== 0, (meta & 2) !== 0, (meta & 4) !== 0, (meta & 8) !== 0]),
+  }));
+
+  // 雪层：元数据是层数 0..7，每层 2/16 格高
+  r.register(defineBlock({
+    id: 78, name: Blocks.SNOW_LAYER, hardness: 0.1, tool: ToolKind.SHOVEL,
+    textures: 'snow', opaque: false, soundGroup: SoundGroup.SNOW, replaceable: true,
+    modelFor: (meta) => layerModel(((meta & 7) + 1) * 2),
+  }));
+
+  r.register(defineBlock({
+    id: 92, name: Blocks.CAKE, hardness: 0.5,
+    textures: { up: 'cake_top', down: 'cake_bottom', side: 'cake_side' },
+    opaque: false, soundGroup: SoundGroup.CLOTH,
+    modelFor: (meta) => cakeModel(meta & 7),
+  }));
+
+  // 门：低 2 位朝向，第 3 位开合
+  r.register(defineBlock({
+    id: 64, name: Blocks.WOODEN_DOOR, hardness: 3, tool: ToolKind.AXE,
+    textures: 'door_lower', renderLayer: RenderLayer.CUTOUT, opaque: false,
+    soundGroup: SoundGroup.WOOD,
+    modelFor: (meta) => doorModel(DOOR_FACING[meta & 3]!, (meta & 4) !== 0),
+  }));
+
+  r.register(defineBlock({
+    id: 96, name: Blocks.TRAPDOOR, hardness: 3, tool: ToolKind.AXE,
+    textures: 'trapdoor', renderLayer: RenderLayer.CUTOUT, opaque: false,
+    soundGroup: SoundGroup.WOOD,
+    // 关着是贴地的一片，开着是贴墙的一片
+    modelFor: (meta) => ((meta & 4) === 0
+      ? layerModel(3)
+      : doorModel(DOOR_FACING[meta & 3]!, false)),
+  }));
+
+  r.register(defineBlock({
+    id: 26, name: Blocks.BED, hardness: 0.2,
+    textures: { up: 'bed_top', down: 'planks', side: 'bed_side' },
+    opaque: false, soundGroup: SoundGroup.CLOTH,
+    modelFor: () => bedModel(),
+  }));
+
+  r.register(defineBlock({
+    id: 66, name: Blocks.RAIL, hardness: 0.7, tool: ToolKind.PICKAXE,
+    textures: 'rail', renderLayer: RenderLayer.CUTOUT, opaque: false, solid: false,
+    soundGroup: SoundGroup.METAL, collisionShape: NO_COLLISION,
+    modelFor: () => railModel(),
+  }));
 
   // --- 植物 ---
   r.register(crossPlant(31, Blocks.TALL_GRASS, 'tall_grass', TintKind.GRASS));

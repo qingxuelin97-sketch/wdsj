@@ -406,6 +406,91 @@ export class ServerCore {
     this.world.setBlock(px, py, pz, packState(player.heldBlockId));
   }
 
+  /**
+   * 搭一个方块陈列阵。
+   *
+   * 每一列放一种方块，带元数据的方块横向排开它的几个代表状态 ——
+   * 半砖的上下、楼梯的四个朝向、栅栏的连接、雪层的厚度。
+   * 一张截图就能覆盖"所有形状"，而形状错了在截图里是一眼可见的。
+   *
+   * @returns 摆了多少个方块
+   */
+  private buildGallery(ox: number, oy: number, oz: number): number {
+    const ids: number[] = [];
+    for (let id = 1; id < this.world.tables.count; id++) {
+      if (this.world.tables.defs[id] != null) ids.push(id);
+    }
+
+    // 需要展示多个状态的方块：id -> 要展示的元数据列表
+    const metaVariants = new Map<number, number[]>([
+      [44, [0, 1]],                 // 半砖：下/上
+      [53, [0, 1, 2, 3]],           // 木楼梯：四个朝向
+      [67, [0, 4]],                 // 石楼梯：正/倒
+      [85, [0, 0b0011, 0b1111]],    // 栅栏：孤立 / 两向 / 四向
+      [50, [0, 1, 3]],              // 火把：立地 / 贴两侧
+      [102, [0, 0b0011, 0b1111]],   // 玻璃板
+      [78, [0, 3, 7]],              // 雪层：薄 / 中 / 满
+      [92, [0, 2, 5]],              // 蛋糕：完整 / 吃两口 / 吃五口
+      [64, [0, 4]],                 // 门：关 / 开
+      [96, [0, 4]],                 // 活板门：平放 / 竖起
+      [65, [0, 1, 2, 3]],           // 梯子：四面
+    ]);
+
+    const columns = 10;
+    let placed = 0;
+    let slot = 0;
+    for (const id of ids) {
+      const metas = metaVariants.get(id) ?? [0];
+      const cx = ox + (slot % columns) * 2;
+      const cz = oz + Math.floor(slot / columns) * 2;
+      for (let i = 0; i < metas.length; i++) {
+        // 每个状态往上叠一格，同一列从下往上是同一种方块的不同状态
+        const base = oy + i * 2;
+        // 脚下垫一块石头，非整格的方块才有个明确的参照
+        this.world.setBlock(cx, base - 1, cz, packState(1));
+        if (this.world.setBlock(cx, base, cz, packState(id, metas[i]!))) placed++;
+      }
+      slot++;
+    }
+    return placed;
+  }
+
+  /**
+   * 把所有非立方体形状排成一行，脚下垫石头。
+   *
+   * 这一行是 M7 真正要盯的东西：楼梯朝向、半砖上下、栅栏连接、
+   * 雪层厚度、蛋糕缺口 —— 错了在近景图里一眼可见，在大阵列图里看不出来。
+   */
+  private buildShapeRow(ox: number, oy: number, oz: number): number {
+    const row: [number, number][] = [
+      [44, 0], [44, 1],                       // 半砖 下 / 上
+      [53, 0], [53, 1], [53, 2], [53, 3],     // 木楼梯 四朝向
+      [53, 4],                                // 木楼梯 倒置
+      [85, 0], [85, 0b0011], [85, 0b1111],    // 栅栏 孤立 / 两向 / 四向
+      [50, 0], [50, 1],                       // 火把 立地 / 贴墙
+      [102, 0], [102, 0b0011],                // 玻璃板
+      [78, 0], [78, 3], [78, 7],              // 雪层
+      [92, 0], [92, 3],                       // 蛋糕
+      [64, 0], [64, 4],                       // 门 关 / 开
+      [96, 0], [96, 4],                       // 活板门
+      [26, 0],                                // 床
+      [66, 0],                                // 铁轨
+      [65, 0],                                // 梯子
+    ];
+    // 摆成 7 列的网格而不是一条长队：26 个方块排成一行有 52 格长，
+    // 想拍全就得退到二十多格外，每个方块只剩十几像素，等于白拍
+    const COLS = 7;
+    let placed = 0;
+    for (let i = 0; i < row.length; i++) {
+      const [id, meta] = row[i]!;
+      const x = ox + (i % COLS) * 2;
+      const z = oz + Math.floor(i / COLS) * 2;
+      this.world.setBlock(x, oy - 1, z, packState(1));
+      if (this.world.setBlock(x, oy, z, packState(id, meta))) placed++;
+    }
+    return placed;
+  }
+
   private onCommand(player: ServerPlayer, value: Record<string, unknown>): void {
     const requestId = value['requestId'] as number;
     const text = String(value['text'] ?? '');
@@ -472,6 +557,25 @@ export class ServerCore {
           // 才把新区块补上。指令走的是包队列，服务端处理它时
           // 必定已经处理完了之前的移动包，所以结果一定是新鲜的。
           reply(true, `${player.pendingCount} ${player.subscribedCount} ${this.world.loadedCount}`);
+          return;
+        }
+        case 'gallery': {
+          // 把每一种方块摆成一个阵列，供单张截图回归。
+          //
+          // 在服务端一次性搭好，而不是让客户端发几十条 setblock ——
+          // 那样每条都是一次往返，顺序还会受调度影响，截图就不确定了。
+          const [, gx, gy, gz] = parts;
+          const ox = Number(gx);
+          const oy = Number(gy);
+          const oz = Number(gz);
+          reply(true, String(this.buildGallery(ox, oy, oz)));
+          return;
+        }
+        case 'shapes': {
+          // 只摆非立方体方块，排成一行，供近距离截图。
+          // 大阵列图里每个方块只有二十来像素，看不出楼梯朝向反没反。
+          const [, sx2, sy2, sz2] = parts;
+          reply(true, String(this.buildShapeRow(Number(sx2), Number(sy2), Number(sz2))));
           return;
         }
         case 'height': {

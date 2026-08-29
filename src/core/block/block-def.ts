@@ -13,6 +13,7 @@ import { ToolKind } from './types.ts';
 import type { ToolTier, RenderLayer, TintKind, SoundGroup, ModelKind } from './types.ts';
 import type { BlockHooks } from './block-hooks.ts';
 import type { Aabb } from '../math/aabb.ts';
+import type { BlockModel } from './block-model.ts';
 import { FRICTION_DEFAULT } from '../constants.ts';
 
 /** 方块的六面贴图。给出单个名字表示六面相同 */
@@ -95,6 +96,13 @@ export interface BlockDef {
 
   // --- 渲染 ---
   readonly modelKind: ModelKind;
+  /**
+   * 按元数据给出模型。不提供时按 modelKind 取默认（整格 / 十字 / 不渲染）。
+   *
+   * 楼梯的朝向、栅栏的连接、门的开合都在元数据里，所以模型是**按状态**定的，
+   * 而不是按方块。冻结时会把 16 个元数据各烘一份并去重。
+   */
+  readonly modelFor?: (meta: number) => BlockModel;
   readonly textures: BlockTextures;
   readonly renderLayer: RenderLayer;
   readonly tint: TintKind;
@@ -156,6 +164,7 @@ export function defineBlock(input: BlockDefInput): BlockDef {
     replaceable: input.replaceable ?? false,
     flammability: input.flammability ?? 0,
     modelKind: input.modelKind ?? 1, // ModelKind.CUBE
+    ...(input.modelFor !== undefined ? { modelFor: input.modelFor } : {}),
     textures: input.textures,
     renderLayer: input.renderLayer ?? 0, // RenderLayer.OPAQUE
     tint: input.tint ?? 0, // TintKind.NONE

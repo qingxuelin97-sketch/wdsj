@@ -193,6 +193,64 @@ export const RECIPES: Record<string, Recipe> = {
   brown_mushroom: (p) => mushroom(p, rgb(0x9b6b4b), false),
   red_mushroom: (p) => mushroom(p, rgb(0xc23a2a), true),
 
+  // --- M7 的非立方体方块贴图 ---
+  stone_slab_top: (p) => { p.noiseFill(rgb(0x9a9a9a), 14); p.speckles(rgb(0x848484), 5, 2); },
+  stone_slab_side: (p) => {
+    // 侧面上下各一道细边，半砖叠起来时能看出接缝
+    p.noiseFill(rgb(0x8e8e8e), 14);
+    const edge = rgb(0xa8a8a8);
+    for (let x = 0; x < 16; x++) { p.set(x, 0, edge.r, edge.g, edge.b); p.set(x, 15, edge.r, edge.g, edge.b); }
+  },
+  torch: (p) => {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
+    // 木棍
+    const stick = rgb(0x8a6a3a);
+    for (let y = 6; y < 16; y++) for (let x = 7; x <= 8; x++) p.set(x, y, stick.r, stick.g, stick.b);
+    // 火焰头
+    for (let y = 2; y < 6; y++) {
+      for (let x = 6; x <= 9; x++) {
+        const hot = y < 4;
+        const c = hot ? rgb(0xfff0a0) : rgb(0xf0a020);
+        if (x === 6 || x === 9) { if (y < 3) continue; }
+        p.set(x, y, c.r, c.g, c.b);
+      }
+    }
+  },
+  ladder: (p) => {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
+    const wood = rgb(0x9a7a44);
+    for (let y = 0; y < 16; y++) { for (const x of [2, 3, 12, 13]) p.set(x, y, wood.r, wood.g, wood.b); }
+    for (const y of [2, 7, 12]) { for (let x = 3; x < 13; x++) { p.set(x, y, wood.r, wood.g, wood.b); p.set(x, y + 1, wood.r, wood.g, wood.b); } }
+  },
+  cake_top: (p) => { p.noiseFill(rgb(0xf7f0e0), 8); p.speckles(rgb(0xd04040), 10, 2); },
+  cake_bottom: (p) => { p.noiseFill(rgb(0x8a6a45), 10); },
+  cake_side: (p) => {
+    p.noiseFill(rgb(0xf7f0e0), 8);
+    p.rect(0, 0, 16, 3, rgb(0xd04040));
+    p.rect(0, 12, 16, 4, rgb(0x8a6a45));
+  },
+  door_lower: (p) => {
+    p.noiseFill(rgb(0x9a7a4a), 12);
+    p.rect(1, 1, 14, 6, rgb(0x8a6a3c));
+    p.rect(1, 9, 14, 6, rgb(0x8a6a3c));
+    p.rect(12, 7, 2, 2, rgb(0xd8d8d8));
+  },
+  trapdoor: (p) => {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
+    const wood = rgb(0x9a7a44);
+    for (const y of [1, 2, 7, 8, 13, 14]) for (let x = 0; x < 16; x++) p.set(x, y, wood.r, wood.g, wood.b);
+    for (const x of [1, 2, 13, 14]) for (let y = 0; y < 16; y++) p.set(x, y, wood.r, wood.g, wood.b);
+  },
+  bed_top: (p) => { p.noiseFill(rgb(0xc03030), 12); p.rect(0, 0, 16, 4, rgb(0xf0f0f0)); },
+  bed_side: (p) => { p.noiseFill(rgb(0xc03030), 12); p.rect(0, 11, 16, 5, rgb(0x9a7a44)); },
+  rail: (p) => {
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
+    const tie = rgb(0x8a6a3a);
+    for (let y = 1; y < 16; y += 4) for (let x = 2; x < 14; x++) { p.set(x, y, tie.r, tie.g, tie.b); p.set(x, y + 1, tie.r, tie.g, tie.b); }
+    const metal = rgb(0xc0c0c0);
+    for (let y = 0; y < 16; y++) { for (const x of [4, 5, 10, 11]) p.set(x, y, metal.r, metal.g, metal.b); }
+  },
+
   // --- 挖掘裂纹，10 级 ---
   //
   // 白底黑纹，由渲染时的乘法混合把它压到方块表面上（见 overlay-renderer.ts）。

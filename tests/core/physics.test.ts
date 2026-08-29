@@ -172,16 +172,11 @@ test('撞墙会停下，且不会把速度攒起来', () => {
   assert.ok(Math.abs(body.vz) < 1e-6, `贴墙时 z 速度应为 0，实得 ${body.vz}`);
 });
 
-test('自动上台阶：半格高的坎走得上去（对应半砖/楼梯）', () => {
-  // 用一张改过碰撞高度的表造一个"半格石头"。
-  // 真正的半砖要等 M7 的模型系统，但上台阶这条路径现在就得测 ——
-  // 否则它就是一段没人跑过的代码，而那正是前作翻车的地方。
-  // 地面仍用整格的石头，台阶用一种被改成半格的方块 ——
-  // 两者必须是不同的方块，否则地面也会跟着矮半格，测的就不是上台阶了。
-  const halfHeights = Float32Array.from(TABLES.collisionHeight);
-  halfHeights[registry.idOf(Blocks.COBBLESTONE)] = 0.5;
-  const halfTables = { ...TABLES, collisionHeight: halfHeights } as PhysicsTables;
-  const HALF = packState(registry.idOf(Blocks.COBBLESTONE));
+test('自动上台阶：半砖走得上去（碰撞盒由模型推导）', () => {
+  // 用**真正的半砖**，不是改过表的合成方块。
+  // 碰撞盒现在直接从模型推导，所以这条同时验了模型系统与物理的接缝：
+  // 模型说半格高，撞上去就必须是半格高。
+  const HALF = packState(registry.idOf(Blocks.STONE_SLAB), 0); // meta 0 = 下半砖
 
   const world = flatWorld();
   for (let x = -4; x <= 4; x++) {
@@ -193,7 +188,7 @@ test('自动上台阶：半格高的坎走得上去（对应半砖/楼梯）', (
   let minSpeedOnStep = Infinity;
   for (let i = 0; i < 40; i++) {
     const before = body.z;
-    stepBody(world, halfTables, body, { ...emptyInput(), forward: 1 });
+    stepBody(world, TABLES, body, { ...emptyInput(), forward: 1 });
     if (body.z > 6.5 && body.z < 9.5) minSpeedOnStep = Math.min(minSpeedOnStep, body.z - before);
     if (body.z > 9) break;
   }

@@ -12,6 +12,7 @@
  *      rev 比当前小的结果直接丢弃（docs/RULES.md 第 11 条）。
  *   3. **Transferable**：输入与输出的 ArrayBuffer 都走转移而非结构化克隆复制。
  */
+import type { ModelTables } from '../../core/registry/model-tables.ts';
 import { PADDED_VOLUME, PADDED_AREA, type MeshResult, type MesherTables } from './mesher.ts';
 import { MAX_WORKERS_TOTAL } from '../../core/constants.ts';
 
@@ -40,6 +41,12 @@ export interface WorkerInitMessage {
     opaque: ArrayBuffer;
     faceLayer: ArrayBuffer;
   };
+  /**
+   * 模型表。直接传对象而不是逐字段拆成 ArrayBuffer ——
+   * typed array 本身就能被结构化克隆，拆开只是多写几十行还容易漏字段。
+   * 一个 worker 只收一次，约 200 KB。
+   */
+  readonly models: ModelTables;
 }
 
 /** worker 回传的结果 */
@@ -116,6 +123,7 @@ export class MeshWorkerPool {
           opaque: copyBuffer(tables.opaque),
           faceLayer: copyBuffer(tables.faceLayer),
         },
+        models: tables.models,
       };
       worker.postMessage(init);
       this.workers.push(worker);

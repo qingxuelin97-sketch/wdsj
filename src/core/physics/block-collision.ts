@@ -7,7 +7,8 @@
  * 走到半砖前会先被水平挡住，再也上不去。
  */
 import { WORLD_HEIGHT } from '../constants.ts';
-import { stateId } from '../world/chunk.ts';
+import { stateId, stateMeta } from '../world/chunk.ts';
+import type { ModelTables } from '../registry/model-tables.ts';
 import type { BlockView } from '../world/block-view.ts';
 
 /** 碰撞求解需要的方块属性 */
@@ -15,14 +16,13 @@ export interface CollisionTables {
   /** 是否有碰撞体积 */
   readonly solid: Uint8Array;
   /**
-   * 碰撞盒高度，1 表示整格。
+   * 按状态索引的模型表。碰撞盒**由模型推导**，不另存一份。
    *
-   * 半砖 0.5、雪层 0.125 之类的靠它，而"能不能不跳就走上去"完全由它
-   * 与 STEP_HEIGHT(0.6) 的关系决定：半砖走得上去、整格必须跳。
-   * M7 的方块模型系统会把这张表接到真正的模型上；现在除了测试用的
-   * 合成方块之外一律是 1。
+   * 两份分开写的话，改了模型忘了改碰撞，表现是玩家卡在看不见的东西上、
+   * 或者踩空掉进看着是实心的方块里 —— 而且极难复现，因为得从特定角度
+   * 走特定路线才撞得上。
    */
-  readonly collisionHeight: Float32Array;
+  readonly models: ModelTables;
 }
 
 /** 一个轴对齐盒，用可变字段而不是 Aabb 对象，避免每 tick 大量短命分配 */
@@ -143,12 +143,25 @@ export function collideMove(
           blocking = id !== 0 && tables.solid[id] === 1;
         }
         if (!blocking) continue;
-        let top = y + 1;
-        if (y >= 0 && world.isLoaded(x, z)) {
-          const id = stateId(world.getState(x, y, z));
-          if (id !== 0) top = y + (tables.collisionHeight[id] ?? 1);
+
+        if (y < 0 || !world.isLoaded(x, z)) {
+          // 世界底部与未加载的区块当整格实心
+          solids.push({ minX: x, minY: y, minZ: z, maxX: x + 1, maxY: y + 1, maxZ: z + 1 });
+          continue;
         }
-        solids.push({ minX: x, minY: y, minZ: z, maxX: x + 1, maxY: top, maxZ: z + 1 });
+        const st = world.getState(x, y, z);
+        const id = stateId(st);
+        const m = tables.models;
+        const model = m.stateModel[id * 16 + stateMeta(st)] ?? 0;
+        const bs = m.modelBoxStart[model] ?? 0;
+        const bc = m.modelBoxCount[model] ?? 0;
+        for (let b = 0; b < bc; b++) {
+          const o = (bs + b) * 6;
+          solids.push({
+            minX: x + m.collisionBoxes[o]!, minY: y + m.collisionBoxes[o + 1]!, minZ: z + m.collisionBoxes[o + 2]!,
+            maxX: x + m.collisionBoxes[o + 3]!, maxY: y + m.collisionBoxes[o + 4]!, maxZ: z + m.collisionBoxes[o + 5]!,
+          });
+        }
       }
     }
   }
@@ -187,8 +200,19 @@ export function boxIntersectsSolid(world: BlockView, tables: CollisionTables, bo
       for (let x = minX; x <= maxX; x++) {
         if (y >= WORLD_HEIGHT) continue;
         if (y < 0 || !world.isLoaded(x, z)) return true;
-        const id = stateId(world.getState(x, y, z));
-        if (id !== 0 && tables.solid[id] === 1) return true;
+        const st = world.getState(x, y, z);
+        const id = stateId(st);
+        if (id === 0 || tables.solid[id] !== 1) continue;
+        const m = tables.models;
+        const model = m.stateModel[id * 16 + stateMeta(st)] ?? 0;
+        const bs = m.modelBoxStart[model] ?? 0;
+        const bc = m.modelBoxCount[model] ?? 0;
+        for (let b = 0; b < bc; b++) {
+          const o = (bs + b) * 6;
+          if (body.maxX > x + m.collisionBoxes[o]! && body.minX < x + m.collisionBoxes[o + 3]!
+            && body.maxY > y + m.collisionBoxes[o + 1]! && body.minY < y + m.collisionBoxes[o + 4]!
+            && body.maxZ > z + m.collisionBoxes[o + 2]! && body.minZ < z + m.collisionBoxes[o + 5]!) return true;
+        }
       }
     }
   }

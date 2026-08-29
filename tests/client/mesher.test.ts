@@ -11,6 +11,18 @@ import { meshSection, paddedIndex, PADDED_VOLUME, PADDED_AREA, type MeshJob, typ
 import { unpackVertex } from '../../src/client/render/block-shader.ts';
 import { packState } from '../../src/core/world/chunk.ts';
 import { ModelKind, RenderLayer } from '../../src/core/block/types.ts';
+import { ModelBaker } from '../../src/core/registry/model-tables.ts';
+import { cubeModel, slabModel, stairsModel, type BlockModel } from '../../src/core/block/block-model.ts';
+import { Facing } from '../../src/core/block/types.ts';
+
+/** 给测试用的最小模型表：每个 id 都是整格立方体 */
+function buildCubeModels(count: number): ReturnType<ModelBaker['finish']> {
+  const baker = new ModelBaker();
+  for (let id = 1; id < count; id++) {
+    for (let meta = 0; meta < 16; meta++) baker.set(id, meta, cubeModel());
+  }
+  return baker.finish();
+}
 
 // --- 测试用的最小方块表 ---
 // id 1 = 普通不透明立方体；2 = 玻璃（同类剔除）；3 = 树叶（同类不剔除）；4 = 十字植物
@@ -25,6 +37,9 @@ function makeTables(): MesherTables {
     cullSameType: new Uint8Array(NUM_IDS),
     opaque: new Uint8Array(NUM_IDS),
     faceLayer: new Uint16Array(NUM_IDS * 6),
+    // 立方体方块的模型：所有 id 的所有元数据都指向同一个整格模型。
+    // 非立方体的形状在 tests/core/block-model.test.ts 里单独验。
+    models: buildCubeModels(NUM_IDS),
   };
   // 1: 石头
   t.modelKind[1] = ModelKind.CUBE; t.fullCube[1] = 1; t.opaque[1] = 1;
@@ -278,4 +293,139 @@ test('rev 与坐标原样带回 —— 过期结果要能被识别并丢弃', ()
   assert.equal(r.cy, 4);
   assert.equal(r.cz, -5);
   assert.equal(r.rev, 42);
+});
+
+// ---------------------------------------------------------------------------
+// 非立方体模型（M7）
+//
+// 这一组盯的是 cullface：一个面只有在**正好贴着格子边界**时才允许被邻居剔除。
+// 半砖的顶面在 y=8，不贴边界 —— 上面压一块石头也必须照画。
+// 标错的话半砖上放东西会看穿，而这在静止截图里几乎发现不了：
+// 要从特定角度、特定光照下才显形。
+// ---------------------------------------------------------------------------
+
+/** 把 id 5 换成给定模型的表 */
+function tablesWithModel(model: BlockModel): MesherTables {
+  const t = makeTables();
+  const baker = new ModelBaker();
+  for (let id = 1; id < NUM_IDS; id++) {
+    for (let meta = 0; meta < 16; meta++) baker.set(id, meta, id === 5 ? model : cubeModel());
+  }
+  const t2 = { ...t, models: baker.finish() } as MesherTables;
+  t2.modelKind[5] = ModelKind.CUBE;
+  t2.opaque[5] = 0;
+  t2.fullCube[5] = 0;
+  t2.renderLayer[5] = RenderLayer.OPAQUE;
+  for (let f = 0; f < 6; f++) t2.faceLayer[5 * 6 + f] = 50 + f;
+  return t2;
+}
+
+test('孤立半砖生成 6 个面，顶面在半格高处', () => {
+  const t = tablesWithModel(slabModel(true));
+  const job = emptyJob();
+  setLocal(job, 5, 5, 5, 5);
+  const r = meshSection(job, t);
+  assert.equal(totalQuads(r), 6, '半砖也是六个面');
+
+  // 找出顶面（face=1）的四个顶点，y 必须都是 5.5 格 = 88（1/16 单位）
+  const { vertices, quadCount } = r.layers[0]!;
+  let found = false;
+  for (let q = 0; q < quadCount; q++) {
+    const v = unpackVertex(vertices, q * 4 * 3);
+    if (v.face !== 1) continue;
+    found = true;
+    for (let c = 0; c < 4; c++) {
+      const vc = unpackVertex(vertices, (q * 4 + c) * 3);
+      // unpackVertex 返回的是**格**为单位的坐标，不是 1/16
+      assert.equal(vc.y, 5.5, '半砖顶面应在 y=5.5 格');
+    }
+  }
+  assert.ok(found, '没找到顶面');
+});
+
+test('半砖上面压方块时，顶面**仍然要画** —— cullface 的核心用例', () => {
+  const t = tablesWithModel(slabModel(true));
+  const job = emptyJob();
+  setLocal(job, 5, 5, 5, 5);
+  setLocal(job, 5, 6, 5, 1); // 正上方压一块实心石头
+  const r = meshSection(job, t);
+
+  // 半砖那一格仍应有 6 个面（顶面不贴边界，不该被剔除）
+  let slabTop = 0;
+  for (const layer of r.layers) {
+    for (let q = 0; q < layer.quadCount; q++) {
+      const v = unpackVertex(layer.vertices, q * 4 * 3);
+      if (v.face === 1 && v.y === 5.5) slabTop++;
+    }
+  }
+  assert.equal(slabTop, 1, '半砖的顶面被错误地剔掉了 —— 上面放方块会看穿');
+});
+
+test('半砖下面压方块时，底面要被剔除 —— 它确实贴着边界', () => {
+  const t = tablesWithModel(slabModel(true));
+  const job = emptyJob();
+  setLocal(job, 5, 5, 5, 5);
+
+  // 只数半砖自己的底面（face=0 且 y=5）—— 加一块石头会连带多出它自己的面，
+  // 拿总面数做差会把两者混在一起
+  const slabBottoms = (r: ReturnType<typeof meshSection>): number => {
+    let n = 0;
+    for (const layer of r.layers) {
+      for (let q = 0; q < layer.quadCount; q++) {
+        const v = unpackVertex(layer.vertices, q * 4 * 3);
+        if (v.face === 0 && v.y === 5) n++;
+      }
+    }
+    return n;
+  };
+  assert.equal(slabBottoms(meshSection(job, t)), 1, '孤立时底面要画');
+  setLocal(job, 5, 4, 5, 1); // 正下方压一块石头
+  assert.equal(slabBottoms(meshSection(job, t)), 0, '底面贴着 y=0，应该被剔掉');
+});
+
+test('半砖侧面的 UV 只取贴图的下半张', () => {
+  const t = tablesWithModel(slabModel(true));
+  const job = emptyJob();
+  setLocal(job, 5, 5, 5, 5);
+  const r = meshSection(job, t);
+  const { vertices, quadCount } = r.layers[0]!;
+  for (let q = 0; q < quadCount; q++) {
+    const v0 = unpackVertex(vertices, q * 4 * 3);
+    if (v0.face < 2) continue; // 只看四个侧面
+    const vs = [0, 1, 2, 3].map((c) => unpackVertex(vertices, (q * 4 + c) * 3));
+    const us = vs.map((v) => v.u);
+    const vv = vs.map((v) => v.v);
+    assert.deepEqual([...new Set(us)].sort((a, b) => a - b), [0, 1], `侧面 ${v0.face} 的 u 应铺满整张`);
+    // v 只用下半张（0.5..1）：方块只有半格高，贴图就该只取对应的那半张。
+    // 不裁的话半砖侧面会把整张贴图压扁到半格里，纹理密度和相邻整块对不上。
+    assert.deepEqual([...new Set(vv)].sort((a, b) => a - b), [0.5, 1],
+      `侧面 ${v0.face} 的 v 应只取 0.5..1，实得 ${vv}`);
+  }
+});
+
+test('楼梯生成两个元素的面，比立方体多', () => {
+  const t = tablesWithModel(stairsModel(Facing.NORTH, false));
+  const job = emptyJob();
+  setLocal(job, 5, 5, 5, 5);
+  const r = meshSection(job, t);
+  // 两个盒子共 12 个面，其中互相贴合的面仍然会画（不做元素间剔除），
+  // 所以总数应显著多于 6
+  assert.ok(totalQuads(r) >= 10, `楼梯应有十个以上的面，实得 ${totalQuads(r)}`);
+});
+
+test('模型里 faceTexture 为 −1 的面不画 —— 梯子只画朝屋里的那一面', () => {
+  const t = tablesWithModel({
+    elements: [{
+      from: [0, 0, 0], to: [16, 16, 2],
+      faceTexture: [-1, -1, -1, 3, -1, -1], // 只画 SOUTH
+      cullface: [-1, -1, -1, -1, -1, -1],
+      clampUv: false,
+    }],
+  });
+  const job = emptyJob();
+  setLocal(job, 5, 5, 5, 5);
+  const r = meshSection(job, t);
+  assert.equal(totalQuads(r), 1, '只该画一个面');
+  const v = unpackVertex(r.layers[0]!.vertices, 0);
+  assert.equal(v.face, 3, '画出来的应该是 SOUTH 面');
 });

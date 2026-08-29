@@ -69,6 +69,7 @@ const mesherTables: MesherTables = {
   cullSameType: tables.cullSameType,
   opaque: tables.opaque,
   faceLayer,
+  models: tables.models,
 };
 
 const texture = gl.createTexture();

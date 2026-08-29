@@ -10,6 +10,8 @@
 import type { BlockDef } from '../block/block-def.ts';
 import { resolveTextures } from '../block/block-def.ts';
 import { ModelKind, RenderLayer } from '../block/types.ts';
+import { ModelBaker, type ModelTables } from './model-tables.ts';
+import { cubeModel, type BlockModel } from '../block/block-model.ts';
 
 /** 方块 id 的上限，受方块状态 12 bit 的限制 */
 export const MAX_BLOCK_ID = 4096;
@@ -22,10 +24,10 @@ export class BlockTables {
   readonly hardness: Float32Array;
   /** 表面滑度，物理用。普通 0.6，冰 0.98 */
   readonly slipperiness: Float32Array;
-  /** 碰撞盒高度，1 = 整格。半砖之类由 M7 的模型系统填 */
-  readonly collisionHeight: Float32Array;
   /** 收获是否必须有对口工具（1 = 是）。石头必须用镐，泥土徒手就行 */
   readonly requiresTool: Uint8Array;
+  /** 按状态索引的模型与碰撞盒，见 model-tables.ts */
+  readonly models: ModelTables;
   readonly tool: Int8Array; // -1 表示任意工具
   readonly minTier: Uint8Array;
   readonly blastResistance: Float32Array;
@@ -71,7 +73,6 @@ export class BlockTables {
     this.count = n;
     this.hardness = new Float32Array(n);
     this.slipperiness = new Float32Array(n);
-    this.collisionHeight = new Float32Array(n).fill(1);
     this.requiresTool = new Uint8Array(n);
     this.tool = new Int8Array(n).fill(-1);
     this.minTier = new Uint8Array(n);
@@ -122,6 +123,20 @@ export class BlockTables {
       this.hasBlockEntity[id] = d.hasBlockEntity === true ? 1 : 0;
       this.textureNames[id] = resolveTextures(d.textures);
     }
+    // --- 模型：按状态（id × 16 + meta）烘一遍并去重 ---
+    //
+    // 逐个元数据都烘，是因为楼梯朝向、栅栏连接、门开合全在元数据里。
+    // 绝大多数方块的 16 个状态是同一个整格立方体，去重之后模型总数只有几十个。
+    const baker = new ModelBaker();
+    for (let id = 1; id < n; id++) {
+      const d = defs[id];
+      if (d == null) continue;
+      for (let meta = 0; meta < 16; meta++) {
+        baker.set(id, meta, modelOf(d, meta));
+      }
+    }
+    this.models = baker.finish();
+
     // 空气：不渲染、不挡光、无碰撞、可替换
     this.modelKind[0] = ModelKind.NONE;
     this.opaque[0] = 0;
@@ -140,4 +155,17 @@ export class BlockTables {
     }
     return [...set].sort();
   }
+}
+
+/**
+ * 某个方块在某个元数据下的模型。
+ *
+ * 没写 modelFor 的方块按 modelKind 走默认：CUBE 是整格，
+ * CROSS/FLUID/NONE 在 mesher 里另有专门的路径，模型表里给一个空的占位 ——
+ * 它们的碰撞盒也确实是空的（草能穿过去）。
+ */
+function modelOf(d: BlockDef, meta: number): BlockModel {
+  if (d.modelFor !== undefined) return d.modelFor(meta);
+  if (d.modelKind === ModelKind.CUBE) return cubeModel();
+  return { elements: [] };
 }
