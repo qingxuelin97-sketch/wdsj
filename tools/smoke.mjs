@@ -22,11 +22,16 @@ const OUT_DIR = path.join(ROOT, 'tests/out');
 const UPDATE = process.env['UPDATE_GOLDEN'] === '1';
 const HEADLESS = !process.argv.includes('--head');
 
-/** 每个用例：固定种子 + 固定相机 + 固定画布，保证可复现 */
+/**
+ * 每个用例：固定种子 + 固定相机 + 固定画布，保证可复现。
+ * 覆盖面要分散：远景看整体地形与雾，近景看方块贴图与 AO，
+ * 树冠看 cutout 透明与群系染色，俯视看地形轮廓。
+ */
 const CASES = [
-  { name: 'overview', camera: [-6, 14, -6, -Math.PI * 0.25, 0.386], size: [640, 360] },
-  { name: 'closeup', camera: [4, 9, -3, -0.1, 0.15], size: [640, 360] },
-  { name: 'topdown', camera: [8, 26, 8, 0, 1.45], size: [640, 360] },
+  { name: 'overview', camera: [-14, 52, -14, -Math.PI * 0.25, 0.38], size: [640, 360] },
+  { name: 'house', camera: [3, 41, -3, -0.55, 0.22], size: [640, 360] },
+  { name: 'trees', camera: [-20, 44, 6, -1.35, 0.12], size: [640, 360] },
+  { name: 'topdown', camera: [8, 78, 8, 0, 1.45], size: [640, 360] },
 ];
 
 function log(msg) {
@@ -74,7 +79,7 @@ async function main() {
     chrome = await launchChrome({ port: 9333, headless: HEADLESS });
     log(`Chrome ${chrome.version['Browser']}`);
 
-    page = await openPage(9333, `http://127.0.0.1:${PORT}/?test=smoke&seed=1234`);
+    page = await openPage(9333, `http://127.0.0.1:${PORT}/?test=smoke&seed=1234&radius=2`);
 
     // --- 等游戏就绪 ---
     const boot = await page.evaluate(`

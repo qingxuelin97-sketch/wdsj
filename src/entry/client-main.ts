@@ -1,8 +1,8 @@
 /**
- * 客户端入口。M0：把工具链、顶点格式、纹理数组、相机、输入、测试钩子串成第一帧。
+ * 客户端入口。
  *
- * 这一版故意直接用最终的 12 字节顶点格式和 TEXTURE_2D_ARRAY，而不是随便画个四边形 ——
- * 这两件事是 M1 网格化的地基，越早跑通越好。
+ * M1：真正的方块注册表 + 区块存储 + 18³ padded 网格化 + 多子区块渲染 + 视锥剔除。
+ * 世界内容目前来自 client/debug/test-world.ts，M2 会换成服务端的世界生成。
  */
 import { createContext, resizeToDisplay } from '../client/gl/context.ts';
 import { Shader } from '../client/gl/shader.ts';
@@ -11,11 +11,16 @@ import { Camera } from '../client/camera.ts';
 import { Input } from '../client/input/input.ts';
 import { installTestHook, recordError, recordLog } from '../client/debug/test-hook.ts';
 import { scheduleFrame } from '../client/frame-scheduler.ts';
-import { BLOCK_VERT_SRC, BLOCK_FRAG_SRC, VERTEX_STRIDE } from '../client/render/block-shader.ts';
-import { generateTileArray, TILE_SIZE } from '../client/render/texgen.ts';
-import { meshSection, sectionIndex, type BlockAppearance } from '../client/mesh/simple-mesher.ts';
-import { SECTION_SIZE, DEFAULT_RENDER_DISTANCE } from '../core/constants.ts';
-import { noiseFromSeed } from '../core/noise/perlin.ts';
+import { BLOCK_VERT_SRC, BLOCK_FRAG_SRC } from '../client/render/block-shader.ts';
+import { buildAtlas, buildFaceLayerTable, tintColorArray } from '../client/render/block-textures.ts';
+import { ChunkRenderer } from '../client/render/chunk-renderer.ts';
+import { meshSection, PADDED_VOLUME, PADDED_AREA, type MesherTables } from '../client/mesh/mesher.ts';
+import { buildTestWorld } from '../client/debug/test-world.ts';
+import { createBlockRegistry } from '../content/blocks.ts';
+import { extractPaddedNeighborhood } from '../core/world/chunk-codec.ts';
+import { Frustum } from '../core/math/frustum.ts';
+import { SECTIONS_PER_COLUMN, SECTION_SIZE, DEFAULT_RENDER_DISTANCE } from '../core/constants.ts';
+import { TILE_SIZE } from '../client/render/texgen.ts';
 
 const canvas = document.getElementById('gl') as HTMLCanvasElement | null;
 const hud = document.getElementById('hud');
@@ -23,27 +28,42 @@ const hint = document.getElementById('hint');
 if (canvas === null) throw new Error('找不到 #gl canvas');
 
 const { gl, caps, anisoExt } = createContext(canvas);
-recordLog(`GPU: ${caps.rendererName} | ${caps.vendorName}`);
-recordLog(`纹理数组层上限 ${caps.maxArrayTextureLayers} · 各向异性上限 ${caps.maxAnisotropy}`);
+recordLog(`GPU: ${caps.rendererName}`);
 console.log(`[gl] ${caps.rendererName}`);
 
 // ---------------------------------------------------------------------------
-// 贴图：程序化生成后上传成 2D 纹理数组
+// 方块表与贴图
 // ---------------------------------------------------------------------------
-const atlas = generateTileArray();
+const registry = createBlockRegistry();
+const tables = registry.getTables();
+const atlas = buildAtlas(tables.collectTextureNames());
+const faceLayer = buildFaceLayerTable(tables, atlas);
+recordLog(`方块 ${registry.size} 种 · 贴图 ${atlas.layers} 张`);
+console.log(`[content] ${registry.size} 种方块, ${atlas.layers} 张贴图`);
+
+const mesherTables: MesherTables = {
+  modelKind: tables.modelKind,
+  renderLayer: tables.renderLayer,
+  tint: tables.tint,
+  tintFaces: tables.tintFaces,
+  fullCube: tables.fullCube,
+  cullSameType: tables.cullSameType,
+  opaque: tables.opaque,
+  faceLayer,
+};
+
 const texture = gl.createTexture();
 gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
-// mip 层数：16×16 一路降到 1×1 是 5 层
 const mipLevels = Math.floor(Math.log2(TILE_SIZE)) + 1;
 gl.texStorage3D(gl.TEXTURE_2D_ARRAY, mipLevels, gl.RGBA8, TILE_SIZE, TILE_SIZE, atlas.layers);
 gl.texSubImage3D(
   gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0,
   TILE_SIZE, TILE_SIZE, atlas.layers,
-  gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(atlas.data.buffer),
+  gl.RGBA, gl.UNSIGNED_BYTE, atlas.data,
 );
 gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
-// 放大用最近邻保住像素画的硬边；缩小走 mipmap 避免远处闪烁。
-// 数组纹理的 mip 不跨层，所以这里不需要任何 padding —— 图集方案的渗色问题在这里不存在。
+// 放大用最近邻保住像素画硬边；缩小走 mipmap 防止远处闪烁。
+// 数组纹理的 mip 不跨层，所以不需要任何 padding。
 gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_LINEAR);
 gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.REPEAT);
@@ -52,88 +72,67 @@ if (anisoExt !== null) {
   gl.texParameterf(gl.TEXTURE_2D_ARRAY, anisoExt.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(4, caps.maxAnisotropy));
 }
 
-const L = (name: string): number => {
-  const i = atlas.index.get(name);
-  if (i === undefined) throw new Error(`贴图未生成: ${name}`);
-  return i;
-};
-
-// 方块 id -> 六面贴图。面序：DOWN UP NORTH SOUTH WEST EAST
-const BLOCK = { AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, COBBLE: 4, PLANKS: 5, LOG: 6, LEAVES: 7, SAND: 8, COAL: 9, IRON: 10, DIAMOND: 11, BEDROCK: 12 } as const;
-const appearance = new Map<number, BlockAppearance>([
-  [BLOCK.GRASS, { layers: [L('dirt'), L('grass_top'), L('grass_side'), L('grass_side'), L('grass_side'), L('grass_side')] }],
-  [BLOCK.DIRT, { layers: [L('dirt'), L('dirt'), L('dirt'), L('dirt'), L('dirt'), L('dirt')] }],
-  [BLOCK.STONE, { layers: [L('stone'), L('stone'), L('stone'), L('stone'), L('stone'), L('stone')] }],
-  [BLOCK.COBBLE, { layers: [L('cobblestone'), L('cobblestone'), L('cobblestone'), L('cobblestone'), L('cobblestone'), L('cobblestone')] }],
-  [BLOCK.PLANKS, { layers: [L('planks'), L('planks'), L('planks'), L('planks'), L('planks'), L('planks')] }],
-  [BLOCK.LOG, { layers: [L('log_top'), L('log_top'), L('log_side'), L('log_side'), L('log_side'), L('log_side')] }],
-  [BLOCK.LEAVES, { layers: [L('leaves'), L('leaves'), L('leaves'), L('leaves'), L('leaves'), L('leaves')] }],
-  [BLOCK.SAND, { layers: [L('sand'), L('sand'), L('sand'), L('sand'), L('sand'), L('sand')] }],
-  [BLOCK.COAL, { layers: [L('coal_ore'), L('coal_ore'), L('coal_ore'), L('coal_ore'), L('coal_ore'), L('coal_ore')] }],
-  [BLOCK.IRON, { layers: [L('iron_ore'), L('iron_ore'), L('iron_ore'), L('iron_ore'), L('iron_ore'), L('iron_ore')] }],
-  [BLOCK.DIAMOND, { layers: [L('diamond_ore'), L('diamond_ore'), L('diamond_ore'), L('diamond_ore'), L('diamond_ore'), L('diamond_ore')] }],
-  [BLOCK.BEDROCK, { layers: [L('bedrock'), L('bedrock'), L('bedrock'), L('bedrock'), L('bedrock'), L('bedrock')] }],
-]);
-
 // ---------------------------------------------------------------------------
-// 测试用的 section：用 Perlin 起伏的地面 + 一排材质柱
+// 世界与网格化
 // ---------------------------------------------------------------------------
-const S = SECTION_SIZE;
-const blocks = new Uint16Array(S * S * S);
-const terrainNoise = noiseFromSeed(1234, 0x7e44, 3);
+const params = new URLSearchParams(location.search);
+const seed = Number(params.get('seed') ?? 1234);
+const chunkRadius = Number(params.get('radius') ?? 2);
 
-for (let z = 0; z < S; z++) {
-  for (let x = 0; x < S; x++) {
-    const h = 3 + Math.round((terrainNoise.noise2(x * 0.12, z * 0.12) + 1) * 2.2);
-    for (let y = 0; y < h && y < S; y++) {
-      blocks[sectionIndex(x, y, z)] = y === 0 ? BLOCK.BEDROCK : y === h - 1 ? BLOCK.GRASS : y > h - 4 ? BLOCK.DIRT : BLOCK.STONE;
+const tStart = performance.now();
+const world = buildTestWorld(registry, { seed, chunkRadius });
+const tGen = performance.now();
+
+const renderer = new ChunkRenderer(gl);
+const frustum = new Frustum();
+
+// 网格化任务的输入缓冲：所有子区块复用同一组，避免每次分配 18 KB
+const jobBlocks = new Uint16Array(PADDED_VOLUME);
+const jobLight = new Uint8Array(PADDED_VOLUME);
+const jobBiomes = new Uint8Array(PADDED_AREA);
+
+let meshedSections = 0;
+for (const chunk of world.chunkValues()) {
+  for (let sy = 0; sy < SECTIONS_PER_COLUMN; sy++) {
+    const section = chunk.sections[sy];
+    if (section == null || section.isEmpty) continue;
+    extractPaddedNeighborhood(
+      (x, y, z) => world.getState(x, y, z),
+      (x, y, z) => (world.getSkyLight(x, y, z) << 4) | world.getBlockLight(x, y, z),
+      (x, z) => world.getBiome(x, z),
+      chunk.cx, sy, chunk.cz,
+      jobBlocks, jobLight, jobBiomes,
+    );
+    const result = meshSection(
+      { cx: chunk.cx, cy: sy, cz: chunk.cz, rev: 1, blocks: jobBlocks, light: jobLight, biomes: jobBiomes },
+      mesherTables,
+    );
+    if (result.layers.length > 0) {
+      renderer.upload(result);
+      meshedSections++;
     }
   }
 }
-// 一排材质柱，方便肉眼核对每种贴图与六面朝向
-const showcase = [BLOCK.COBBLE, BLOCK.PLANKS, BLOCK.LOG, BLOCK.LEAVES, BLOCK.SAND, BLOCK.COAL, BLOCK.IRON, BLOCK.DIAMOND];
-for (let i = 0; i < showcase.length; i++) {
-  const x = 2 + i;
-  const z = 13;
-  for (let y = 8; y < 11; y++) blocks[sectionIndex(x, y, z)] = showcase[i]!;
-}
-
-const mesh = meshSection(blocks, appearance, 15);
-console.log(`[mesh] ${mesh.quadCount} 个面, ${mesh.vertices.byteLength / 1024 | 0} KB 顶点数据`);
-recordLog(`mesh: ${mesh.quadCount} quads`);
-
-// ---------------------------------------------------------------------------
-// 上传 VAO
-// ---------------------------------------------------------------------------
-const vao = gl.createVertexArray();
-gl.bindVertexArray(vao);
-const vbo = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-gl.bufferData(gl.ARRAY_BUFFER, mesh.vertices, gl.STATIC_DRAW);
-// 关键：整数属性必须用 vertexAttribIPointer，用 vertexAttribPointer 会被当成浮点归一化
-gl.enableVertexAttribArray(0);
-gl.vertexAttribIPointer(0, 3, gl.UNSIGNED_INT, VERTEX_STRIDE, 0);
-const ebo = gl.createBuffer();
-gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
-gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
-gl.bindVertexArray(null);
-
-const shader = new Shader(gl, BLOCK_VERT_SRC, BLOCK_FRAG_SRC, 'block');
+const tMesh = performance.now();
+console.log(
+  `[world] 生成 ${(tGen - tStart).toFixed(0)}ms · 网格化 ${meshedSections} 段 ${(tMesh - tGen).toFixed(0)}ms · ` +
+    `${(renderer.totalBytes / 1048576).toFixed(1)} MB 顶点数据`,
+);
+recordLog(`世界 ${world.size} 区块 · 网格 ${meshedSections} 段 · ${(renderer.totalBytes / 1048576).toFixed(1)} MB`);
 
 // ---------------------------------------------------------------------------
 // 运行时
 // ---------------------------------------------------------------------------
 const clock = new Clock();
 const camera = new Camera();
-// 站在 section 的 -X-Z 角外侧，朝 +X+Z 方向俯视中心 (8,6,8)。
-// 注意 yaw 是负的：forward.x = -sin(yaw)*cos(pitch)，要朝 +X 看就得 sin(yaw)<0。
-camera.setPosition(-6, 14, -6);
-camera.setRotation(-Math.PI * 0.25, 0.386);
+camera.setPosition(-14, 52, -14);
+camera.setRotation(-Math.PI * 0.25, 0.38);
+camera.far = 320;
 const input = new Input(canvas);
+const shader = new Shader(gl, BLOCK_VERT_SRC, BLOCK_FRAG_SRC, 'block');
+const tintColors = tintColorArray();
 
 const SKY = { r: 0.62, g: 0.76, b: 0.98 };
-let drawCalls = 0;
-/** 被 __mc.setCanvasSize 锁定时，主循环不再按窗口尺寸重算绘制缓冲 */
 let sizeLocked = false;
 
 function renderOnce(): void {
@@ -148,24 +147,23 @@ function renderOnce(): void {
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
   camera.update(w / Math.max(1, h));
+  frustum.update(camera.viewProjection);
 
   shader.use();
   shader.setMat4('uViewProj', camera.viewProjection);
-  shader.setVec3('uSectionOrigin', 0, 0, 0);
   shader.setFloat('uSkyBrightness', 1);
   shader.setVec3('uFogColor', SKY.r, SKY.g, SKY.b);
   shader.setVec3('uCameraPos', camera.position[0]!, camera.position[1]!, camera.position[2]!);
-  shader.setFloat('uFogStart', DEFAULT_RENDER_DISTANCE * 16 * 0.55);
-  shader.setFloat('uFogEnd', DEFAULT_RENDER_DISTANCE * 16 * 0.95);
+  shader.setFloat('uFogStart', DEFAULT_RENDER_DISTANCE * SECTION_SIZE * 0.7);
+  shader.setFloat('uFogEnd', DEFAULT_RENDER_DISTANCE * SECTION_SIZE * 1.6);
   shader.setInt('uAtlas', 0);
+  const tintLoc = shader.loc('uTintColors[0]');
+  if (tintLoc !== null) gl.uniform3fv(tintLoc, tintColors);
 
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
 
-  gl.bindVertexArray(vao);
-  gl.drawElements(gl.TRIANGLES, mesh.quadCount * 6, gl.UNSIGNED_INT, 0);
-  gl.bindVertexArray(null);
-  drawCalls = 1;
+  renderer.render(shader, frustum, camera.position[0]!, camera.position[1]!, camera.position[2]!);
 }
 
 installTestHook({
@@ -174,7 +172,7 @@ installTestHook({
   input,
   canvas,
   renderOnce,
-  drawStats: () => ({ drawCalls, quads: mesh.quadCount }),
+  drawStats: () => ({ drawCalls: renderer.drawCalls, quads: renderer.quadsDrawn }),
   setSizeLock: (locked: boolean) => {
     sizeLocked = locked;
   },
@@ -194,8 +192,7 @@ function frame(nowMs: number): void {
 
   if (!firstFrameDone) {
     firstFrameDone = true;
-    const api = (globalThis as unknown as { __mc: { _markReady(): void } }).__mc;
-    api._markReady();
+    (globalThis as unknown as { __mc: { _markReady(): void } }).__mc._markReady();
     console.log('[boot] 第一帧完成');
   }
 
@@ -207,14 +204,14 @@ function frame(nowMs: number): void {
       `fps ${clock.fps.toFixed(0)}  (${clock.frameMs.toFixed(1)} ms)\n` +
       `xyz ${p[0]!.toFixed(1)} ${p[1]!.toFixed(1)} ${p[2]!.toFixed(1)}\n` +
       `yaw ${((camera.yaw * 180) / Math.PI).toFixed(0)}  pitch ${((camera.pitch * 180) / Math.PI).toFixed(0)}\n` +
-      `quads ${mesh.quadCount}  draws ${drawCalls}  tick ${clock.renderTick}`;
+      `段 ${renderer.sectionsDrawn}/${renderer.sectionCount}  draws ${renderer.drawCalls}\n` +
+      `面 ${renderer.quadsDrawn}  显存 ${(renderer.totalBytes / 1048576).toFixed(1)} MB`;
   }
   if (hint !== null) hint.classList.toggle('hidden', input.pointerLocked);
 
   scheduleFrame(frame);
 }
 
-// WebGL 的错误不会抛异常，必须主动查；只在启动后查一次，热路径里查会强制同步。
 const err = gl.getError();
 if (err !== gl.NO_ERROR) {
   const msg = `WebGL 错误 0x${err.toString(16)}`;

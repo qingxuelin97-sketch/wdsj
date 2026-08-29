@@ -86,12 +86,15 @@ export class TilePainter {
   noiseFill(c: Rgb, variance: number, density = 1): this {
     for (let y = 0; y < TILE; y++) {
       for (let x = 0; x < TILE; x++) {
-        if (density < 1 && this.rand() > density) {
-          this.set(x, y, 0, 0, 0, 0);
-          continue;
-        }
         const d = (this.rand() - 0.5) * 2 * variance;
-        this.set(x, y, c.r + d, c.g + d, c.b + d);
+        // 透明像素的 RGB 也要填上基色，只把 alpha 置 0。
+        //
+        // 写成 rgb(0,0,0)+alpha(0) 看似无害（反正透明），但 generateMipmap 会把这些
+        // 黑色 RGB 平均进相邻的不透明像素，于是树叶在画面上出现一片黑斑 —— 采样到的
+        // alpha 过了 0.5 的 discard 阈值，颜色却已经被黑色污染了。这就是所谓的
+        // alpha 渗色，任何带 cutout 的贴图都必须这么处理。
+        const transparent = density < 1 && this.rand() > density;
+        this.set(x, y, c.r + d, c.g + d, c.b + d, transparent ? 0 : 255);
       }
     }
     return this;
@@ -128,6 +131,51 @@ export class TilePainter {
     return this;
   }
 
+  /**
+   * 边缘渗色：把透明像素的 RGB 填成最近的不透明邻居的颜色。
+   *
+   * 为什么必须做：generateMipmap 会把透明像素的 RGB 一起平均进去。如果透明处是黑色，
+   * 树叶、草、玻璃这类 cutout 贴图在缩小时边缘就会发黑 —— 采样到的 alpha 过了
+   * discard 阈值，颜色却已经被污染。填上邻近颜色后，无论 mip 怎么混合都不会引入异色。
+   *
+   * 迭代 4 轮足够让 16×16 里任何透明区域都被最近的实色覆盖。
+   */
+  bleedEdges(rounds = 4): this {
+    for (let round = 0; round < rounds; round++) {
+      const snapshot = this.data.slice();
+      let changed = false;
+      for (let y = 0; y < TILE; y++) {
+        for (let x = 0; x < TILE; x++) {
+          const i = this.idx(x, y);
+          if (snapshot[i + 3]! > 0) continue; // 已经是实色
+          let r = 0, g = 0, b = 0, n = 0;
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const nx = x + dx;
+              const ny = y + dy;
+              if (nx < 0 || nx >= TILE || ny < 0 || ny >= TILE) continue;
+              const j = this.idx(nx, ny);
+              // 只采样"本来就有颜色"的邻居：alpha>0，或前几轮已经渗过色的
+              if (snapshot[j + 3]! === 0 && !(snapshot[j]! | snapshot[j + 1]! | snapshot[j + 2]!)) continue;
+              r += snapshot[j]!;
+              g += snapshot[j + 1]!;
+              b += snapshot[j + 2]!;
+              n++;
+            }
+          }
+          if (n === 0) continue;
+          this.data[i] = r / n;
+          this.data[i + 1] = g / n;
+          this.data[i + 2] = b / n;
+          // alpha 保持 0 —— 只补颜色，不让它变成可见像素
+          changed = true;
+        }
+      }
+      if (!changed) break;
+    }
+    return this;
+  }
+
   /** 顶部草叶：在纯色底上从顶端长出高度 3-6 的随机草茎 */
   grassOverlay(top: Rgb, height: [number, number] = [3, 6]): this {
     for (let x = 0; x < TILE; x++) {
@@ -139,81 +187,4 @@ export class TilePainter {
     }
     return this;
   }
-}
-
-/** 各贴图的绘制配方 */
-const RECIPES: Record<string, (p: TilePainter) => void> = {
-  stone: (p) => { p.noiseFill(rgb(0x808080), 20); p.speckles(rgb(0x6f6f6f), 6, 2); },
-  dirt: (p) => { p.noiseFill(rgb(0x866043), 22); p.speckles(rgb(0x6f4f38), 5, 2); },
-  grass_top: (p) => { p.noiseFill(rgb(0x5a9a3a), 26); },
-  grass_side: (p) => { p.noiseFill(rgb(0x866043), 22); p.grassOverlay(rgb(0x5a9a3a)); },
-  sand: (p) => { p.noiseFill(rgb(0xe0d8b0), 12); },
-  gravel: (p) => { p.noiseFill(rgb(0x8a8a8a), 26); p.speckles(rgb(0x6a6a6a), 10, 2); },
-  cobblestone: (p) => {
-    p.noiseFill(rgb(0x7a7a7a), 18);
-    // 错缝砖格，每格再抖一下
-    for (let row = 0; row < 4; row++) {
-      const offset = (row % 2) * 2;
-      for (let col = 0; col < 4; col++) {
-        const x0 = (col * 4 + offset) % TILE;
-        const d = (p.rand() - 0.5) * 30;
-        p.rect(x0, row * 4, 3, 3, { r: 0x7a + d, g: 0x7a + d, b: 0x7a + d });
-      }
-    }
-  },
-  planks: (p) => {
-    p.noiseFill(rgb(0xb08a52), 14);
-    const seam = rgb(0x8a6a3c);
-    p.hLine(0, seam); p.hLine(5, seam); p.hLine(10, seam); p.hLine(15, seam);
-  },
-  log_side: (p) => {
-    p.noiseFill(rgb(0x6b5030), 16);
-    for (let x = 0; x < TILE; x += 4) p.vLine(x, rgb(0x54401f));
-  },
-  log_top: (p) => {
-    p.noiseFill(rgb(0x9a7b4f), 14);
-    // 同心年轮
-    for (const r of [2, 4, 6]) {
-      for (let a = 0; a < 64; a++) {
-        const t = (a / 64) * Math.PI * 2;
-        p.set(Math.round(7.5 + Math.cos(t) * r), Math.round(7.5 + Math.sin(t) * r), 0x6b, 0x50, 0x30);
-      }
-    }
-  },
-  leaves: (p) => { p.noiseFill(rgb(0x3f7a2a), 30, 0.86); },
-  coal_ore: (p) => { p.noiseFill(rgb(0x808080), 20); p.speckles(rgb(0x1a1a1a), 6, 2); },
-  iron_ore: (p) => { p.noiseFill(rgb(0x808080), 20); p.speckles(rgb(0xd8a882), 6, 2); },
-  gold_ore: (p) => { p.noiseFill(rgb(0x808080), 20); p.speckles(rgb(0xf0d048), 5, 2); },
-  diamond_ore: (p) => { p.noiseFill(rgb(0x808080), 20); p.speckles(rgb(0x5decdc), 5, 2); },
-  bedrock: (p) => { p.noiseFill(rgb(0x525252), 30); p.speckles(rgb(0x2a2a2a), 12, 3); },
-};
-
-export const TILE_NAMES: readonly string[] = Object.keys(RECIPES);
-
-/** 生成一张贴图的 RGBA 像素数据 */
-export function generateTile(name: string): Uint8ClampedArray {
-  const recipe = RECIPES[name];
-  if (recipe === undefined) throw new Error(`未知贴图: ${name}`);
-  const painter = new TilePainter(name);
-  recipe(painter);
-  return painter.data;
-}
-
-/**
- * 生成整套贴图，打包成一个可直接喂给 texSubImage3D 的连续缓冲。
- * 返回的层顺序与 TILE_NAMES 一致。
- */
-export function generateTileArray(names: readonly string[] = TILE_NAMES): {
-  data: Uint8ClampedArray;
-  layers: number;
-  index: Map<string, number>;
-} {
-  const data = new Uint8ClampedArray(TILE_BYTES * names.length);
-  const index = new Map<string, number>();
-  for (let i = 0; i < names.length; i++) {
-    const name = names[i]!;
-    data.set(generateTile(name), i * TILE_BYTES);
-    index.set(name, i);
-  }
-  return { data, layers: names.length, index };
 }

@@ -44,6 +44,47 @@ export function packVertex(
 /** 面朝向编号，与 core 的 Facing 保持一致 */
 export const FACE = { DOWN: 0, UP: 1, NORTH: 2, SOUTH: 3, WEST: 4, EAST: 5 } as const;
 
+export interface UnpackedVertex {
+  /** 单位是格（已除以 16） */
+  x: number;
+  y: number;
+  z: number;
+  /** UV 单位也是格 */
+  u: number;
+  v: number;
+  layer: number;
+  skyLight: number;
+  blockLight: number;
+  face: number;
+  ao: number;
+  tint: number;
+}
+
+/**
+ * 解包一个顶点。**测试专用** —— 生产代码在着色器里解包，不走这条路径。
+ *
+ * 有了它，UV 才能被断言。前作的 UV bug（侧面用 Y 坐标驱动 U/V，y=64 的面偏移四个图集格，
+ * 贴图完全错位）之所以能一路带到线上，正是因为它的 mesher 测试从未断言过任何一个 UV 值。
+ */
+export function unpackVertex(data: Uint32Array, offset: number): UnpackedVertex {
+  const d0 = data[offset]!;
+  const d1 = data[offset + 1]!;
+  const d2 = data[offset + 2]!;
+  return {
+    x: (d0 & 511) / 16,
+    y: ((d0 >>> 9) & 511) / 16,
+    z: ((d0 >>> 18) & 511) / 16,
+    ao: (d0 >>> 27) & 3,
+    u: (d1 & 511) / 16,
+    v: ((d1 >>> 9) & 511) / 16,
+    layer: (d1 >>> 18) & 2047,
+    skyLight: d2 & 15,
+    blockLight: (d2 >>> 4) & 15,
+    face: (d2 >>> 8) & 7,
+    tint: (d2 >>> 11) & 7,
+  };
+}
+
 export const BLOCK_VERT_SRC = `#version 300 es
 precision highp float;
 precision highp int;
@@ -54,10 +95,17 @@ uniform mat4 uViewProj;
 uniform vec3 uSectionOrigin;
 /** 天光的整体强度，随昼夜变化；夜间不为 0（MC 夜里天光贡献约 4/15） */
 uniform float uSkyBrightness;
+/**
+ * 群系染色表，按 TintKind 索引：NONE / GRASS / FOLIAGE / WATER。
+ * 草和树叶的贴图本身画成灰度，颜色全靠这里乘上去 —— 与 MC 的做法一致，
+ * 这样不同群系可以共用同一张贴图。
+ */
+uniform vec3 uTintColors[4];
 
 out vec2 vUv;
 flat out uint vLayer;
 out float vShade;
+out vec3 vTint;
 out vec3 vWorldPos;
 
 /**
@@ -91,6 +139,8 @@ void main() {
   float sky   = float(d2 & 15u);
   float block = float((d2 >> 4) & 15u);
   uint  face  = (d2 >> 8) & 7u;
+  uint  tint  = (d2 >> 11) & 7u;
+  vTint = uTintColors[min(tint, 3u)];
 
   // 最终光照 = max(方块光, 天光 * 昼夜系数)，再乘朝向明暗与 AO
   float light = max(block, sky * uSkyBrightness) * (1.0 / 15.0);
@@ -112,6 +162,7 @@ precision highp sampler2DArray;
 in vec2 vUv;
 flat in uint vLayer;
 in float vShade;
+in vec3 vTint;
 in vec3 vWorldPos;
 
 uniform sampler2DArray uAtlas;
@@ -127,7 +178,7 @@ void main() {
   // cutout：树叶这类贴图有透明像素，直接丢弃，避免写深度
   if (tex.a < 0.5) discard;
 
-  vec3 color = tex.rgb * vShade;
+  vec3 color = tex.rgb * vTint * vShade;
 
   float dist = distance(vWorldPos, uCameraPos);
   float fog = clamp((dist - uFogStart) / max(uFogEnd - uFogStart, 0.001), 0.0, 1.0);

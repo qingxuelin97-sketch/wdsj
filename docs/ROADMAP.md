@@ -9,8 +9,8 @@
 
 | # | 里程碑 | 验收标准 | 状态 | commit |
 |---|---|---|---|---|
-| **M0** | 工具链与第一帧 | CI 全绿；违规能被 lint 精确报行拒绝；JavaRandom 与 JDK 逐位一致；浏览器出现可操控的贴图场景，fps>55 | ✅ | — |
-| **M1** | 区块数据与网格化 | 面剔除逐面匹配黄金图案；chunk 编解码往返一致；**UV 有断言测试**；单列柱体六面方向正确 | ☐ | |
+| **M0** | 工具链与第一帧 | CI 全绿；违规能被 lint 精确报行拒绝；JavaRandom 与 JDK 逐位一致；浏览器出现可操控的贴图场景，fps>55 | ✅ | `3e02574` |
+| **M1** | 区块数据与网格化 | 面剔除逐面匹配黄金图案；chunk 编解码往返一致；**UV 有断言测试**；单列柱体六面方向正确 | ✅ | |
 | **M2** | 世界生成 + 服务端骨架（同线程） | `node --test` 直接 new `ServerCore` 跑 200 tick 无异常；全数据包随机往返；同种子区块哈希相同；RD 4 可漫游真实地形 | ☐ | |
 | **M3** | Worker 拓扑与流式加载 | RD 8 定步长飞行 60 s：fps≥55、无空洞、`meshQueueDepth` 归零、堆漂移<20 MB、`drawCalls`<1200 | ☐ | |
 | **M4** | 光照 | 4 个黄金场景逐格相等；tick 0/6000/13000/18000 截图哈希匹配；破坏一格后 1 tick 内正确且重网格 section≤4；光照≤5 ms/tick | ☐ | |
@@ -75,5 +75,46 @@
 
 **已知遗留**
 - Chrome 走的是 Intel 集显而非 RTX 5060。M3 做性能验收时要确认这一点是否影响结论
-- `simple-mesher.ts` 是 M0 的临时实现：无 AO、无贪心合并、不跨区块。M1 会替换，
-  但保留它作为完整 mesher 的差分基准
+- `simple-mesher.ts` 是 M0 的临时实现：无 AO、无贪心合并、不跨区块。M1 已替换
+
+---
+
+## M1 完成记录（2026-08-29）
+
+**交付**
+- `core/world/chunk.ts` —— `Chunk` / `ChunkSection`，扁平 `Uint16Array`（id 12bit | meta 4bit），
+  YZX 下标，增量维护 heightmap，空气段不分配
+- `core/world/block-view.ts` —— `BlockView` / `MutableBlockView` / `ChunkStore`，
+  让一份碰撞、一份射线、一份光照同时服务客户端镜像与服务端世界
+- `core/block/` —— `BlockDef` + 13 个行为钩子契约 + 基础类型
+- `core/registry/` —— 注册表 + **冻结时烘焙的扁平属性表**（热路径只读 typed array）
+- `core/net/codec.ts` —— ByteWriter / ByteReader，帧长度用 u32
+- `core/world/chunk-codec.ts` —— 调色板 + 位打包的区块序列化，以及 18³ padded 邻域抽取
+- `core/math/aabb.ts`、`core/math/frustum.ts`（Gribb-Hartmann 平面提取）
+- `content/blocks.ts` —— 46 种方块，**沿用 MC 1.0 的真实 id**
+- `client/mesh/mesher.ts` —— 完整网格化：18³ padded 邻域、3 采样 AO、平滑光照、
+  四边形翻转消对角线接缝、三渲染层分离
+- `client/render/` —— 贴图配方（51 张原创像素画）、图集与面层号烘焙、
+  `ChunkRenderer`（每层一个 VAO、视锥剔除、半透明按距离排序）
+
+**验收证据**
+- 15 个 mesher 测试 + 14 个 chunk 测试全过；`node tools/ci.mjs` 6 步全绿
+- **UV 有逐角断言**（前作的致命 UV bug 正是因为没有这个才带到线上）
+- 编解码往返对随机内容逐格比对，覆盖 4bit / 8bit / 无调色板三条分支
+- heightmap 的增量维护与全量重算逐格一致（放置与破坏两个阶段分别验证）
+- 无头渲染 25 区块 / 70 段 / 32714 面 / 89 draw call / fps 180
+- 4 个视角的截图黄金哈希：`tests/screenshots/hashes.json`
+
+**过程中修掉的真问题**
+1. `crossPlant` 的默认参数让 TS 把 tint 推成字面量 `0`，传 `TintKind.GRASS` 就报错 —— 显式标注
+2. **草方块整块被染绿**，包括侧面本该是泥土的部分。tint 原本是方块级的，
+   改成**按面掩码**（`tintFaces`）—— 顶点格式里 tint 本来就是逐顶点的
+3. **alpha 渗色**：`noiseFill` 给透明像素写 `rgb(0,0,0)`，`generateMipmap` 把黑色平均进
+   相邻不透明像素，树叶出现黑斑。改为透明像素也填基色，并加通用的 `bleedEdges()` 后处理
+4. **小屋盖在树上**：`surfaceY` 返回的是最高非空气方块，遇到树就返回树叶高度。
+   不透明木板压住下方树叶，天光归零，画面上是一大片黑斑 —— 一开始极易误判成
+   mipmap 或 cutout 的渲染 bug。靠**扫描实际光照数据**（61 个天光为 0 的树叶，
+   坐标正是小屋位置）才定位到，修完从 61 降到 0
+
+> 第 3、4 条都表现为"树叶发黑"，但成因完全不同，一个在贴图生成、一个在世界内容。
+> 教训与 docs/RULES.md 第 14 条一致：不要凭现象猜，去读实际数据。
