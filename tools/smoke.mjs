@@ -27,11 +27,15 @@ const HEADLESS = !process.argv.includes('--head');
  * 覆盖面要分散：远景看整体地形与雾，近景看方块贴图与 AO，
  * 树冠看 cutout 透明与群系染色，俯视看地形轮廓。
  */
+/**
+ * 相机位置写成**相对出生点**的偏移。世界由种子生成，出生点会随生成器调整而变，
+ * 写死绝对坐标的话每次调参都要重录一遍黄金值，而且很容易录到"相机埋在山里"的画面。
+ */
 const CASES = [
-  { name: 'overview', camera: [-14, 52, -14, -Math.PI * 0.25, 0.38], size: [640, 360] },
-  { name: 'house', camera: [3, 41, -3, -0.55, 0.22], size: [640, 360] },
-  { name: 'trees', camera: [-20, 44, 6, -1.35, 0.12], size: [640, 360] },
-  { name: 'topdown', camera: [8, 78, 8, 0, 1.45], size: [640, 360] },
+  { name: 'overview', offset: [0, 34, -40], look: [0, 0.42], fov: 72, size: [640, 360] },
+  { name: 'ground', offset: [0, 2, -8], look: [0, 0.08], fov: 70, size: [640, 360] },
+  { name: 'skyline', offset: [-30, 18, -30], look: [-0.78, 0.20], fov: 70, size: [640, 360] },
+  { name: 'topdown', offset: [0, 70, 0], look: [0, 1.45], fov: 70, size: [640, 360] },
 ];
 
 function log(msg) {
@@ -95,13 +99,29 @@ async function main() {
     for (const l of boot.logs) log(`  page: ${l}`);
 
     // --- 基本健康检查 ---
+    // 每段脚本都自行确认 __mc 就绪：CDP 的多次 evaluate 之间页面可能已经变了，
+    // 依赖"上一次确认过"是不成立的
+    const ensureHook = `
+      const t0 = Date.now();
+      while (!window.__mc) {
+        if (Date.now() - t0 > 15000) throw new Error('__mc 未挂载');
+        await new Promise(r => setTimeout(r, 50));
+      }
+      await window.__mc.ready;
+    `;
+
     const health = await page.evaluate(`
+      ${ensureHook}
       const m = window.__mc;
-      await new Promise(r => setTimeout(r, 600));
+      // 等世界流式加载与网格化收敛。用 waitForIdle 而不是固定 sleep：
+      // 固定 sleep 在快机器上够、慢机器上不够，会造成时而通过时而失败的假失败。
+      await m.waitForIdle();
       const s = m.stats();
       return { stats: s, errors: m.errors() };
     `);
     log(`fps=${health.stats.fps} quads=${health.stats.quads} draws=${health.stats.drawCalls}`);
+    const spawnPos = { x: health.stats.cameraX, y: health.stats.cameraY, z: health.stats.cameraZ };
+    log(`出生点 ${spawnPos.x.toFixed(1)} ${spawnPos.y.toFixed(1)} ${spawnPos.z.toFixed(1)}`);
 
     if (health.errors.length > 0) {
       failures.push(`页面报告了 ${health.errors.length} 条错误: ${health.errors.join(' | ')}`);
@@ -124,11 +144,18 @@ async function main() {
       // canvas 之外的黑边），与 screenshotHash 取的 canvas 内容对不上，
       // 回归失败时看到的图就不是真正比对的图。
       const shot = await page.evaluate(`
+        ${ensureHook}
         const m = window.__mc;
         m.setCanvasSize(${c.size[0]}, ${c.size[1]});
-        m.setCamera(${c.camera.join(', ')});
+        m.setCamera(
+          ${spawnPos.x} + ${c.offset[0]}, ${spawnPos.y} + ${c.offset[1]}, ${spawnPos.z} + ${c.offset[2]},
+          ${c.look[0]}, ${c.look[1]}, ${c.fov}
+        );
+        // 移动后必须等新视野里的段全部补齐，否则截到的是半成品
+        m.freeze(false);
+        await m.waitForIdle();
         m.freeze(true);
-        await new Promise(r => setTimeout(r, 120));
+        await new Promise(r => setTimeout(r, 60));
         const hash = await m.screenshotHash();
         const png = await m.screenshot();
         m.freeze(false);

@@ -50,6 +50,27 @@ export interface HostBridge {
    * 截图就不再跨机器可比了。
    */
   setSizeLock(locked: boolean): void;
+  /**
+   * 供 waitForIdle 判断世界是否已经"安定"。
+   *   dirty         还有多少子区块等着网格化
+   *   chunks        当前已加载的区块数
+   *   serverPending 服务端还有多少区块排队要推给本客户端
+   *
+   * 三者缺一不可。只看 dirty 的话，服务端刚推完一批、下一批还没到的空档里
+   * dirty 恰好为 0，waitForIdle 就会提前返回，截到一个半成品世界。
+   */
+  idleStats(): { dirty: number; chunks: number; serverPending: number };
+  /**
+   * 手动推进一步模拟：服务端 tick + 一批网格化。
+   *
+   * 自动化必须能**主动驱动**世界，而不是靠等真实时间。服务端 tick 平时由帧率
+   * 驱动，于是"跑到第几 tick"取决于机器快慢，区块加载与卸载扫描的时机随之漂移，
+   * 同一份代码每次截出来的画面都不同。有了它，waitForIdle 就能在冻结状态下
+   * 精确地把世界推到收敛。
+   */
+  pumpWorld(): void;
+  /** 内部世界对象，供排查工具做状态指纹。生产代码不要用 */
+  debugWorld(): unknown;
 }
 
 /** 收集未捕获错误、WebGL 错误、着色器错误，供 assertNoErrors 使用 */
@@ -134,6 +155,41 @@ export function installTestHook(host: HostBridge): void {
       host.canvas.style.height = '';
     },
 
+    /**
+     * 等世界安定下来：网格化队列清空，且区块数连续若干帧不再变化。
+     *
+     * 截图回归必须等这个，不能用固定 sleep —— 世界是流式加载的，
+     * 看得远的视角要等更多区块到达。固定 sleep 在快的机器上够、慢的机器上不够，
+     * 表现为**同一份代码时而通过时而失败**的哈希不匹配，是最难查的一类"假失败"。
+     */
+    async waitForIdle(timeoutMs = 30000): Promise<void> {
+      const deadline = Date.now() + timeoutMs;
+      let stable = 0;
+      let lastChunks = -1;
+      let pumps = 0;
+      while (Date.now() < deadline) {
+        // 主动推进，不依赖帧率 —— 这是让世界状态可复现的关键
+        host.pumpWorld();
+        pumps++;
+        const s = host.idleStats();
+        if (s.dirty === 0 && s.serverPending === 0 && s.chunks === lastChunks) {
+          stable++;
+          // 稳定 200 步才算安定：区块卸载扫描每 100 tick 才跑一次，
+          // 少于这个数就可能在扫描之前返回，留下一批本该卸载的区块
+          if (stable >= 200) return;
+        } else {
+          stable = 0;
+          lastChunks = s.chunks;
+        }
+        // 每推进若干步让出一次，避免长时间独占主线程把页面卡死
+        if (pumps % 64 === 0) await nextFrame();
+      }
+      const s = host.idleStats();
+      throw new Error(
+        `waitForIdle 超时 (${timeoutMs}ms)：${s.dirty} 段待网格化，${s.serverPending} 个区块待推送，${s.chunks} 个区块已加载`,
+      );
+    },
+
     // --- 相机 ---
     setCamera(x: number, y: number, z: number, yaw: number, pitch: number, fov?: number): void {
       host.camera.setPosition(x, y, z);
@@ -205,6 +261,10 @@ export function installTestHook(host: HostBridge): void {
         yaw: Math.round(host.camera.yaw * 1000) / 1000,
         pitch: Math.round(host.camera.pitch * 1000) / 1000,
       };
+    },
+    /** 排查用：拿到客户端世界镜像。不是稳定接口 */
+    _world(): unknown {
+      return host.debugWorld();
     },
     logs(): string[] {
       return [...consoleLog];

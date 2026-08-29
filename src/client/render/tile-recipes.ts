@@ -31,7 +31,10 @@ function brickGrid(p: TilePainter, base: Rgb, mortar: Rgb, cellW: number, cellH:
 function plant(p: TilePainter, stem: Rgb, bloom: Rgb | null, height: number): void {
   // 先全透明
   for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
-  const baseY = 15;
+  // 底部留一行透明。十字植物的底边与下方草方块的顶面正好共面，
+  // 那一行若有不透明像素就会 z-fighting，表现为地面上闪烁的杂色点。
+  // MC 的植物贴图同样是不贴底的。
+  const baseY = 14;
   const topY = baseY - height;
   let cx = 8;
   for (let y = baseY; y >= topY; y--) {

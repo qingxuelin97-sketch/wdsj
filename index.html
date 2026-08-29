@@ -82,11 +82,14 @@
       showFatal(e.reason && e.reason.stack ? e.reason.stack : String(e.reason));
     });
 
-    // 开发期热重载
-    try {
-      const es = new EventSource('/__reload');
-      es.addEventListener('reload', () => location.reload());
-    } catch {}
+    // 开发期热重载。自动化测试下必须关掉 —— 测试期间任何一次意外 reload
+    // 都会把 window.__mc 连同世界状态一起清空，表现为随机的 "undefined" 报错。
+    if (!location.search.includes('test=smoke')) {
+      try {
+        const es = new EventSource('/__reload');
+        es.addEventListener('reload', () => location.reload());
+      } catch {}
+    }
   </script>
 
   <script type="module" src="/src/entry/client-main.ts"></script>

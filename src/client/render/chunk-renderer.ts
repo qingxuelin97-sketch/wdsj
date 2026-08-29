@@ -43,8 +43,9 @@ export function sectionKey(cx: number, cy: number, cz: number): number {
 export class ChunkRenderer {
   private readonly gl: WebGL2RenderingContext;
   private readonly meshes = new Map<number, SectionMesh>();
-  /** 半透明层的绘制顺序缓冲，预分配复用 */
-  private readonly sortScratch: { mesh: SectionMesh; dist: number }[] = [];
+  /** 绘制顺序缓冲，预分配复用。key 参与排序以打破距离相同时的平局 */
+  private readonly sortScratch: { mesh: SectionMesh; dist: number; key: number }[] = [];
+  private readonly visibleScratch: { mesh: SectionMesh; dist: number; key: number }[] = [];
 
   // 每帧统计
   drawCalls = 0;
@@ -149,19 +150,32 @@ export class ChunkRenderer {
     this.quadsDrawn = 0;
     this.sectionsDrawn = 0;
 
-    const visible: SectionMesh[] = [];
+    // 收集可见段并**确定性排序**。
+    //
+    // 排序不只是为了性能（不透明由近及远能让 early-z 剔掉更多片元）：
+    // 半透明层必须由远及近混合，而距离相同时若按 Map 的插入顺序绘制，
+    // 结果就取决于网格化完成的先后 —— 同一个场景每次画出来都可能有细微差别，
+    // 画面上是水面的闪烁，截图回归里则是永远对不上的哈希。
+    // 用 sectionKey 做次级键，彻底消除这个变量。
+    const visible = this.visibleScratch;
+    visible.length = 0;
     for (const mesh of this.meshes.values()) {
       const ox = mesh.cx * SECTION_SIZE;
       const oy = mesh.cy * SECTION_SIZE;
       const oz = mesh.cz * SECTION_SIZE;
       if (!frustum.intersectsAabb(ox, oy, oz, ox + SECTION_SIZE, oy + SECTION_SIZE, oz + SECTION_SIZE)) continue;
-      visible.push(mesh);
+      const dx = ox + 8 - camX;
+      const dy = oy + 8 - camY;
+      const dz = oz + 8 - camZ;
+      visible.push({ mesh, dist: dx * dx + dy * dy + dz * dz, key: sectionKey(mesh.cx, mesh.cy, mesh.cz) });
     }
+    visible.sort((a, b) => a.dist - b.dist || a.key - b.key);
     this.sectionsDrawn = visible.length;
 
     // --- 不透明与 cutout：由近及远，让早期深度测试尽量剔掉后面的片元 ---
     for (const layerIdx of [RenderLayer.OPAQUE, RenderLayer.CUTOUT]) {
-      for (const mesh of visible) {
+      for (const entry of visible) {
+        const mesh = entry.mesh;
         const layer = mesh.layers[layerIdx];
         if (layer == null) continue;
         shader.setVec3('uSectionOrigin', mesh.cx * SECTION_SIZE, mesh.cy * SECTION_SIZE, mesh.cz * SECTION_SIZE);
@@ -174,15 +188,13 @@ export class ChunkRenderer {
 
     // --- 半透明：由远及近，且不写深度，否则互相遮挡会出错 ---
     this.sortScratch.length = 0;
-    for (const mesh of visible) {
-      if (mesh.layers[RenderLayer.TRANSLUCENT] == null) continue;
-      const dx = mesh.cx * SECTION_SIZE + 8 - camX;
-      const dy = mesh.cy * SECTION_SIZE + 8 - camY;
-      const dz = mesh.cz * SECTION_SIZE + 8 - camZ;
-      this.sortScratch.push({ mesh, dist: dx * dx + dy * dy + dz * dz });
+    for (const entry of visible) {
+      if (entry.mesh.layers[RenderLayer.TRANSLUCENT] == null) continue;
+      this.sortScratch.push(entry);
     }
     if (this.sortScratch.length > 0) {
-      this.sortScratch.sort((a, b) => b.dist - a.dist);
+      // 由远及近，距离相同时按 key —— 与不透明层的次级键一致，保证完全确定
+      this.sortScratch.sort((a, b) => b.dist - a.dist || a.key - b.key);
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.depthMask(false);
