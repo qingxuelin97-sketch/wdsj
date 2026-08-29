@@ -69,6 +69,19 @@ export interface HostBridge {
    * 精确地把世界推到收敛。
    */
   pumpWorld(): void;
+  /**
+   * 向服务端发一条指令并等回执。
+   * 自动化改世界状态（放方块、设时间、传送）一律走这条路，
+   * 而不是让客户端直接写自己的镜像 —— 那样客户端和服务端立刻就分叉了，
+   * 见 docs/RULES.md 第 8 条。
+   */
+  command(text: string): Promise<{ ok: boolean; text: string }>;
+  /** 服务端权威的当日时间，0..23999 */
+  timeOfDay(): number;
+  /** 累计重网格化过的子区块数，用于验证"改一格只重做少数几段" */
+  remeshCount(): number;
+  /** 读客户端镜像里的光照与列高，用于和服务端逐项对照 */
+  mirrorInfo(x: number, y: number, z: number): { light: string; height: number; loaded: boolean };
   /** 内部世界对象，供排查工具做状态指纹。生产代码不要用 */
   debugWorld(): unknown;
 }
@@ -128,6 +141,79 @@ export function installTestHook(host: HostBridge): void {
     /** 由主循环在第一帧画完后调用 */
     _markReady: (): void => readyResolve(),
 
+    /** 发一条服务端指令，等回执 */
+    command: (text: string): Promise<{ ok: boolean; text: string }> => host.command(text),
+
+    /**
+     * 设定世界时间并等客户端真的收到。
+     *
+     * 必须等回传，不能发完就走：时间是服务端权威的，客户端要等下一个
+     * S_TimeUpdate 才知道。发完立刻截图的话截到的还是旧时间的天色，
+     * 而且快慢机器上截到的还不一样 —— 又一个随机失败的来源。
+     */
+    async setTime(ticks: number): Promise<number> {
+      const want = ((Math.floor(ticks) % 24000) + 24000) % 24000;
+      // 先停掉昼夜推进，否则设完之后世界继续往前走，永远等不到相等
+      await host.command('time hold 1');
+      await host.command(`time set ${want}`);
+      const t0 = Date.now();
+      while (host.timeOfDay() !== want) {
+        if (Date.now() - t0 > 5000) throw new Error(`setTime(${want}) 超时，客户端仍是 ${host.timeOfDay()}`);
+        host.pumpWorld();
+        await new Promise((r) => setTimeout(r, 16));
+      }
+      return host.timeOfDay();
+    },
+
+    timeOfDay: (): number => host.timeOfDay(),
+    remeshCount: (): number => host.remeshCount(),
+    mirrorLight: (x: number, y: number, z: number): string => host.mirrorInfo(x, y, z).light,
+    /** 排查用：客户端镜像在该点的光照与列高 */
+    _mirrorInfo: (x: number, y: number, z: number): { light: string; height: number; loaded: boolean } =>
+      host.mirrorInfo(x, y, z),
+    /** 排查用：拿到客户端世界镜像。不是稳定接口 */
+    _world: (): unknown => host.debugWorld(),
+
+    /**
+     * 比对客户端镜像与服务端的光照。
+     *
+     * 服务端不会为一次方块变更下发光照数据，客户端是拿同一份 core 算法
+     * 在自己的副本上独立重算的。这个断言就是在验证"同样的世界 + 同样的算法
+     * = 同样的结果"这个前提真的成立 —— 一旦哪天有人给某一侧加了特判，
+     * 玩家会看到光照忽明忽暗，而那时候极难查到根因。
+     */
+    async checkLight(x: number, y: number, z: number): Promise<{
+      server: string; client: string; same: boolean;
+      serverHeight: string; clientHeight: number; loaded: boolean;
+    }> {
+      const r = await host.command(`light ${x} ${y} ${z}`);
+      const h = await host.command(`height ${x} ${z}`);
+      const info = host.mirrorInfo(x, y, z);
+      return {
+        server: r.text,
+        client: info.light,
+        same: r.text === info.light,
+        serverHeight: h.text,
+        clientHeight: info.height,
+        loaded: info.loaded,
+      };
+    },
+
+    /** 放一个方块（走服务端），并等客户端镜像与网格化收敛 */
+    async setBlock(x: number, y: number, z: number, name: string): Promise<boolean> {
+      const r = await host.command(`setblock ${x} ${y} ${z} ${name}`);
+      if (!r.ok) return false;
+      const t0 = Date.now();
+      // 等这次变更真的回传到镜像上
+      while (Date.now() - t0 < 3000) {
+        host.pumpWorld();
+        await new Promise((r2) => setTimeout(r2, 8));
+        const got = await host.command(`getblock ${x} ${y} ${z}`);
+        if (got.text === name) break;
+      }
+      return true;
+    },
+
     // --- 确定性控制 ---
     freeze(on: boolean): void {
       host.clock.frozen = on;
@@ -164,32 +250,38 @@ export function installTestHook(host: HostBridge): void {
      */
     async waitForIdle(timeoutMs = 30000): Promise<void> {
       const deadline = Date.now() + timeoutMs;
-      let stable = 0;
-      let lastChunks = -1;
-      let pumps = 0;
+      let stableRounds = 0;
+      let lastShape = '';
+
       while (Date.now() < deadline) {
-        // 主动推进，不依赖帧率 —— 这是让世界状态可复现的关键
-        host.pumpWorld();
-        pumps++;
-        const s = host.idleStats();
-        // chunks > 0 是必要的下限条件：服务端跑在自己的 Worker 里，启动要一点时间，
-        // 在它开始推送之前三项统计全是 0 且纹丝不动，会被误判成"世界已就绪"，
-        // 于是拿到一个空场景（实测 quads=0）。
-        if (s.chunks > 0 && s.dirty === 0 && s.serverPending === 0 && s.chunks === lastChunks) {
-          stable++;
-          // 稳定 200 步才算安定：区块卸载扫描每 100 tick 才跑一次，
-          // 少于这个数就可能在扫描之前返回，留下一批本该卸载的区块
-          if (stable >= 200) return;
-        } else {
-          stable = 0;
-          lastChunks = s.chunks;
+        // 先把本地的活干完：网格化队列清空、在飞的任务收回
+        let pumps = 0;
+        while (Date.now() < deadline) {
+          host.pumpWorld();
+          const s = host.idleStats();
+          if (s.chunks > 0 && s.dirty === 0) break;
+          if (++pumps % 32 === 0) await nextFrame();
         }
-        // 每推进若干步让出一次，避免长时间独占主线程把页面卡死
-        if (pumps % 64 === 0) await nextFrame();
+
+        // 再问服务端一次。这一步是**同步往返**，回执必定反映最新的订阅状态。
+        const r = await host.command('settled');
+        const s = host.idleStats();
+        const shape = `${r.text}|${s.chunks}`;
+
+        if (r.text.startsWith('0 ') && s.dirty === 0 && shape === lastShape) {
+          // 形状连续几轮不变才算安定。只看一轮的话，服务端可能正好
+          // 在两轮之间又生成了一批区块。
+          if (++stableRounds >= 3) return;
+        } else {
+          stableRounds = 0;
+        }
+        lastShape = shape;
+        await nextFrame();
       }
+
       const s = host.idleStats();
       throw new Error(
-        `waitForIdle 超时 (${timeoutMs}ms)：${s.dirty} 段待网格化，${s.serverPending} 个区块待推送，${s.chunks} 个区块已加载`,
+        `waitForIdle 超时 (${timeoutMs}ms)：${s.dirty} 段待网格化，${s.chunks} 个区块已加载，服务端 ${lastShape}`,
       );
     },
 
@@ -247,7 +339,8 @@ export function installTestHook(host: HostBridge): void {
       host.renderOnce();
       return host.canvas.toDataURL('image/png');
     },
-    async screenshotHash(): Promise<string> {
+    /** 渲染一帧并取哈希（不做稳定性判断，内部用） */
+    async _hashOnce(): Promise<string> {
       await nextFrame();
       host.renderOnce();
       const w = host.canvas.width;
@@ -259,6 +352,25 @@ export function installTestHook(host: HostBridge): void {
       ctx.drawImage(host.canvas, 0, 0);
       const img = ctx.getImageData(0, 0, w, h);
       return hashImageData(img.data, w, h);
+    },
+
+    /**
+     * 截图哈希 —— 要求画面**已经稳定**：连续两帧哈希相同才采信。
+     *
+     * waitForIdle 之后偶尔还会有一两个网格结果姗姗来迟（worker 的消息要过一轮
+     * 事件循环才到），落在两次截图之间就会让哈希变一下。断言"连续两帧一样"
+     * 把这件事变成显式的等待，而不是碰运气 ——
+     * 否则表现出来就是同一份代码十次里失败一次，最难查的那种假失败。
+     */
+    async screenshotHash(maxTries = 12): Promise<string> {
+      let prev = await api._hashOnce();
+      for (let i = 0; i < maxTries; i++) {
+        host.pumpWorld();
+        const next = await api._hashOnce();
+        if (next === prev) return next;
+        prev = next;
+      }
+      throw new Error(`screenshotHash: 画面 ${maxTries} 帧内始终没稳定下来`);
     },
     stats(): McStats {
       const d = host.drawStats();
@@ -277,10 +389,6 @@ export function installTestHook(host: HostBridge): void {
         yaw: Math.round(host.camera.yaw * 1000) / 1000,
         pitch: Math.round(host.camera.pitch * 1000) / 1000,
       };
-    },
-    /** 排查用：拿到客户端世界镜像。不是稳定接口 */
-    _world(): unknown {
-      return host.debugWorld();
     },
     logs(): string[] {
       return [...consoleLog];

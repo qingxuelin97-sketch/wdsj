@@ -36,6 +36,13 @@ const CASES = [
   { name: 'ground', offset: [0, 2, -8], look: [0, 0.08], fov: 70, size: [640, 360] },
   { name: 'skyline', offset: [-30, 18, -30], look: [-0.78, 0.20], fov: 70, size: [640, 360] },
   { name: 'topdown', offset: [0, 70, 0], look: [0, 1.45], fov: 70, size: [640, 360] },
+  // 昼夜四相：同一个机位，只有时间不同。
+  // 0 清晨 / 6000 正午 / 13000 日落后 / 18000 午夜。
+  // 四张哈希必须互不相同 —— 相同就说明昼夜根本没接上渲染。
+  { name: 'day-0000', offset: [0, 18, -34], look: [0, 0.30], fov: 72, size: [640, 360], time: 0 },
+  { name: 'day-6000', offset: [0, 18, -34], look: [0, 0.30], fov: 72, size: [640, 360], time: 6000 },
+  { name: 'day-13000', offset: [0, 18, -34], look: [0, 0.30], fov: 72, size: [640, 360], time: 13000 },
+  { name: 'day-18000', offset: [0, 18, -34], look: [0, 0.30], fov: 72, size: [640, 360], time: 18000 },
 ];
 
 function log(msg) {
@@ -147,6 +154,7 @@ async function main() {
         ${ensureHook}
         const m = window.__mc;
         m.setCanvasSize(${c.size[0]}, ${c.size[1]});
+        ${c.time === undefined ? '' : `await m.setTime(${c.time});`}
         m.setCamera(
           ${spawnPos.x} + ${c.offset[0]}, ${spawnPos.y} + ${c.offset[1]}, ${spawnPos.z} + ${c.offset[2]},
           ${c.look[0]}, ${c.look[1]}, ${c.fov}
@@ -179,10 +187,145 @@ async function main() {
       }
     }
 
-    // --- 三个用例的哈希必须互不相同，否则说明 setCamera 根本没生效 ---
-    const uniq = new Set(Object.values(actual));
+    // --- 各用例的哈希必须互不相同，否则说明 setCamera / setTime 根本没生效 ---
+    const uniq = new Set(CASES.map((c) => actual[c.name]));
     if (uniq.size !== CASES.length) {
-      failures.push(`${CASES.length} 个视角只产生了 ${uniq.size} 个不同哈希，setCamera 可能未生效`);
+      failures.push(`${CASES.length} 个用例只产生了 ${uniq.size} 个不同哈希，setCamera/setTime 可能未生效`);
+    }
+    const dayHashes = CASES.filter((c) => c.time !== undefined).map((c) => actual[c.name]);
+    if (new Set(dayHashes).size !== dayHashes.length) {
+      failures.push(`昼夜四相有重复哈希 ${dayHashes.join(' ')} —— 时间没有驱动渲染`);
+    }
+
+    // --- 改一格方块只能引起少数几段重网格化 ---
+    //
+    // 这是光照增量更新的**性能**验收点。全量重算也能得到正确画面，
+    // 但代价是每次放方块都重做几十上百段，帧率会肉眼可见地一顿。
+    //
+    // 分两种情形，因为它们的合理上界本来就不同：
+    //   地下埋一格 —— 四周全是石头，光照本来就是 0，改动纯局部，上界很紧
+    //   空中放一格 —— 挡住天光，整列的阴影一路落到地面，天然会波及整根柱子
+    const remesh = await page.evaluate(`
+      ${ensureHook}
+      const m = window.__mc;
+      m.freeze(false);
+      await m.waitForIdle();
+      const s0 = m.stats();
+      const x = Math.round(s0.cameraX), z = Math.round(s0.cameraZ);
+
+      // 情形一：地下深处（周围都是实心，光照全 0）
+      const buried = { y: 24 };
+      const before1 = m.remeshCount();
+      buried.ok = await m.setBlock(x, buried.y, z, 'glowstone');
+      await m.waitForIdle();
+      buried.delta = m.remeshCount() - before1;
+
+      // 情形二：地表之上的空气里放一块石头，挡住天光
+      const airY = Math.round(s0.cameraY) + 3;
+      const before2 = m.remeshCount();
+      const ok2 = await m.setBlock(x, airY, z, 'stone');
+      await m.waitForIdle();
+      const airDelta = m.remeshCount() - before2;
+
+      // 把刚放的两块撤掉 —— 否则它们会飘在后面每一张截图里
+      await m.setBlock(x, buried.y, z, 'stone');
+      await m.setBlock(x, airY, z, 'air');
+      await m.waitForIdle();
+
+      return { buried, airY, ok2, airDelta };
+    `);
+    if (!remesh.buried.ok || !remesh.ok2) {
+      failures.push('setblock 失败');
+    } else {
+      // 地下一格：只该动它所在的段和贴着边界的几个邻居
+      if (remesh.buried.delta > 4) {
+        failures.push(`地下放一格萤石引起了 ${remesh.buried.delta} 段重网格化（上限 4）`);
+      } else {
+        log(`地下放一格萤石 -> ${remesh.buried.delta} 段重网格化 ok`);
+      }
+      // 空中一格：整列阴影，8 段 + 边界邻居，但绝不该扩散到全场
+      if (remesh.airDelta > 24) {
+        failures.push(`空中放一格石头引起了 ${remesh.airDelta} 段重网格化（上限 24）——光照脏化范围失控`);
+      } else {
+        log(`空中放一格石头 -> ${remesh.airDelta} 段重网格化（整列阴影）ok`);
+      }
+    }
+
+    // --- 方块光场景：夜里放一块萤石 ---
+    //
+    // 前面的昼夜四相只验证了天光。方块光要单独看，因为它走的是另一条
+    // 着色路径（暖色曲线），而且只有在天光被压暗时才看得出来 ——
+    // 白天满天光会把它整个盖掉。
+    const litScene = await page.evaluate(`
+      ${ensureHook}
+      const m = window.__mc;
+      m.setCanvasSize(640, 360);
+      m.freeze(false);
+      await m.setTime(18000);
+      await m.waitForIdle();
+      const s0 = m.stats();
+      // 萤石放在出生点旁边的地面上
+      const gx = Math.round(s0.cameraX) + 2;
+      const gz = Math.round(s0.cameraZ) + 2;
+      const gy = Math.round(s0.cameraY) - 1;
+      await m.setBlock(gx, gy, gz, 'glowstone');
+
+      // 相机摆到斜后方，算出真正对准萤石的 yaw/pitch。
+      // 约定见 src/client/camera.ts：yaw 0 朝 +Z，pitch 正值向下看，
+      // 前向量是 (-cos(p)sin(y), -sin(p), cos(p)cos(y))。
+      const cx2 = gx - 5, cy2 = gy + 3, cz2 = gz - 6;
+      const dx = gx - cx2, dy = gy - cy2, dz = gz - cz2;
+      const len = Math.hypot(dx, dy, dz);
+      const yaw = Math.atan2(-dx, dz);
+      const pitch = -Math.asin(dy / len);
+      m.setCamera(cx2, cy2, cz2, yaw, pitch, 70);
+      await m.waitForIdle();
+      m.freeze(true);
+      await new Promise(r => setTimeout(r, 60));
+      const hash = await m.screenshotHash();
+      const png = await m.screenshot();
+      m.freeze(false);
+
+      // 光照**数值**断言。截图只能说明"看着像"，数值才能说明算对了。
+      const checks = {
+        self: await m.checkLight(gx, gy, gz),
+        near: await m.checkLight(gx + 1, gy, gz),
+        far:  await m.checkLight(gx + 5, gy, gz),
+        out:  await m.checkLight(gx + 16, gy, gz),
+      };
+      return { hash, png, checks, gx, gy, gz };
+    `);
+    {
+      const c = litScene.checks;
+      for (const [name, v] of Object.entries(c)) {
+        if (!v.same) {
+          failures.push(
+            `光照镜像不一致 ${name}: 服务端光 ${v.server} 客户端光 ${v.client}` +
+            ` | 列高 服${v.serverHeight} 客${v.clientHeight} | 客户端已加载=${v.loaded}`,
+          );
+        }
+      }
+      const blockOf = (v) => Number(String(v.server).split('/')[1]);
+      // 萤石发光 15，紧邻一格衰减到 14，五格外 10，十六格外必须已经归零
+      if (blockOf(c.self) !== 15) failures.push(`萤石自身方块光应为 15，实得 ${c.self.server}`);
+      if (blockOf(c.near) !== 14) failures.push(`萤石旁一格方块光应为 14，实得 ${c.near.server}`);
+      if (blockOf(c.far) !== 10) failures.push(`萤石外五格方块光应为 10，实得 ${c.far.server}`);
+      if (blockOf(c.out) !== 0) failures.push(`萤石外十六格方块光应为 0，实得 ${c.out.server}`);
+      log(`萤石光照 自身${c.self.server} 邻格${c.near.server} 五格${c.far.server} 十六格${c.out.server}（镜像一致）`);
+    }
+    actual['night-glowstone'] = litScene.hash;
+    fs.writeFileSync(
+      path.join(OUT_DIR, 'night-glowstone.png'),
+      Buffer.from(String(litScene.png).replace(/^data:image\/png;base64,/, ''), 'base64'),
+    );
+    if (UPDATE) {
+      log(`night-glowstone: ${litScene.hash} (已记录)`);
+    } else if (golden['night-glowstone'] === undefined) {
+      log(`night-glowstone: ${litScene.hash} (无黄金值)`);
+    } else if (golden['night-glowstone'] !== litScene.hash) {
+      failures.push(`night-glowstone 截图哈希不匹配: 期望 ${golden['night-glowstone']}，实得 ${litScene.hash}`);
+    } else {
+      log(`night-glowstone: ${litScene.hash} ok`);
     }
 
     if (UPDATE) {

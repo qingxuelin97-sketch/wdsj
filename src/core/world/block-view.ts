@@ -19,6 +19,14 @@ export interface BlockView {
   getBiome(x: number, z: number): number;
   /** 该坐标所在区块是否已加载 */
   isLoaded(x: number, z: number): boolean;
+  /**
+   * 该列最高非空气方块的 y+1。
+   *
+   * 天光引擎靠它决定"哪些格子直接暴露于天空"：y >= height 的一律满值，
+   * 低于它的才需要横向传播。没有这个划分的话，天光的垂直不衰减会破坏
+   * BFS 双队列赖以成立的单调性。
+   */
+  getHeight(x: number, z: number): number;
 }
 
 /** 可写世界视图 */
@@ -31,6 +39,8 @@ export interface MutableBlockView extends BlockView {
   setState(x: number, y: number, z: number, state: number, flags?: number): boolean;
   setSkyLight(x: number, y: number, z: number, level: number): void;
   setBlockLight(x: number, y: number, z: number, level: number): void;
+  /** 标记该坐标所在区块的光照已建立，见 Chunk.lightReady */
+  markLightReady(x: number, z: number): void;
 }
 
 /** setState 的行为标志，可按位或 */
@@ -164,19 +174,27 @@ export class ChunkStore implements MutableBlockView {
     return true;
   }
 
+  markLightReady(x: number, z: number): void {
+    const c = this.getChunk(toChunkCoord(x), toChunkCoord(z));
+    if (c !== null) c.lightReady = true;
+  }
+
   setSkyLight(x: number, y: number, z: number, level: number): void {
     if (y < 0 || y >= WORLD_HEIGHT) return;
     const c = this.getChunk(toChunkCoord(x), toChunkCoord(z));
     if (c === null) return;
+    const lx = toLocalCoord(x);
+    const lz = toLocalCoord(z);
     const sy = y >> 4;
     const section = c.sections[sy];
-    // 只有真要写非零光照时才为空气段分配子区块
     if (section == null) {
-      if (level === 0) return;
-      c.getOrCreateSection(sy).setSkyLight(toLocalCoord(x), y & 15, toLocalCoord(z), level);
+      // 和隐含值一致就什么都不做 —— 地表之上整片的满天光正是靠这一条
+      // 免掉了每列三四个段的分配（见 Chunk.implicitSkyLight）
+      if (level === c.implicitSkyLight(lx, y, lz)) return;
+      c.createSectionWithSky(sy).setSkyLight(lx, y & 15, lz, level);
       return;
     }
-    section.setSkyLight(toLocalCoord(x), y & 15, toLocalCoord(z), level);
+    section.setSkyLight(lx, y & 15, lz, level);
   }
 
   setBlockLight(x: number, y: number, z: number, level: number): void {

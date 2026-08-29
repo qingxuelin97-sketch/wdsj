@@ -24,8 +24,9 @@ import { createBlockRegistry } from '../content/blocks.ts';
 import { extractPaddedNeighborhood } from '../core/world/chunk-codec.ts';
 import { Frustum } from '../core/math/frustum.ts';
 import { MessagePortTransport, PacketChannel } from '../core/net/transport.ts';
-import { S2C, C_Handshake, C_PlayerMove, C_SetViewDistance, PROTOCOL_VERSION } from '../core/net/packets.ts';
+import { S2C, C_Handshake, C_Command, C_PlayerMove, C_SetViewDistance, PROTOCOL_VERSION } from '../core/net/packets.ts';
 import { SECTION_SIZE, DEFAULT_RENDER_DISTANCE, TPS } from '../core/constants.ts';
+import { skyColor, sunBrightness } from '../core/world/day-night.ts';
 import { TILE_SIZE } from '../client/render/texgen.ts';
 
 const canvas = document.getElementById('gl') as HTMLCanvasElement | null;
@@ -86,7 +87,7 @@ camera.far = renderDistance * SECTION_SIZE * 1.8;
 const input = new Input(canvas);
 const shader = new Shader(gl, BLOCK_VERT_SRC, BLOCK_FRAG_SRC, 'block');
 const tintColors = tintColorArray();
-const world = new ClientWorld();
+const world = new ClientWorld(tables);
 
 // ---------------------------------------------------------------------------
 // 服务端：跑在自己的 Worker 里
@@ -110,6 +111,27 @@ serverWorker.postMessage({ kind: 'start', seed, port: channel.port2 }, [channel.
 const net = new PacketChannel(new MessagePortTransport(channel.port1), S2C);
 let spawned = false;
 let serverTick = 0;
+/** 未回执的指令，按 requestId 索引 */
+const commandWaiters = new Map<number, (r: { ok: boolean; text: string }) => void>();
+let nextCommandId = 1;
+
+/** 发一条指令给服务端，等回执。超时会 reject，避免测试永远挂着 */
+function sendCommand(text: string): Promise<{ ok: boolean; text: string }> {
+  const requestId = nextCommandId++;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      commandWaiters.delete(requestId);
+      reject(new Error(`指令超时: ${text}`));
+    }, 8000);
+    commandWaiters.set(requestId, (r) => {
+      clearTimeout(timer);
+      resolve(r);
+    });
+    net.send(C_Command, { requestId, text });
+  });
+}
+/** 服务端权威的当日时间，0..23999。渲染只读它，绝不自己推进 */
+let timeOfDay = 0;
 /** 服务端最近一次上报的状态。主线程读不到 worker 内部，只能靠它 */
 const serverStats = { tick: 0, pendingChunks: 0, loadedChunks: 0, tickMs: 0 };
 
@@ -139,7 +161,17 @@ net.onPacket((name, value) => {
       return;
     case 'S_TimeUpdate':
       serverTick = Number(value['worldAge'] as bigint);
+      timeOfDay = Number(value['timeOfDay'] as bigint);
       return;
+    case 'S_CommandResult': {
+      const id = value['requestId'] as number;
+      const pending = commandWaiters.get(id);
+      if (pending !== undefined) {
+        commandWaiters.delete(id);
+        pending({ ok: value['ok'] as boolean, text: value['text'] as string });
+      }
+      return;
+    }
     case 'S_ServerStats':
       serverStats.tick = value['tick'] as number;
       serverStats.pendingChunks = value['pendingChunks'] as number;
@@ -183,7 +215,6 @@ const meshPool = new MeshWorkerPool(mesherTables, {
 });
 console.log(`[mesh] ${meshPool.workerCount} 个网格 worker`);
 
-const SKY = { r: 0.62, g: 0.76, b: 0.98 };
 let sizeLocked = false;
 let meshedTotal = 0;
 let moveSeq = 0;
@@ -257,7 +288,9 @@ function renderOnce(): void {
   gl.enable(gl.CULL_FACE);
   gl.cullFace(gl.BACK);
   gl.frontFace(gl.CCW);
-  gl.clearColor(SKY.r, SKY.g, SKY.b, 1);
+  // 天空色随昼夜变化，雾色跟着天空走 —— 远处的地形才不会在夜里浮出一层白边
+  const sky = skyColor(timeOfDay);
+  gl.clearColor(sky.r, sky.g, sky.b, 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
   camera.update(w / Math.max(1, h));
@@ -265,8 +298,8 @@ function renderOnce(): void {
 
   shader.use();
   shader.setMat4('uViewProj', camera.viewProjection);
-  shader.setFloat('uSkyBrightness', 1);
-  shader.setVec3('uFogColor', SKY.r, SKY.g, SKY.b);
+  shader.setFloat('uSunBrightness', sunBrightness(timeOfDay));
+  shader.setVec3('uFogColor', sky.r, sky.g, sky.b);
   shader.setVec3('uCameraPos', camera.position[0]!, camera.position[1]!, camera.position[2]!);
   shader.setFloat('uFogStart', renderDistance * SECTION_SIZE * 0.65);
   shader.setFloat('uFogEnd', renderDistance * SECTION_SIZE * 1.05);
@@ -292,6 +325,14 @@ installTestHook({
     serverPending: serverStats.pendingChunks,
   }),
   pumpWorld,
+  command: sendCommand,
+  timeOfDay: () => timeOfDay,
+  remeshCount: () => world.remeshCount,
+  mirrorInfo: (x: number, y: number, z: number) => ({
+    light: `${world.store.getSkyLight(x, y, z)}/${world.store.getBlockLight(x, y, z)}`,
+    height: world.store.getHeight(x, z),
+    loaded: world.store.isLoaded(x, z),
+  }),
   debugWorld: () => world,
 });
 

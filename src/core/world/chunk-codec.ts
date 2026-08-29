@@ -122,6 +122,8 @@ export function decodeChunk(cx: number, cz: number, data: Uint8Array): Chunk {
   const chunk = new Chunk(cx, cz);
   const mask = r.u16();
   chunk.heightmap.set(r.bytes(AREA));
+  // 解码出来的区块光照就是服务端算好的最终值
+  chunk.lightReady = true;
   chunk.biomes.set(r.bytes(AREA));
 
   for (let sy = 0; sy < SECTIONS_PER_COLUMN; sy++) {

@@ -11,6 +11,10 @@
 import { ChunkStore } from '../../core/world/block-view.ts';
 import { decodeChunk } from '../../core/world/chunk-codec.ts';
 import { chunkKey, stateId } from '../../core/world/chunk.ts';
+import {
+  LightEngine, unpackLightX, unpackLightY, unpackLightZ,
+} from '../../core/light/light-engine.ts';
+import type { BlockTables } from '../../core/registry/block-tables.ts';
 import { SECTIONS_PER_COLUMN, SECTION_SIZE, WORLD_HEIGHT } from '../../core/constants.ts';
 
 /** 子区块 key：((cx,cz) 的复合 key) * 8 + cy */
@@ -26,6 +30,14 @@ export interface SectionCoord {
 
 export class ClientWorld {
   readonly store = new ChunkStore();
+  /**
+   * 镜像自己的光照引擎。
+   *
+   * 服务端不会为一次方块变更下发光照数据 —— 那要么发一整块（几十 KB），
+   * 要么发一堆散格。客户端拿同一份 core 算法在自己的副本上重算一遍即可：
+   * 世界状态相同、算法相同，结果就相同。这正是把光照放进 core 的目的。
+   */
+  private readonly light: LightEngine;
   /** 需要重新网格化的子区块 */
   private readonly dirty = new Set<number>();
   /** 网格版本号，每次脏化递增，用于丢弃过期的网格结果 */
@@ -36,6 +48,15 @@ export class ClientWorld {
   chunksReceived = 0;
   chunksUnloaded = 0;
   blockUpdates = 0;
+  /** 累计脏化过多少个子区块。改一格若让它涨很多，说明脏化范围失控了 */
+  remeshCount = 0;
+
+  constructor(tables: BlockTables) {
+    this.tables = tables;
+    this.light = new LightEngine(this.store, tables, true);
+  }
+
+  private readonly tables: BlockTables;
 
   get chunkCount(): number {
     return this.store.size;
@@ -55,9 +76,19 @@ export class ClientWorld {
     for (let sy = 0; sy < SECTIONS_PER_COLUMN; sy++) {
       if (chunk.sections[sy] != null) this.markDirty(cx, sy, cz);
     }
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-      if (!this.store.hasChunk(cx + dx, cz + dz)) continue;
-      for (let sy = 0; sy < SECTIONS_PER_COLUMN; sy++) this.markDirty(cx + dx, sy, cz + dz);
+    // 八个邻居都要重做，**斜角也算**。
+    //
+    // mesher 拿的是 18³ 的邻域快照，四个斜角格子也在里面 —— 它们参与
+    // 边界处的 AO 与光照插值。只重做上下左右的话，斜角邻居后到的那些段
+    // 会一直保留"斜角还不存在"时算出来的网格，而且再也不会被重做：
+    // 表现是区块角上有一道对不齐的明暗，且**取决于区块到达顺序** ——
+    // 同一个种子跑两遍，收敛后的画面可以差几千个面。
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dz === 0) continue;
+        if (!this.store.hasChunk(cx + dx, cz + dz)) continue;
+        for (let sy = 0; sy < SECTIONS_PER_COLUMN; sy++) this.markDirty(cx + dx, sy, cz + dz);
+      }
     }
   }
 
@@ -75,9 +106,25 @@ export class ClientWorld {
 
   /** 处理 S_BlockUpdate */
   onBlockUpdate(x: number, y: number, z: number, state: number): void {
+    const before = this.store.getState(x, y, z);
+    if (before === state) return;
     if (!this.store.setState(x, y, z, state)) return;
     this.blockUpdates++;
     this.markDirtyAround(x, y, z);
+
+    // 光照增量重算。查表必须用**变更前**的 id —— 方块已经写进去了。
+    const oldId = stateId(before);
+    const oldEmission = oldId === 0 ? 0 : (this.tables.lightEmission[oldId] ?? 0);
+    const oldOpacity = oldId === 0 ? 0 : (this.tables.opacity[oldId] ?? 15);
+    const newId = stateId(state);
+    const newEmission = newId === 0 ? 0 : (this.tables.lightEmission[newId] ?? 0);
+    this.light.onBlockChanged(x, y, z, oldEmission, newEmission, oldOpacity);
+
+    // 光变了的格子所在的段都要重做网格。挖一格火把周围会亮/暗一大片，
+    // 只重做变更点那一段的话，边上几段会留着旧亮度，接缝非常明显。
+    for (const pos of this.light.drainTouched()) {
+      this.markDirtyAround(unpackLightX(pos), unpackLightY(pos), unpackLightZ(pos));
+    }
   }
 
   /**
@@ -105,6 +152,7 @@ export class ClientWorld {
     if (cy < 0 || cy >= SECTIONS_PER_COLUMN) return;
     if (!this.store.hasChunk(cx, cz)) return;
     const key = sectionKeyOf(cx, cy, cz);
+    if (!this.dirty.has(key)) this.remeshCount++;
     this.dirty.add(key);
     this.revs.set(key, ++this.revCounter);
   }

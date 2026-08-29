@@ -12,7 +12,7 @@
  * 刻意不做 nibble 打包，也不做内存内调色板压缩 —— 省下的内存用不上，
  * 换来热路径（mesher、光照、碰撞）无位移掩码的直接下标访问。见 docs/DEVIATIONS.md。
  */
-import { SECTION_SIZE, SECTIONS_PER_COLUMN, WORLD_HEIGHT, CHUNK_SIZE } from '../constants.ts';
+import { SECTION_SIZE, SECTIONS_PER_COLUMN, WORLD_HEIGHT, CHUNK_SIZE, MAX_LIGHT } from '../constants.ts';
 
 export const SECTION_VOLUME = SECTION_SIZE * SECTION_SIZE * SECTION_SIZE;
 
@@ -184,13 +184,11 @@ export class Chunk {
     return this.sections[sy]!;
   }
 
-  /** 取子区块，不存在就建一个 */
+  /** 取子区块，不存在就建一个（新段的天光按隐含值预置） */
   getOrCreateSection(sy: number): ChunkSection {
     const existing = this.sections[sy];
     if (existing != null) return existing;
-    const created = new ChunkSection();
-    this.sections[sy] = created;
-    return created;
+    return this.createSectionWithSky(sy);
   }
 
   /**
@@ -212,8 +210,9 @@ export class Chunk {
     if (section == null) {
       // 往空气段写空气：什么都不用做，别为此分配一个子区块
       if (state === AIR_STATE) return AIR_STATE;
-      section = new ChunkSection();
-      this.sections[sy] = section;
+      // 走 createSectionWithSky 而不是裸 new：新段是全零的，
+      // 直接用会把这一段里本该是满天光的几千格悄悄抹成 0。
+      section = this.createSectionWithSky(sy);
     }
     const old = section.set(x, y & 15, z, state);
     if (old !== state) {
@@ -223,13 +222,54 @@ export class Chunk {
     return old;
   }
 
+  /**
+   * 未分配的空气段里，天光是**隐含**的：地表之上一律满值，之下一律 0。
+   *
+   * 不这样做的话就得为每个空气段真的分配 12 KB 只为了存一片 15 ——
+   * 地表以上通常有 3~4 个这样的段，等于把每列的内存翻一倍还多；
+   * 而且这些段不会被编码进区块包，客户端解出来是 0，
+   * 于是同一个格子服务端读 15、客户端读 0，光照当场分叉。
+   *
+   * 只有当真实值和隐含值不同时（比如悬垂下方横向渗进来的光），
+   * setSkyLight 才会把这个段真正分配出来并落值 —— 见 ChunkStore.setSkyLight。
+   */
+  implicitSkyLight(x: number, y: number, z: number): number {
+    return y >= this.heightmap[columnIndex(x, z)]! ? MAX_LIGHT : 0;
+  }
+
   getSkyLight(x: number, y: number, z: number): number {
-    if (y < 0 || y >= WORLD_HEIGHT) return y >= WORLD_HEIGHT ? 15 : 0;
+    if (y < 0 || y >= WORLD_HEIGHT) return y >= WORLD_HEIGHT ? MAX_LIGHT : 0;
     const section = this.sections[y >> 4];
-    // 空气段没有分配时，光照取决于它在不在地表之上，这里保守返回 0，
-    // 由光照引擎在建段时填充。查询热路径请用 BlockView。
-    if (section == null) return 0;
+    if (section == null) return this.implicitSkyLight(x, y, z);
     return section.light[sectionIndex(x, y & 15, z)]! >> 4;
+  }
+
+  /**
+   * 分配一个子区块，并把它的天光预置成隐含值。
+   *
+   * 必须预置：新段是全零的，而它覆盖的格子里有一部分本来（按隐含规则）是满天光的。
+   * 不预置的话，"为了写一格而分配整段"会顺手把同段里其余几千格从 15 抹成 0。
+   */
+  createSectionWithSky(sy: number): ChunkSection {
+    const created = new ChunkSection();
+    this.sections[sy] = created;
+    // 世界生成期间 heightmap 还在一格一格长高，这时候按"隐含值"填是错的：
+    // 填完之后又有方块压上来，那些格子本该变暗却停在 15，而且填成什么样
+    // 取决于方块的写入顺序 —— 同一个种子每次生成的光照都不一样，
+    // 截图哈希随之飘。所以只有光照已经建立起来（lightReady）之后才填。
+    if (!this.lightReady) return created;
+    const baseY = sy << 4;
+    for (let z = 0; z < CHUNK_SIZE; z++) {
+      for (let x = 0; x < CHUNK_SIZE; x++) {
+        const h = this.heightmap[columnIndex(x, z)]!;
+        // 该列在这一段里从哪一格开始见天
+        const from = Math.max(0, h - baseY);
+        for (let ly = from; ly < CHUNK_SIZE; ly++) {
+          created.light[sectionIndex(x, ly, z)] = MAX_LIGHT << 4;
+        }
+      }
+    }
+    return created;
   }
 
   getBlockLight(x: number, y: number, z: number): number {
@@ -260,6 +300,15 @@ export class Chunk {
     while (scan >= 0 && this.getState(x, scan, z) === AIR_STATE) scan--;
     this.heightmap[ci] = scan + 1;
   }
+
+  /**
+   * 该区块的光照是否已经建立。
+   *
+   * 生成期间为 false（此时新分配的子区块天光留空），
+   * seedSky 一开始就把它置为 true，此后任何新分配的段都按隐含值预置。
+   * 客户端从 S_ChunkData 解出来的区块直接就是 true。
+   */
+  lightReady = false;
 
   /** 从头重算整张 heightmap，加载区块后调用一次 */
   recomputeHeightmap(): void {

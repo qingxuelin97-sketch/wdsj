@@ -1,6 +1,11 @@
 {
-  "overview": "b62477c2",
-  "ground": "e69aa97a",
-  "skyline": "d9f8a628",
-  "topdown": "5a688001"
+  "overview": "577cef5a",
+  "ground": "725f4883",
+  "skyline": "3902b53e",
+  "topdown": "0d19b171",
+  "day-0000": "cbab175e",
+  "day-6000": "29d76ed3",
+  "day-13000": "3422a1df",
+  "day-18000": "87f9b1dd",
+  "night-glowstone": "fcb9baf2"
 }

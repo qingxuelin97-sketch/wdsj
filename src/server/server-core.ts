@@ -23,7 +23,6 @@ import { AIR_STATE, packState, chunkKey } from '../core/world/chunk.ts';
 import { TPS } from '../core/constants.ts';
 
 /** 每多少 tick 扫描一次并卸载无人问津的区块 */
-const UNLOAD_INTERVAL = 100;
 
 export interface ServerOptions {
   seed: bigint | number;
@@ -158,8 +157,17 @@ export class ServerCore {
       }
     }
 
-    // 定期卸载没人看的区块
-    if (this.tickCount % UNLOAD_INTERVAL === 0) this.unloadDistantChunks();
+    // 卸载没人看的区块。
+    //
+    // 每 tick 都做，不做成"每 100 tick 一次"。原因不是性能而是**确定性**：
+    // 周期性任务会让世界在某个 tick 突然少掉一批区块，而截图恰好落在
+    // 那一下的前面还是后面，取决于机器快慢 —— 同一份代码截出来的画面
+    // 时而多两个区块时而少两个。实测就是这么在 skyline 上飘的：
+    // 连拍六张，第五张开始哈希变了。
+    //
+    // 保留范围本来就取视距 +2，有滞回，每 tick 扫不会造成反复卸载重建；
+    // 代价是几百次距离比较，相对生成一个区块的 11.6 ms 可以忽略。
+    this.unloadDistantChunks();
 
     // 每 tick 一次 flush：一个 tick 内产生的所有包合成一条消息发出
     for (const player of this.players.values()) player.channel.flush();
@@ -336,11 +344,40 @@ export class ServerCore {
         case 'time': {
           const [, sub, val] = parts;
           if (sub === 'set') {
-            this.world.timeOfDay = Number(val) % 24000;
-            reply(true, String(this.world.timeOfDay));
-          } else {
-            reply(true, String(this.world.timeOfDay));
+            this.world.timeOfDay = ((Number(val) % 24000) + 24000) % 24000;
+          } else if (sub === 'hold') {
+            this.world.daylightCycle = val !== '1' && val !== 'true';
           }
+          // 立刻回传一次，不等下一个同步周期 —— 自动化就是靠这个知道设定生效了
+          for (const p of this.players.values()) {
+            p.channel.send(S_TimeUpdate, {
+              worldAge: BigInt(this.world.worldAge),
+              timeOfDay: BigInt(this.world.timeOfDay),
+            });
+          }
+          reply(true, String(this.world.timeOfDay));
+          return;
+        }
+        case 'light': {
+          const [, sx, sy, sz] = parts;
+          const x = Number(sx), y = Number(sy), z = Number(sz);
+          reply(true, `${this.world.store.getSkyLight(x, y, z)}/${this.world.store.getBlockLight(x, y, z)}`);
+          return;
+        }
+        case 'settled': {
+          // 自动化用：一次**同步**的服务端状态查询。
+          //
+          // 不能用 S_ServerStats 代替 —— 那是每隔若干 tick 才发一次的，
+          // 相机刚移动完时客户端手里还是移动**之前**的那份统计，
+          // 会读到"没有待推送区块"而误判世界已就绪，然后在截图中途
+          // 才把新区块补上。指令走的是包队列，服务端处理它时
+          // 必定已经处理完了之前的移动包，所以结果一定是新鲜的。
+          reply(true, `${player.pendingCount} ${player.subscribedCount} ${this.world.loadedCount}`);
+          return;
+        }
+        case 'height': {
+          const [, sx, sz] = parts;
+          reply(true, String(this.world.store.getHeight(Number(sx), Number(sz))));
           return;
         }
         case 'stats':

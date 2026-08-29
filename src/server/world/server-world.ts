@@ -7,10 +7,10 @@
 import { ChunkStore } from '../../core/world/block-view.ts';
 import { Chunk, chunkKey, keyToCx, keyToCz, packState, AIR_STATE, stateId } from '../../core/world/chunk.ts';
 import { OverworldGenerator } from './gen/overworld-gen.ts';
-import { computeSkyLight } from './sky-light.ts';
+import { LightEngine, LightChannel } from '../../core/light/light-engine.ts';
 import type { BlockRegistry } from '../../core/registry/block-registry.ts';
 import type { BlockTables } from '../../core/registry/block-tables.ts';
-import { WORLD_HEIGHT, DAY_LENGTH_TICKS } from '../../core/constants.ts';
+import { WORLD_HEIGHT, DAY_LENGTH_TICKS, CHUNK_SIZE, SECTIONS_PER_COLUMN } from '../../core/constants.ts';
 
 /** 一次方块变更，供广播使用 */
 export interface BlockChange {
@@ -30,11 +30,23 @@ export class ServerWorld {
   worldAge = 0;
   /** 一天内的时间，0..23999 */
   timeOfDay = 0;
+  /**
+   * 昼夜是否推进（对应 MC 的 doDaylightCycle 游戏规则）。
+   * 截图回归必须能把时间钉死 —— 否则"设成正午"之后世界还在往前走，
+   * 截到第几 tick 取决于机器快慢，哈希每次都不一样。
+   */
+  daylightCycle = true;
 
   /** 本 tick 内累积的方块变更，tick 末尾统一广播后清空 */
   private readonly pendingChanges: BlockChange[] = [];
-  /** 天光需要重算的区块。M4 会换成局部增量，现在是整块重算 */
-  private readonly lightDirty = new Set<number>();
+  /**
+   * 刚生成、还没播过光照的区块。
+   *
+   * 只有**新加载**的区块要走这条全量播种路径；方块变更走增量，
+   * 在 setBlock 里当场算完，不进这个集合。
+   */
+  private readonly lightPending = new Set<number>();
+  readonly light: LightEngine;
 
   /**
    * 本 tick 还能生成几个新区块。
@@ -66,6 +78,8 @@ export class ServerWorld {
     this.seed = seed;
     this.tables = registry.getTables();
     this.generator = new OverworldGenerator(seed, registry);
+    // 服务端按区块快照下发光照，不需要 touched 追踪
+    this.light = new LightEngine(this.store, this.tables, false);
   }
 
   /** 确保某个区块已加载，必要时生成它。配额用尽时返回 null */
@@ -76,7 +90,7 @@ export class ServerWorld {
     this.generationBudget--;
     const chunk = this.generator.generate(cx, cz);
     this.store.addChunk(chunk);
-    this.lightDirty.add(chunkKey(cx, cz));
+    this.lightPending.add(chunkKey(cx, cz));
     return chunk;
   }
 
@@ -86,7 +100,7 @@ export class ServerWorld {
     if (existing !== null) return existing;
     const chunk = this.generator.generate(cx, cz);
     this.store.addChunk(chunk);
-    this.lightDirty.add(chunkKey(cx, cz));
+    this.lightPending.add(chunkKey(cx, cz));
     return chunk;
   }
 
@@ -101,7 +115,7 @@ export class ServerWorld {
 
   unloadChunk(cx: number, cz: number): void {
     this.store.removeChunk(cx, cz);
-    this.lightDirty.delete(chunkKey(cx, cz));
+    this.lightPending.delete(chunkKey(cx, cz));
   }
 
   get loadedCount(): number {
@@ -122,12 +136,17 @@ export class ServerWorld {
     if (!this.store.setState(x, y, z, state)) return false;
 
     this.pendingChanges.push({ x, y, z, state });
-    // 改动会影响光照 —— 标记本区块与相邻区块（光会横向渗过边界）
-    for (let dz = -1; dz <= 1; dz++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        if (this.store.hasChunk(cx + dx, cz + dz)) this.lightDirty.add(chunkKey(cx + dx, cz + dz));
-      }
-    }
+
+    // 光照就地增量更新。
+    //
+    // 这里**必须**用变更前的 id 去查表：方块已经写进世界了，
+    // 再查一次拿到的是新值，移除传播就会以为"本来就没光"而什么都不做。
+    const oldId = stateId(before);
+    const oldEmission = oldId === 0 ? 0 : (this.tables.lightEmission[oldId] ?? 0);
+    const oldOpacity = oldId === 0 ? 0 : (this.tables.opacity[oldId] ?? 15);
+    const newId = stateId(state);
+    const newEmission = newId === 0 ? 0 : (this.tables.lightEmission[newId] ?? 0);
+    this.light.onBlockChanged(x, y, z, oldEmission, newEmission, oldOpacity);
     return true;
   }
 
@@ -142,29 +161,52 @@ export class ServerWorld {
   }
 
   /**
-   * 重算脏区块的天光。
+   * 给新加载的区块播种光照。
    *
-   * 只处理被标记为脏的区块，绝不全量重算 —— 全量的代价是"已加载区块数 × 32768 格"，
-   * 渲染距离 6 时每 tick 就是 370 万格，主线程会被直接卡死。
+   * 方块变更不走这里 —— 它在 setBlock 里已经增量算完了。这里只处理
+   * "一个此前不存在的区块出现了"，那确实需要把它的天光柱和发光方块从头播一遍。
    *
-   * M4 会把它换成以变更点为中心、半径 15 格的局部增量，届时连"整块重算"都不必。
+   * 播种只会让世界**变亮**（新区块的光向外渗），所以不需要移除传播；
+   * 而邻居原本按"这一侧不存在"算出的光会被新来的光覆盖掉，自动收敛。
    */
   updateLighting(): void {
-    if (this.lightDirty.size === 0) return;
-    const chunks: Chunk[] = [];
-    for (const key of this.lightDirty) {
-      const chunk = this.store.getChunk(keyToCx(key), keyToCz(key));
-      if (chunk !== null) chunks.push(chunk);
+    if (this.lightPending.size === 0) return;
+    for (const key of this.lightPending) {
+      const cx = keyToCx(key);
+      const cz = keyToCz(key);
+      if (!this.store.hasChunk(cx, cz)) continue;
+      const chunk = this.store.getChunk(cx, cz)!;
+      const x0 = cx * CHUNK_SIZE;
+      const z0 = cz * CHUNK_SIZE;
+      // 最高的已分配子区块之上什么都没存，天光按隐含值读就是对的，
+      // 不必逐格写一遍 —— 128 层里通常有一半是空的
+      let topSection = -1;
+      for (let sy = SECTIONS_PER_COLUMN - 1; sy >= 0; sy--) {
+        if (chunk.sections[sy] != null) { topSection = sy; break; }
+      }
+      const topY = (topSection + 1) * CHUNK_SIZE;
+      this.light.seedSky(x0, z0, x0 + CHUNK_SIZE - 1, z0 + CHUNK_SIZE - 1, topY, true);
+      this.light.seedBlockLight(
+        x0, 0, z0, x0 + CHUNK_SIZE - 1, Math.max(0, topY - 1), z0 + CHUNK_SIZE - 1, true,
+      );
     }
-    this.lightDirty.clear();
-    if (chunks.length === 0) return;
-    computeSkyLight(this.store, this.tables.opacity, chunks);
+    this.lightPending.clear();
+
+    // 全部播完再统一扩散一次。一个 tick 里到货的新区块常常是连成一片的，
+    // 逐块扩散会让相邻区块反复互相灌光 —— 同一批格子走好几遍 BFS。
+    this.light.propagate(LightChannel.SKY);
+    this.light.propagate(LightChannel.BLOCK);
+  }
+
+  /** 还有多少区块在等待播种光照 */
+  get lightPendingCount(): number {
+    return this.lightPending.size;
   }
 
   /** 推进世界时间 */
   advanceTime(): void {
     this.worldAge++;
-    this.timeOfDay = (this.timeOfDay + 1) % DAY_LENGTH_TICKS;
+    if (this.daylightCycle) this.timeOfDay = (this.timeOfDay + 1) % DAY_LENGTH_TICKS;
   }
 
   /** 找一个可站立的地面高度，用于放置玩家 */

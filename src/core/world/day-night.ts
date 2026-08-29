@@ -1,0 +1,86 @@
+/**
+ * 昼夜循环。
+ *
+ * 全部复刻 MC 1.0 的原式，而不是"随便找个正弦凑一下"。
+ * 差别不是审美问题：`skyLightSubtracted` 决定了夜里露天的光照等级是多少，
+ * 而怪物生成的判据是"方块光 ≤ 7"。这个数值错了，整个夜晚的恐惧循环就错了 ——
+ * 要么怪满地跑，要么一只都不刷。
+ *
+ * 一天 24000 tick：0 = 日出，6000 = 正午，12000 = 日落，18000 = 午夜。
+ */
+import { DAY_LENGTH_TICKS } from '../constants.ts';
+
+/**
+ * 天体角度，0..1。
+ *
+ * MC 的原式：先把时间平移 1/4 天（因为 0 tick 是日出不是午夜），
+ * 再用余弦做一次缓动，最后和线性值按 1:2 混合。
+ * 那个 `/3` 的混合是 MC 太阳"中午走得快、地平线附近走得慢"的来源。
+ */
+export function celestialAngle(timeOfDay: number, partialTick = 0): number {
+  let f = ((timeOfDay % DAY_LENGTH_TICKS) + partialTick) / DAY_LENGTH_TICKS - 0.25;
+  if (f < 0) f += 1;
+  if (f > 1) f -= 1;
+  const linear = f;
+  const eased = 1 - (Math.cos(f * Math.PI) + 1) / 2;
+  return linear + (eased - linear) / 3;
+}
+
+/**
+ * 天光要减去多少级，0（正午）..11（午夜）。整数。
+ *
+ * 实际光照 = 存储的天光等级 - 这个值。所以午夜露天是 15-11 = 4 级 ——
+ * 正好在"怪物能生成"的 ≤7 之内，这就是夜里地面会刷怪、而白天不会的原因。
+ */
+export function skyLightSubtracted(timeOfDay: number, rain = 0, thunder = 0): number {
+  const angle = celestialAngle(timeOfDay);
+  let f = 1 - (Math.cos(angle * Math.PI * 2) * 2 + 0.5);
+  f = Math.min(1, Math.max(0, f));
+  f = 1 - f;
+  f *= 1 - (rain * 5) / 16;
+  f *= 1 - (thunder * 5) / 16;
+  return Math.floor((1 - f) * 11);
+}
+
+/** 太阳整体亮度，0.2（夜）..1.0（昼）。用于缩放天光的颜色贡献 */
+export function sunBrightness(timeOfDay: number, rain = 0, thunder = 0): number {
+  const angle = celestialAngle(timeOfDay);
+  let f = 1 - (Math.cos(angle * Math.PI * 2) * 2 + 0.5);
+  f = Math.min(1, Math.max(0, f));
+  f = 1 - f;
+  f *= 1 - (rain * 5) / 16;
+  f *= 1 - (thunder * 5) / 16;
+  return f * 0.8 + 0.2;
+}
+
+/**
+ * MC 的光照亮度曲线：等级 0..15 映射到 0..1，但**不是线性的**。
+ *
+ *   brightness(l) = (1-f) / (3f+1)，其中 f = 1 - l/15
+ *
+ * 曲线在低等级处压得很扁（7 级只有 0.18），高等级处才快速抬起来。
+ * 这正是 MC 里"光照 7 和 8 看着差别不大，但 13 到 15 差很多"的原因，
+ * 也是洞穴里一支火把只能照亮很小一圈的观感来源。
+ */
+export function lightBrightness(level: number): number {
+  const f = 1 - Math.max(0, Math.min(15, level)) / 15;
+  return (1 - f) / (f * 3 + 1);
+}
+
+/** 天空颜色，随昼夜在白昼蓝与夜空深蓝之间过渡 */
+export function skyColor(timeOfDay: number): { r: number; g: number; b: number } {
+  const angle = celestialAngle(timeOfDay);
+  // MC 用 cos(angle*2π)*2+0.5 夹到 0..1 当作"白昼程度"
+  const day = Math.min(1, Math.max(0, Math.cos(angle * Math.PI * 2) * 2 + 0.5));
+  // 日出日落时天空偏暖，用 day 在 0.35 附近的窗口取一个权重
+  const dusk = Math.max(0, 1 - Math.abs(day - 0.35) / 0.35);
+  const r = (0.11 + 0.42 * day) * (1 - dusk) + 0.72 * dusk;
+  const g = (0.13 + 0.53 * day) * (1 - dusk) + 0.42 * dusk;
+  const b = (0.26 + 0.63 * day) * (1 - dusk) + 0.32 * dusk;
+  return { r, g, b };
+}
+
+/** 太阳在天空中的方位角（弧度），供后续画日月用 */
+export function sunAngleRadians(timeOfDay: number): number {
+  return celestialAngle(timeOfDay) * Math.PI * 2;
+}

@@ -93,8 +93,14 @@ layout(location = 0) in uvec3 aData;
 
 uniform mat4 uViewProj;
 uniform vec3 uSectionOrigin;
-/** 天光的整体强度，随昼夜变化；夜间不为 0（MC 夜里天光贡献约 4/15） */
-uniform float uSkyBrightness;
+/**
+ * 太阳整体亮度，0.2（午夜）..1.0（正午），由 core/world/day-night.ts 算出。
+ *
+ * 注意渲染用的是**存储的原始天光等级**，昼夜靠这个系数缩放，
+ * 而不是去减 skyLightSubtracted —— 那个是**玩法**用的（决定怪能不能刷），
+ * 两者在 MC 里是分开的。混用的话夜里会黑得什么都看不见。
+ */
+uniform float uSunBrightness;
 /**
  * 群系染色表，按 TintKind 索引：NONE / GRASS / FOLIAGE / WATER。
  * 草和树叶的贴图本身画成灰度，颜色全靠这里乘上去 —— 与 MC 的做法一致，
@@ -104,9 +110,18 @@ uniform vec3 uTintColors[4];
 
 out vec2 vUv;
 flat out uint vLayer;
-out float vShade;
+out vec3 vLight;
 out vec3 vTint;
 out vec3 vWorldPos;
+
+/**
+ * MC 的光照亮度曲线，和 core/world/day-night.ts 里的 lightBrightness 同式。
+ * 非线性是关键：7 级只有 0.18，所以一支火把只能照亮很小一圈。
+ */
+float lightBrightness(float level) {
+  float f = 1.0 - clamp(level, 0.0, 15.0) / 15.0;
+  return (1.0 - f) / (f * 3.0 + 1.0);
+}
 
 /**
  * 各朝向的固定明暗，复刻 MC 的"方向光照"观感：
@@ -142,11 +157,27 @@ void main() {
   uint  tint  = (d2 >> 11) & 7u;
   vTint = uTintColors[min(tint, 3u)];
 
-  // 最终光照 = max(方块光, 天光 * 昼夜系数)，再乘朝向明暗与 AO
-  float light = max(block, sky * uSkyBrightness) * (1.0 / 15.0);
+  // 两条通道各自过亮度曲线后**相加**（不是取 max），再夹到 1。
+  //
+  //   天光：整体乘太阳亮度；红绿再乘 (sun*0.65+0.35) 而蓝不乘，
+  //         于是太阳一落山天光自动偏蓝 —— MC 的月光色就是这么来的。
+  //   方块光：先放大 1.5 倍（MC 的火把闪烁基数），再按 0.6/0.4 曲线压绿压蓝，
+  //         得到偏暖的橙色。
+  //
+  // 这个色差是"洞口冷、火把边暖"的来源。取 max 或者不分通道染色的话，
+  // 两者会混成同一种灰，画面立刻塑料感。
+  float sl = lightBrightness(sky) * uSunBrightness;
+  float sunTint = uSunBrightness * 0.65 + 0.35;
+  vec3 skyCol = vec3(sl * sunTint, sl * sunTint, sl);
+
+  float bl = lightBrightness(block) * 1.5;
+  vec3 blockCol = vec3(bl, bl * (bl * 0.6 + 0.4), bl * (bl * bl * 0.6 + 0.4));
+
+  vec3 lightCol = min(vec3(1.0), skyCol + blockCol) * 0.96 + 0.03;
+
   // AO 0..3 映射到 0.55..1.0
   float aoFactor = 0.55 + ao * 0.15;
-  vShade = clamp(light, 0.06, 1.0) * faceShade(face) * aoFactor;
+  vLight = lightCol * faceShade(face) * aoFactor;
 
   vec3 world = uSectionOrigin + localPos;
   vWorldPos = world;
@@ -161,7 +192,7 @@ precision highp sampler2DArray;
 
 in vec2 vUv;
 flat in uint vLayer;
-in float vShade;
+in vec3 vLight;
 in vec3 vTint;
 in vec3 vWorldPos;
 
@@ -178,7 +209,7 @@ void main() {
   // cutout：树叶这类贴图有透明像素，直接丢弃，避免写深度
   if (tex.a < 0.5) discard;
 
-  vec3 color = tex.rgb * vTint * vShade;
+  vec3 color = tex.rgb * vTint * vLight;
 
   float dist = distance(vWorldPos, uCameraPos);
   float fog = clamp((dist - uFogStart) / max(uFogEnd - uFogStart, 0.001), 0.0, 1.0);
