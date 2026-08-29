@@ -12,6 +12,7 @@
 import type { ToolKind, ToolTier, RenderLayer, TintKind, SoundGroup, ModelKind } from './types.ts';
 import type { BlockHooks } from './block-hooks.ts';
 import type { Aabb } from '../math/aabb.ts';
+import { FRICTION_DEFAULT } from '../constants.ts';
 
 /** 方块的六面贴图。给出单个名字表示六面相同 */
 export type BlockTextures =
@@ -54,6 +55,13 @@ export interface BlockDef {
   // --- 挖掘 ---
   /** 硬度。-1 表示不可破坏（基岩、末地传送门框架） */
   readonly hardness: number;
+  /**
+   * 表面滑度。普通方块 0.6，冰 0.98。
+   *
+   * 它同时决定加速度和减速度（见 core/physics/entity-physics.ts），
+   * 所以"冰上加速慢、停得也慢"是一个数推出来的，不是两处分别调的。
+   */
+  readonly slipperiness: number;
   /** 对口工具。null 表示任意工具都算对口 */
   readonly tool: ToolKind | null;
   /** 掉落所需的最低工具等级 */
@@ -112,7 +120,7 @@ export interface BlockDef {
 /** 构造 BlockDef 时的可选字段默认值 */
 export type BlockDefInput = Omit<
   BlockDef,
-  'blastResistance' | 'solid' | 'opaque' | 'opacity' | 'lightEmission' | 'replaceable' | 'flammability' | 'renderLayer' | 'tint' | 'soundGroup' | 'modelKind' | 'minTier' | 'tool' | 'hardness'
+  'blastResistance' | 'solid' | 'opaque' | 'opacity' | 'lightEmission' | 'replaceable' | 'flammability' | 'renderLayer' | 'tint' | 'soundGroup' | 'modelKind' | 'minTier' | 'tool' | 'hardness' | 'slipperiness'
 > &
   Partial<BlockDef>;
 
@@ -126,6 +134,7 @@ export function defineBlock(input: BlockDefInput): BlockDef {
     id: input.id,
     name: input.name,
     hardness: input.hardness ?? 1,
+    slipperiness: input.slipperiness ?? FRICTION_DEFAULT,
     tool: input.tool ?? null,
     minTier: input.minTier ?? 0,
     blastResistance: input.blastResistance ?? (input.hardness ?? 1) * 5,

@@ -20,6 +20,10 @@ export class BlockTables {
 
   // --- 挖掘 ---
   readonly hardness: Float32Array;
+  /** 表面滑度，物理用。普通 0.6，冰 0.98 */
+  readonly slipperiness: Float32Array;
+  /** 碰撞盒高度，1 = 整格。半砖之类由 M7 的模型系统填 */
+  readonly collisionHeight: Float32Array;
   readonly tool: Int8Array; // -1 表示任意工具
   readonly minTier: Uint8Array;
   readonly blastResistance: Float32Array;
@@ -64,6 +68,8 @@ export class BlockTables {
     const n = defs.length;
     this.count = n;
     this.hardness = new Float32Array(n);
+    this.slipperiness = new Float32Array(n);
+    this.collisionHeight = new Float32Array(n).fill(1);
     this.tool = new Int8Array(n).fill(-1);
     this.minTier = new Uint8Array(n);
     this.blastResistance = new Float32Array(n);
@@ -90,6 +96,7 @@ export class BlockTables {
       if (d == null) continue;
       this.defs[id] = d;
       this.hardness[id] = d.hardness;
+      this.slipperiness[id] = d.slipperiness;
       this.tool[id] = d.tool ?? -1;
       this.minTier[id] = d.minTier;
       this.blastResistance[id] = d.blastResistance;

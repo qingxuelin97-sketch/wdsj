@@ -7,6 +7,7 @@
  * M1 先落地基础方块，后续里程碑逐步补齐到 1.0 的约 110 种。
  * 需要行为的方块（熔炉、箱子、门、流体、红石…）在各自的里程碑里补 hooks。
  */
+import { FRICTION_ICE } from '../core/constants.ts';
 import { defineBlock } from '../core/block/block-def.ts';
 import type { BlockDef } from '../core/block/block-def.ts';
 import { BlockRegistry } from '../core/registry/block-registry.ts';
@@ -242,7 +243,7 @@ export function createBlockRegistry(): BlockRegistry {
 
   // --- 其它自然方块 ---
   r.register(
-    defineBlock({ id: 79, name: Blocks.ICE, hardness: 0.5, tool: ToolKind.PICKAXE, textures: 'ice', renderLayer: RenderLayer.TRANSLUCENT, opaque: false, opacity: 3, cullSameType: true, soundGroup: SoundGroup.GLASS, randomTick: true }),
+    defineBlock({ id: 79, name: Blocks.ICE, hardness: 0.5, slipperiness: FRICTION_ICE, tool: ToolKind.PICKAXE, textures: 'ice', renderLayer: RenderLayer.TRANSLUCENT, opaque: false, opacity: 3, cullSameType: true, soundGroup: SoundGroup.GLASS, randomTick: true }),
   );
   r.register(
     defineBlock({ id: 80, name: Blocks.SNOW_BLOCK, hardness: 0.2, tool: ToolKind.SHOVEL, textures: 'snow', soundGroup: SoundGroup.SNOW }),
