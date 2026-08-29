@@ -50,7 +50,7 @@ function groundBelow(server: ServerCore, px: number, py: number, pz: number): [n
   throw new Error('玩家脚下没有方块');
 }
 
-test('挖掉方块之后掉落物进背包', () => {
+test('挖掉方块之后掉落物先落地，再被走过去的玩家捡起来', () => {
   const { server, send, player } = makePair();
   const [x, y, z] = groundBelow(server, Math.floor(player.x), Math.floor(player.y), Math.floor(player.z));
   const id = stateId(server.world.getBlock(x, y, z));
@@ -62,6 +62,17 @@ test('挖掉方块之后掉落物进背包', () => {
   }
   assert.equal(server.world.getBlock(x, y, z), AIR_STATE, '应该挖穿了');
 
+  // M9 起掉落物是真实体：破坏的那一刻它在世界里，而不是已经在背包里。
+  // 这一条是整个里程碑的分界线 —— M8 的临时做法（直接进背包）到此为止
+  assert.equal(server.world.items.size, 1, '应该在世界里留下一个掉落物');
+  assert.equal(
+    player.inventory.slots.reduce((a, s) => a + s.count, 0), 0,
+    '拾取延迟还没走完，这时候背包该是空的',
+  );
+
+  // 拾取延迟 10 刻，再给它一点时间落地
+  for (let i = 0; i < 40; i++) server.tick();
+  assert.equal(server.world.items.size, 0, '掉落物应该被捡走了');
   const total = player.inventory.slots.reduce((a, s) => a + s.count, 0);
   assert.ok(total > 0, `背包里应该有东西，挖的是 ${registry.get(id)?.name}`);
 });
@@ -79,8 +90,8 @@ test('工具不对口时什么都不掉 —— 这是"必须先做镐"的动力�
     if (server.world.getBlock(sx, gy, gz) === AIR_STATE) break;
   }
   assert.equal(server.world.getBlock(sx, gy, gz), AIR_STATE, '徒手也挖得动石头，只是慢');
-  const stoneLike = player.inventory.slots.filter(
-    (s) => s.count > 0 && (s.id === registry.idOf(Blocks.STONE) || s.id === registry.idOf(Blocks.COBBLESTONE)),
+  const stoneLike = [...server.world.items.values()].filter(
+    (e) => e.stack.id === registry.idOf(Blocks.STONE) || e.stack.id === registry.idOf(Blocks.COBBLESTONE),
   );
   assert.equal(stoneLike.length, 0, '徒手挖石头不该掉任何东西');
 });
@@ -102,8 +113,10 @@ test('有镐的时候石头掉圆石，不是石头本身', () => {
     if (server.world.getBlock(sx, gy, gz) === AIR_STATE) break;
   }
   assert.equal(server.world.getBlock(sx, gy, gz), AIR_STATE);
-  const cobble = player.inventory.slots.find((s) => s.count > 0 && s.id === registry.idOf(Blocks.COBBLESTONE));
-  assert.ok(cobble !== undefined, '应该掉圆石');
+  // 石头在玩家两格外，掉落物得等玩家……不，玩家不动。直接查世界里那个实体
+  const dropped = [...server.world.items.values()];
+  assert.equal(dropped.length, 1, '应该掉出一个东西');
+  assert.equal(dropped[0]!.stack.id, registry.idOf(Blocks.COBBLESTONE), '应该掉圆石');
 });
 
 test('放置会从手上扣掉一个', () => {

@@ -12,6 +12,7 @@ import { PlayerInventory, type Window } from './player-inventory.ts';
 import { S_ChunkData, S_ChunkUnload } from '../../core/net/packets.ts';
 import type { ServerWorld } from '../world/server-world.ts';
 import { DEFAULT_RENDER_DISTANCE, SEA_LEVEL } from '../../core/constants.ts';
+import type { BlockEntity } from '../world/block-entity.ts';
 
 /** 每 tick 最多推送几个区块，避免一次性把带宽和生成预算打满 */
 const CHUNKS_PER_TICK = 8;
@@ -68,6 +69,18 @@ export class ServerPlayer {
 
   /** 已推送给该玩家的区块 */
   private readonly subscribed = new Set<number>();
+  /**
+   * 这个玩家已经收到过出生包的实体。
+   *
+   * 与订阅集一起构成同步的全部依据：在订阅区块里但不在这个集合里 = 该发出生包，
+   * 在这个集合里但不在订阅区块里 = 该发销毁包。见 entity/item-manager.ts。
+   */
+  readonly knownEntities = new Set<number>();
+  /**
+   * 当前窗口背后的方块实体（箱子/熔炉），没有则为 null。
+   * 熔炉进度要靠它判断"这个玩家是不是正看着这个熔炉"。
+   */
+  openBlockEntity: BlockEntity | null = null;
   /** 待推送队列，按距离排序 */
   private pending: number[] = [];
   /** 上次重算订阅时玩家所在的区块，用于判断是否跨块 */

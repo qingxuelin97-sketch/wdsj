@@ -116,6 +116,12 @@ export interface HostBridge {
   pixelAt(x: number, y: number): number[];
   /** 玩家身体状态，物理验收用 */
   playerState(): { x: number; y: number; z: number; onGround: boolean; mode: string };
+  /** 叫服务端立刻存盘，等回执。闸门测试③要用 */
+  saveWorld(): Promise<{ ok: boolean; chunks: number }>;
+  /** 把存档整个删掉 */
+  wipeSave(): Promise<{ ok: boolean; chunks: number }>;
+  /** 视野里有多少掉落物，以及它们的内容 */
+  itemEntities(): { id: number; x: number; y: number; z: number; item: number; count: number }[];
 }
 
 /** 收集未捕获错误、WebGL 错误、着色器错误，供 assertNoErrors 使用 */
@@ -198,6 +204,13 @@ export function installTestHook(host: HostBridge): void {
     },
 
     timeOfDay: (): number => host.timeOfDay(),
+    /** 立刻存盘。刷新页面前调它，就能验"退出重进世界还在" */
+    saveWorld: (): Promise<{ ok: boolean; chunks: number }> => host.saveWorld(),
+    /** 删掉存档，用于让下一次进入是干净的新世界 */
+    wipeSave: (): Promise<{ ok: boolean; chunks: number }> => host.wipeSave(),
+    /** 当前视野里的掉落物 */
+    itemEntities: (): { id: number; x: number; y: number; z: number; item: number; count: number }[] =>
+      host.itemEntities(),
     sharedStats: (): { beats: number; serverTicks: number; tickCentiMs: number } | null =>
       host.sharedStats(),
     remeshCount: (): number => host.remeshCount(),

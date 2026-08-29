@@ -12,6 +12,13 @@ import type { ChunkProvider } from './chunk-provider.ts';
 import type { BlockRegistry } from '../../core/registry/block-registry.ts';
 import type { BlockTables } from '../../core/registry/block-tables.ts';
 import { WORLD_HEIGHT, DAY_LENGTH_TICKS, CHUNK_SIZE, SECTIONS_PER_COLUMN } from '../../core/constants.ts';
+import { JavaRandom } from '../../core/rng/java-random.ts';
+import { BlockEntityStore } from './block-entity-store.ts';
+import { blockEntityKindFor, createBlockEntity, type BlockEntity } from './block-entity.ts';
+import { ScheduledTickQueue } from './scheduled-ticks.ts';
+import type { ItemEntity } from '../entity/item-entity.ts';
+import type { WorldSave } from '../save/world-save.ts';
+import { installChunkFromSave, saveChunkToSave } from './world-persistence.ts';
 
 /** 一次方块变更，供广播使用 */
 export interface BlockChange {
@@ -49,6 +56,44 @@ export class ServerWorld {
   private readonly lightPending = new Set<number>();
   readonly light: LightEngine;
   /**
+   * 世界的确定性随机源。
+   *
+   * 掉落物的散开方向、随机刻、怪物生成都走它，**不许有第二个** ——
+   * 一旦有代码偷偷用了 Math.random，同一个种子同一串操作就不再复现，
+   * 而整套截图回归都建立在"能复现"上。
+   */
+  readonly random: JavaRandom;
+  /** 箱子 / 熔炉 / 告示牌的额外状态 */
+  readonly blockEntities = new BlockEntityStore();
+  /** 计划刻队列（流体、红石、沙子下落都靠它） */
+  readonly scheduled = new ScheduledTickQueue();
+  /** 世界里的掉落物，按实体 id 索引 */
+  readonly items = new Map<number, ItemEntity>();
+  /**
+   * 存档。为 null 时世界纯在内存里跑（多数单元测试就是这样）。
+   *
+   * 挂上之后 ensureChunk 会**先查存档再生成** —— 顺序不能反：
+   * 反了的话玩家盖的房子会被新生成的地形覆盖掉，而且只在区块被卸载过
+   * 又走回去的时候发生，极难复现。
+   */
+  save: WorldSave | null = null;
+  /**
+   * 有多少次"存档还没打开就强行生成了区块"。
+   *
+   * 正常情况下**必须是 0**。不是 0 就意味着有区块的存档内容被新生成的地形
+   * 顶掉了，而那种丢失没有任何直接症状 —— 玩家只会发现房子不见了。
+   * 测试对它有断言。
+   */
+  forcedOverPendingSave = 0;
+  /**
+   * 分配实体 id。ServerCore 会把自己的分配器注进来，保证掉落物与玩家不撞号；
+   * 单独用 ServerWorld 的测试则走这个自带的计数器。
+   */
+  allocEntityId: () => number = (() => {
+    let n = 1;
+    return () => n++;
+  })();
+  /**
    * 异步区块来源。挂上之后 ensureChunk 不再当场生成，而是下单等收货。
    * 为空时（测试、node 服务器）走同线程生成。
    */
@@ -84,6 +129,7 @@ export class ServerWorld {
     this.seed = seed;
     this.tables = registry.getTables();
     this.generator = new OverworldGenerator(seed, registry);
+    this.random = new JavaRandom(seed);
     // 服务端按区块快照下发光照，不需要 touched 追踪
     this.light = new LightEngine(this.store, this.tables, false);
   }
@@ -104,6 +150,10 @@ export class ServerWorld {
       // 期间可能已经由 forceChunk 同步生成过了；重复收货直接丢弃，
       // 否则会把一个已经算好光照的区块换成一个没算过的
       if (this.store.hasChunk(chunk.cx, chunk.cz)) continue;
+      // 下单之后、收货之前，存档那边可能已经把同一个区块读出来了。
+      // 拿生成的盖掉存档的，等于把玩家盖的房子抹掉
+      if (this.save !== null && this.save.isRegionReady(chunk.cx, chunk.cz)
+        && installChunkFromSave(this, chunk.cx, chunk.cz) !== null) continue;
       this.store.addChunk(chunk);
       this.lightPending.add(chunkKey(chunk.cx, chunk.cz));
     }
@@ -119,6 +169,16 @@ export class ServerWorld {
   ensureChunk(cx: number, cz: number): Chunk | null {
     const existing = this.store.getChunk(cx, cz);
     if (existing !== null) return existing;
+    // 先查存档。region 还没读进内存时返回 null，下个 tick 再来 ——
+    // 绝不能直接往下走去生成，那会把玩家盖的东西盖掉
+    if (this.save !== null) {
+      if (!this.save.isRegionReady(cx, cz)) {
+        this.save.requestRegion(cx, cz);
+        return null;
+      }
+      const loaded = installChunkFromSave(this, cx, cz);
+      if (loaded !== null) return loaded;
+    }
     if (this.provider !== null) {
       this.provider.request(cx, cz);
       return null;
@@ -135,6 +195,21 @@ export class ServerWorld {
   forceChunk(cx: number, cz: number): Chunk {
     const existing = this.store.getChunk(cx, cz);
     if (existing !== null) return existing;
+    if (this.save !== null) {
+      if (this.save.isRegionReady(cx, cz)) {
+        const loaded = installChunkFromSave(this, cx, cz);
+        if (loaded !== null) return loaded;
+      } else {
+        // 存档还没打开就强行生成 —— 这会**永久覆盖**这个区块存过的内容，
+        // 因为等 region 到货时这里已经有一个区块了，installFromSave 再也走不到。
+        //
+        // 这是宿主的调用顺序错了（必须先 openSave 再放客户端进来，
+        // 见 save/save-controller.ts）。同步接口没法在这里等，
+        // 所以退而求其次：记下来，让它在统计里显形而不是悄悄丢数据
+        this.save.requestRegion(cx, cz);
+        this.forcedOverPendingSave++;
+      }
+    }
     const chunk = this.generator.generate(cx, cz);
     this.store.addChunk(chunk);
     this.lightPending.add(chunkKey(cx, cz));
@@ -150,9 +225,61 @@ export class ServerWorld {
     return this.store.hasChunk(cx, cz);
   }
 
+  /**
+   * 方块换了之后，方块实体要跟着建/拆。
+   *
+   * 熔炉点火时 id 从 61 变 62，两者是**同一种**方块实体 ——
+   * 这时候必须保住原来那个对象，否则每次点火熄火都会把里面的东西清空，
+   * 而且燃烧进度归零。
+   */
+  private updateBlockEntity(x: number, y: number, z: number, oldId: number, newId: number): void {
+    const oldKind = blockEntityKindFor(oldId);
+    const newKind = blockEntityKindFor(newId);
+    if (oldKind === newKind) return;
+    if (oldKind !== null) {
+      const removed = this.blockEntities.remove(x, y, z);
+      if (removed !== null) this.brokenBlockEntities.push(removed);
+    }
+    if (newKind !== null) this.blockEntities.set(createBlockEntity(newKind, x, y, z));
+  }
+
+  /**
+   * 本 tick 被拆掉的方块实体。
+   *
+   * 里面的东西要掉在地上，但 ServerWorld 不认识掉落物的生成规则
+   * （那要用到随机源与实体 id 分配），所以只把它们攒起来交给 ServerCore。
+   */
+  private readonly brokenBlockEntities: BlockEntity[] = [];
+
+  drainBrokenBlockEntities(): BlockEntity[] {
+    if (this.brokenBlockEntities.length === 0) return [];
+    return this.brokenBlockEntities.splice(0, this.brokenBlockEntities.length);
+  }
+
   unloadChunk(cx: number, cz: number): void {
+    // 先存再扔。少了这一步，走出视距再走回来，盖的东西全没了 ——
+    // 而且只在"走得够远"的时候发生，正好是最难注意到的那种
+    if (this.save !== null) saveChunkToSave(this, cx, cz);
     this.store.removeChunk(cx, cz);
     this.lightPending.delete(chunkKey(cx, cz));
+    this.blockEntities.dropChunk(cx, cz);
+    const x0 = cx * CHUNK_SIZE;
+    const z0 = cz * CHUNK_SIZE;
+    this.scheduled.removeIn(x0, z0, x0 + CHUNK_SIZE - 1, z0 + CHUNK_SIZE - 1);
+    for (const [id, item] of this.items) {
+      if ((Math.floor(item.x) >> 4) === cx && (Math.floor(item.z) >> 4) === cz) {
+        this.items.delete(id);
+        this.unloadedItems.push(id);
+      }
+    }
+  }
+
+  /** 因区块卸载而消失的掉落物，要通知客户端销毁 */
+  private readonly unloadedItems: number[] = [];
+
+  drainUnloadedItems(): number[] {
+    if (this.unloadedItems.length === 0) return [];
+    return this.unloadedItems.splice(0, this.unloadedItems.length);
   }
 
   get loadedCount(): number {
@@ -173,6 +300,7 @@ export class ServerWorld {
     if (!this.store.setState(x, y, z, state)) return false;
 
     this.pendingChanges.push({ x, y, z, state });
+    this.updateBlockEntity(x, y, z, stateId(before), stateId(state));
 
     // 光照就地增量更新。
     //

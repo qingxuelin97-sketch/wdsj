@@ -14,6 +14,7 @@ import { canHarvest, type HeldTool } from '../../core/block/breaking.ts';
 import { isEmpty, cloneStack, makeStack, type ItemStack } from '../../core/item/item-def.ts';
 import { Window, ARMOR_SLOTS, MAIN_SLOTS, HOTBAR_SLOTS } from './player-inventory.ts';
 import { S_WindowItems, S_OpenWindow, WindowKind } from '../../core/net/packets.ts';
+import { tossFromPlayer } from '../entity/item-manager.ts';
 
 /** [start, start+count) 的下标序列 */
 function range(start: number, count: number): number[] {
@@ -151,9 +152,8 @@ export function closeWindow(core: ServerCore, player: ServerPlayer): void {
   if (player.openWindow === null) return;
   const dropped = player.openWindow.close();
   player.openWindow = null;
-  for (const d of dropped) {
-    // 背包也满了，只能丢掉。M9 接上掉落物实体之后改成掉在地上
-    void d;
-  }
+  player.openBlockEntity = null;
+  // 合成格里没还回背包的东西掉在脚下
+  for (const d of dropped) tossFromPlayer(core, player, d);
   syncInventory(core, player);
 }

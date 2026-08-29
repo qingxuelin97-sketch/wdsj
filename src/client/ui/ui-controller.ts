@@ -8,7 +8,7 @@
  */
 import { UiRenderer, UI_WIDTH, UI_HEIGHT } from './ui-renderer.ts';
 import {
-  layoutFor, slotAt, drawWindow, drawHotbar, drawCrosshair,
+  layoutFor, slotAt, drawWindow, drawHotbar, drawCrosshair, drawFurnaceProgress,
   type SlotRect, type DrawContext,
 } from './inventory-screen.ts';
 import { WindowKind } from '../../core/net/packets.ts';
@@ -30,6 +30,8 @@ export class UiController {
   mouseY = UI_HEIGHT / 2;
   hovered = -1;
   selectedHotbar = 0;
+  /** 熔炉的火焰与箭头进度。只有熔炉窗口用得上 */
+  readonly progress = { burnTime: 0, burnTotal: 0, cookTime: 0 };
 
   get open(): boolean {
     return this.windowKind !== null;
@@ -55,6 +57,17 @@ export class UiController {
   onCloseWindow(): void {
     this.windowKind = null;
     this.layout = [];
+    this.progress.burnTime = 0;
+    this.progress.burnTotal = 0;
+    this.progress.cookTime = 0;
+  }
+
+  /** 熔炉的燃烧与熔炼进度 */
+  onWindowProgress(windowId: number, burnTime: number, burnTotal: number, cookTime: number): void {
+    if (windowId !== this.windowId) return;
+    this.progress.burnTime = burnTime;
+    this.progress.burnTotal = burnTotal;
+    this.progress.cookTime = cookTime;
   }
 
   /** 服务端发来的整份槽位内容 */
@@ -87,6 +100,9 @@ export class UiController {
         ui, this.windowKind!, this.layout, this.slots, this.cursorStack,
         this.hovered, ctx, this.mouseX, this.mouseY,
       );
+      if (this.windowKind === WindowKind.FURNACE) {
+        drawFurnaceProgress(ui, this.layout, this.progress);
+      }
     } else {
       drawCrosshair(ui);
     }

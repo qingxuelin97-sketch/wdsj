@@ -12,8 +12,12 @@ node tools/dev-server.mjs          # 开发服务器 -> http://localhost:8080
 node tools/ci.mjs                  # 全套门禁：类型检查 + 3 个 lint + 单测 + 无头冒烟
 node --test                        # 只跑单元测试
 node tools/smoke.mjs --head        # 有头模式跑冒烟测试，方便肉眼看
+node tools/persist-check.mjs       # 闸门③：真浏览器建结构 -> 存盘 -> 重开 -> 全还原
 UPDATE_GOLDEN=1 node tools/smoke.mjs   # 重新生成截图黄金哈希
 ```
+
+常用 URL 参数：`?seed=1234` 换种子，`?rd=8` 改视距，`?persist=0` 关掉存档
+（截图回归必须关，否则"同一个种子跑两次"读到的是上一次留下的世界）。
 
 开发期**没有构建步骤**：`dev-server.mjs` 用 Node 内置的 `module.stripTypeScriptTypes`
 现场剥离 TS 类型直接喂给浏览器。剥离是保留空白的，行列号与源码逐字符对齐，
@@ -56,5 +60,15 @@ docs/          设计、路线图、规约、评分表、有意偏差
 
 ## 当前进度
 
-M0 完成 —— 工具链、CI 门禁、无头截图回归、JavaRandom、数学库、噪声、
-以及用最终顶点格式和纹理数组渲染的第一帧。详见 ROADMAP。
+**M0–M9 完成**，CI 8 步全绿。详见 [ROADMAP](docs/ROADMAP.md) 的逐里程碑完成记录。
+
+| | |
+|---|---|
+| 世界 | 128 高、分块流式加载、6 个群系、洞穴与矿脉、双通道光照 + 昼夜 |
+| 内容 | 93 种方块、122 件物品、126 条合成 + 12 条熔炼 |
+| 玩法 | MC 1.0 精确移动常量、10 级裂纹挖掘、背包/工作台/箱子/熔炉、掉落物 |
+| 存档 | NBT + RLE + region 文件；OPFS（浏览器）/ fs（node）/ 内存（测试） |
+| 线程 | 主线程渲染 · 服务端 worker · 生成 worker ×2 · 网格 worker ×4 · SAB 心跳 |
+| 验证 | 251 个单元测试、13 张黄金截图、闸门测试③ 通过 |
+
+闸门测试：① 第一夜（M12）· ② 表现层（M14）· ③ **存读（已通过）**

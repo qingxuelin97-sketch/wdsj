@@ -170,6 +170,50 @@ export function drawHotbar(
   }
 }
 
+/**
+ * 熔炉的火焰与箭头。
+ *
+ * 位置从**槽位表**推出来，不另写一套坐标：布局一旦改了，进度条会跟着走。
+ * 这和 layoutFor / slotAt 共用一张表是同一条理由（见文件顶部）。
+ *
+ * 形状用纯色矩形画：火焰是一列从下往上长的橙块，箭头是一条从左往右长的白条。
+ * 为了两个指示器去烘两张贴图不划算，而且纯色块在任何缩放下都清晰。
+ */
+export function drawFurnaceProgress(
+  ui: UiRenderer,
+  layout: readonly SlotRect[],
+  progress: { burnTime: number; burnTotal: number; cookTime: number },
+): void {
+  const input = layout.find((s) => s.index === 0);
+  const fuel = layout.find((s) => s.index === 1);
+  const output = layout.find((s) => s.index === 2);
+  if (input === undefined || fuel === undefined || output === undefined) return;
+
+  // 火焰：夹在输入格与燃料格之间，从下往上烧完
+  const burn = progress.burnTotal > 0
+    ? Math.max(0, Math.min(1, progress.burnTime / progress.burnTotal))
+    : 0;
+  const fx = fuel.x + 3;
+  const fy = fuel.y - 14;
+  ui.rect(fx, fy, 12, 12, 0.25, 0.25, 0.25, 0.6);
+  if (burn > 0) {
+    const h = Math.round(12 * burn);
+    ui.rect(fx, fy + (12 - h), 12, h, 1, 0.62, 0.12, 1);
+  }
+
+  // 箭头：从输入格指向产物格，按熔炼进度从左往右长
+  const cook = Math.max(0, Math.min(1, progress.cookTime / FURNACE_COOK_TICKS));
+  const ax = input.x + SLOT + 4;
+  const ay = input.y + SLOT / 2 - 2;
+  const aw = output.x - ax - 4;
+  if (aw <= 0) return;
+  ui.rect(ax, ay, aw, 5, 0.35, 0.35, 0.35, 0.7);
+  if (cook > 0) ui.rect(ax, ay, Math.round(aw * cook), 5, 0.95, 0.95, 0.95, 1);
+}
+
+/** 一次熔炼多少刻。与 server/world/block-entity.ts 的 SMELT_TICKS 一致 */
+const FURNACE_COOK_TICKS = 200;
+
 /** 准星 */
 export function drawCrosshair(ui: UiRenderer): void {
   const cx = UI_WIDTH / 2;

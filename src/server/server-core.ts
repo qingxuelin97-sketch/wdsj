@@ -15,7 +15,7 @@ import { PacketChannel, type Transport } from '../core/net/transport.ts';
 import {
   C2S, PROTOCOL_VERSION, PlayerActionKind,
   S_Login, S_TimeUpdate, S_BlockUpdate, S_Disconnect, S_CommandResult, S_Chat, S_ServerStats,
-  S_WindowItems, S_OpenWindow, WindowKind,
+  S_WindowItems, S_OpenWindow, S_WindowProgress, WindowKind,
 } from '../core/net/packets.ts';
 import { ServerWorld } from './world/server-world.ts';
 import { handleCommand } from './commands.ts';
@@ -32,7 +32,12 @@ import {
 } from '../core/item/item-def.ts';
 import { Window, ARMOR_SLOTS, MAIN_SLOTS, HOTBAR_SLOTS } from './player/player-inventory.ts';
 import { createItemRegistry, type ItemRegistry } from '../content/items.ts';
-import { createCraftingData, type CraftingData } from '../content/recipes.ts';
+import { createCraftingData, type SmeltingRecipe, type CraftingData } from '../content/recipes.ts';
+import { tickBlockEntities } from './world/block-entity-tick.ts';
+import { onPlayerAction, onUseBlock, advanceDigging } from './player/block-interaction.ts';
+import { ChestEntity, FurnaceEntity, type BlockEntity } from './world/block-entity.ts';
+import { tickItems, broadcastItems, spawnBlockDrop, scatterContents } from './entity/item-manager.ts';
+import { saveAllChunks } from './world/world-persistence.ts';
 import { TPS, EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, WORLD_HEIGHT, REACH_SURVIVAL } from '../core/constants.ts';
 
 /**
@@ -115,15 +120,76 @@ export class ServerCore {
   private readonly timeSyncInterval: number;
   /** 供宿主填写的统计，ServerCore 自己不读挂钟 */
   lastTickMs = 0;
+  /**
+   * 世界出生点。−1 表示还没定，登录时现算一次。
+   *
+   * 存进 level.dat 而不是每次重算：findSpawn 只看得到装饰前的地形阶段，
+   * 重算出来的点会随着世界生成代码的任何改动而漂移，
+   * 而"重进游戏发现自己出生点变了"是最没道理的一种退步。
+   */
+  spawnX = 0;
+  spawnY = -1;
+  spawnZ = 0;
+  /**
+   * 玩家握手完成、位置已定，但**登录包还没发出去**时的回调。
+   *
+   * 宿主用它把存档里的位置与物品栏套上去。时机很讲究：早于 S_Login 才能
+   * 让玩家一次到位地出现在存档里的位置；晚一点的话客户端会先在出生点
+   * 出现一下再被拉走，而那一下和"被服务端判定作弊后纠正"长得一模一样。
+   */
+  onPlayerReady: ((player: ServerPlayer) => void) | null = null;
 
   constructor(opts: ServerOptions) {
     this.registry = opts.registry;
     this.world = new ServerWorld(BigInt(opts.seed), opts.registry);
     this.timeSyncInterval = opts.timeSyncInterval ?? TPS;
+    // 掉落物与玩家共用一个 id 空间：两边各发一号会让客户端把一个掉落物
+    // 当成某个玩家的更新，而那种错乱看起来完全不像同步问题
+    this.world.allocEntityId = () => this.nextEntityId++;
+    for (const r of this.crafting.smelting) this.smeltingByInput.set(r.input, r);
   }
 
   get tickNumber(): number {
     return this.tickCount;
+  }
+
+  /**
+   * 熔炼配方按输入物品建的索引。
+   *
+   * 建成 Map 而不是每次线性扫 12 条：每个熔炉每刻都要问一次
+   * "手上这个能烧吗"，而世界里的熔炉数量没有上限。
+   */
+  private readonly smeltingByInput = new Map<number, SmeltingRecipe>();
+
+  smeltingOf(id: number): SmeltingRecipe | null {
+    return this.smeltingByInput.get(id) ?? null;
+  }
+
+  /**
+   * 某个方块实体的内容变了：正开着它的玩家要收到新内容。
+   *
+   * 熔炉每刻都会动（燃烧时间在减），所以这个函数每刻都会被调 ——
+   * 但只有真的开着那个熔炉的玩家才会收到包，没人看的熔炉一个字节都不发。
+   */
+  markBlockEntityDirty(entity: BlockEntity): void {
+    const furnace = entity instanceof FurnaceEntity ? entity : null;
+    for (const player of this.players.values()) {
+      if (player.openBlockEntity !== entity || player.openWindow === null) continue;
+      // 只有格子里的东西真的动了才重发整份内容。烧着的熔炉每刻都在变，
+      // 但变的多半只是计时器，那由下面那个 6 字节的小包负责
+      if (furnace === null || furnace.contentsChanged) {
+        player.openWindow.pullFromPlayer();
+        syncInventory(this, player);
+      }
+      if (furnace !== null) {
+        player.channel.send(S_WindowProgress, {
+          windowId: player.windowId,
+          burnTime: furnace.burnTime,
+          burnTotal: furnace.burnTotal,
+          cookTime: furnace.cookTime,
+        });
+      }
+    }
   }
 
   get playerCount(): number {
@@ -182,7 +248,7 @@ export class ServerCore {
     //
     // 必须排在下面 drainChanges 之前 —— 否则这一 tick 破坏的方块要等到
     // **下一** tick 才广播出去，玩家会看到挖穿后方块还杵在那里闪一下。
-    for (const player of this.players.values()) this.advanceDigging(player);
+    for (const player of this.players.values()) advanceDigging(this, player);
 
     // 区块流水线：先生成，再算光照，最后才推送。
     // 顺序不能颠倒 —— 先推送的话客户端拿到的是光照全 0 的区块。
@@ -192,6 +258,13 @@ export class ServerCore {
       const keys = player.prepareChunks(this.world);
       if (keys.length > 0) prepared.push({ player, keys });
     }
+
+    // 方块实体（熔炉）。排在挖掘之后、光照之前：熔炉点火会换方块 id，
+    // 那是一次真正的方块变更，得赶上这一刻的光照与广播
+    tickBlockEntities(this);
+
+    // 掉落物：物理、合并、拾取
+    tickItems(this);
 
     // 光照重算（M4 会换成局部增量）
     this.world.updateLighting();
@@ -208,6 +281,9 @@ export class ServerCore {
         }
       }
     }
+
+    // 掉落物的出生 / 移动 / 销毁
+    broadcastItems(this, this.world.drainUnloadedItems());
 
     // 服务端状态：每 tick 都发。它很小（10 字节），但让主线程随时知道
     // 服务端还有多少活没干完 —— 这是 waitForIdle 判定世界安定的必要依据。
@@ -286,8 +362,8 @@ export class ServerCore {
     switch (name) {
       case 'C_Handshake': return this.onHandshake(player, value);
       case 'C_PlayerMove': return this.onPlayerMove(player, value);
-      case 'C_PlayerAction': return this.onPlayerAction(player, value);
-      case 'C_UseBlock': return this.onUseBlock(player, value);
+      case 'C_PlayerAction': return onPlayerAction(this, player, value);
+      case 'C_UseBlock': return onUseBlock(this, player, value);
       case 'C_WindowClick': return onWindowClick(this, player, value);
       case 'C_CloseWindow': return closeWindow(this, player);
       case 'C_HeldSlot': {
@@ -320,23 +396,12 @@ export class ServerCore {
     }
     player.name = String(value['playerName'] ?? 'player');
 
-    const spawn = this.world.generator.findSpawn();
-    // findSpawn 只看得到**装饰前**的地形阶段，所以它可能把人放在一棵树的树干里。
-    // 这里用完整生成的区块再校正一次：向上找到第一处有两格空隙的位置。
-    this.world.forceChunk(Math.floor(spawn.x) >> 4, Math.floor(spawn.z) >> 4);
-    const bx = Math.floor(spawn.x);
-    const bz = Math.floor(spawn.z);
-    let sy = Math.floor(spawn.y);
-    for (let probe = 0; probe < 24; probe++) {
-      const feet = this.world.getBlock(bx, sy, bz);
-      const head = this.world.getBlock(bx, sy + 1, bz);
-      const below = this.world.getBlock(bx, sy - 1, bz);
-      if (feet === AIR_STATE && head === AIR_STATE && below !== AIR_STATE) break;
-      sy++;
-    }
-    player.x = spawn.x;
-    player.y = sy;
-    player.z = spawn.z;
+    if (this.spawnY < 0) this.computeSpawn();
+    player.x = this.spawnX;
+    player.y = this.spawnY;
+    player.z = this.spawnZ;
+    // 存档里有这个玩家的话，位置与物品栏在这里被覆盖掉
+    this.onPlayerReady?.(player);
 
     player.channel.send(S_Login, {
       entityId: player.entityId,
@@ -372,151 +437,33 @@ export class ServerCore {
     return dx * dx + dy * dy + dz * dz;
   }
 
-  private onPlayerAction(player: ServerPlayer, value: Record<string, unknown>): void {
-    const action = value['action'] as number;
-    const x = value['x'] as number;
-    const y = value['y'] as number;
-    const z = value['z'] as number;
 
-    if (action === PlayerActionKind.START_DIG) {
-      const state = this.world.getBlock(x, y, z);
-      if (!this.world.isBreakable(state)) return;
-      // 触及距离多给一点余量：客户端是按自己预测的位置发的，
-      // 卡得正好在 4.5 格上时不该被判成作弊
-      if (this.reachSq(player, x, y, z) > REACH_LIMIT_SQ) return;
-      player.digging = true;
-      player.digX = x;
-      player.digY = y;
-      player.digZ = z;
-      player.digProgress = 0;
-      // 硬度为 0 的（火把、花）一下就断，不必等下一 tick
-      this.advanceDigging(player);
-      return;
+  /**
+   * 定出生点。
+   *
+   * findSpawn 只看得到**装饰前**的地形阶段，所以它可能把人放在一棵树的树干里。
+   * 这里用完整生成的区块再校正一次：向上找到第一处有两格空隙的位置。
+   */
+  private computeSpawn(): void {
+    const spawn = this.world.generator.findSpawn();
+    this.world.forceChunk(Math.floor(spawn.x) >> 4, Math.floor(spawn.z) >> 4);
+    const bx = Math.floor(spawn.x);
+    const bz = Math.floor(spawn.z);
+    let sy = Math.floor(spawn.y);
+    for (let probe = 0; probe < 24; probe++) {
+      const feet = this.world.getBlock(bx, sy, bz);
+      const head = this.world.getBlock(bx, sy + 1, bz);
+      const below = this.world.getBlock(bx, sy - 1, bz);
+      if (feet === AIR_STATE && head === AIR_STATE && below !== AIR_STATE) break;
+      sy++;
     }
-
-    if (action === PlayerActionKind.OPEN_INVENTORY) {
-      showWindow(this, player, WindowKind.INVENTORY);
-      return;
-    }
-
-    if (action === PlayerActionKind.CANCEL_DIG || action === PlayerActionKind.FINISH_DIG) {
-      // FINISH_DIG 只当作"松手"。破坏与否由服务端自己的进度说了算 ——
-      // 信客户端的话，改一行前端就能瞬间挖穿基岩。
-      player.digging = false;
-      player.digProgress = 0;
-    }
+    this.spawnX = spawn.x;
+    this.spawnY = sy;
+    this.spawnZ = spawn.z;
   }
-
-  /** 推进一个玩家的挖掘进度；够了就破坏 */
-  private advanceDigging(player: ServerPlayer): void {
-    if (!player.digging) return;
-    const { digX: x, digY: y, digZ: z } = player;
-    const state = this.world.getBlock(x, y, z);
-    const id = stateId(state);
-    if (id === 0 || !this.world.isBreakable(state)) {
-      player.digging = false;
-      return;
-    }
-    // 挖到一半人走开了就停下
-    if (this.reachSq(player, x, y, z) > REACH_LIMIT_SQ) {
-      player.digging = false;
-      return;
-    }
-
-    player.digProgress += breakProgressPerTick(
-      this.world.tables, id, toolOf(this, player.inventory.held),
-    );
-    if (player.digProgress < 1) return;
-
-    player.digging = false;
-    player.digProgress = 0;
-    this.world.setBlock(x, y, z, AIR_STATE);
-
-    // 掉落物直接进背包。真正的掉落物实体在 M9，那之前先这样接上闭环 ——
-    // 没有它的话挖矿完全没有意义，整个前期玩法都试不了。
-    const drop = dropOf(this, id, player);
-    if (drop !== null) {
-      const left = giveToPlayer(this, player, drop);
-      if (left > 0) this.sendChat(player, `背包满了，${left} 个掉落物没捡起来`);
-      syncInventory(this, player);
-    }
-  }
-
-
-
-
-
-
-
-
-
-
 
   private sendChat(player: ServerPlayer, text: string): void {
     player.channel.send(S_Chat, { text });
   }
-
-
-
-
-
-
-
-  private onUseBlock(player: ServerPlayer, value: Record<string, unknown>): void {
-    const x = value['x'] as number;
-    const y = value['y'] as number;
-    const z = value['z'] as number;
-    const face = value['face'] as number;
-
-    if (this.reachSq(player, x, y, z) > REACH_LIMIT_SQ) return;
-
-    // face 是命中面的法线编号，新方块落在那一侧
-    const [nx, ny, nz] = FACE_NORMALS[face] ?? [0, 0, 0];
-    const px = x + nx;
-    const py = y + ny;
-    const pz = z + nz;
-    if (py < 0 || py >= WORLD_HEIGHT) return;
-
-    // 右键工作台/箱子/熔炉是"打开"，不是"放置"
-    const targetId = stateId(this.world.getBlock(x, y, z));
-    const opens = OPENS_WINDOW[targetId];
-    if (opens !== undefined) {
-      showWindow(this, player, opens);
-      return;
-    }
-
-    // 手上得有东西，而且得是能放的方块
-    const held = player.inventory.held;
-    if (isEmpty(held)) return;
-    const def = this.items.get(held.id);
-    const blockId = def?.placesBlock !== undefined && def.placesBlock !== 0
-      ? def.placesBlock
-      : (held.id < ITEM_ID_BASE ? held.id : 0);
-    if (blockId === 0 || this.world.tables.defs[blockId] == null) return;
-
-    // 只能放进空气里
-    if (stateId(this.world.getBlock(px, py, pz)) !== 0) return;
-
-    // 不能把自己封在方块里：玩家碰撞盒与目标格重叠时拒绝。
-    // 少了这一条，对着脚下点一下就会被卡进方块，然后被挤到旁边去。
-    const half = PLAYER_WIDTH / 2;
-    const overlapX = player.x + half > px && player.x - half < px + 1;
-    const overlapZ = player.z + half > pz && player.z - half < pz + 1;
-    const overlapY = player.y + PLAYER_HEIGHT > py && player.y < py + 1;
-    if (overlapX && overlapY && overlapZ) return;
-
-    if (!this.world.setBlock(px, py, pz, packState(blockId, held.damage & 15))) return;
-    held.count--;
-    if (held.count <= 0) {
-      held.id = 0;
-      held.damage = 0;
-    }
-    syncInventory(this, player);
-  }
-
-
-
-
-
 
 }

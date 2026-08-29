@@ -272,6 +272,58 @@ export const S_ServerStats = S2C.add(
   ]),
 );
 
+/**
+ * 一批掉落物的出现与移动。
+ *
+ * 合成一个包发，而不是每个实体一个包：一次爆炸或者一棵树砍完，
+ * 一刻之内能冒出几十个掉落物，逐个发会让包头的开销超过载荷本身。
+ *
+ * 坐标用 i32 的 1/32 格定点数而不是 f64：掉落物差半个像素没人看得出来，
+ * 但每个实体每 tick 省下 12 字节。
+ */
+export const S_SpawnItems = S2C.add(
+  definePacket(0x90, 'S_SpawnItems', [
+    /** 每项 20 字节：entityId(u32) x(i32) y(i32) z(i32) itemId(u16) count(u8) damage(u8) */
+    ['entries', 'bytes'],
+  ]),
+);
+
+/** 掉落物的位置更新。每项 16 字节：entityId(u32) x(i32) y(i32) z(i32) */
+export const S_EntityMoves = S2C.add(
+  definePacket(0x91, 'S_EntityMoves', [
+    ['entries', 'bytes'],
+  ]),
+);
+
+/** 实体消失（被捡走、过期、区块卸载）。每项 4 字节的 entityId */
+export const S_DestroyEntities = S2C.add(
+  definePacket(0x92, 'S_DestroyEntities', [
+    ['entries', 'bytes'],
+  ]),
+);
+
+/**
+ * 容器的进度条数值（熔炉的火焰与箭头）。
+ *
+ * 单独一个包而不是塞进 S_WindowItems：燃烧时间每刻都在变，而容器内容
+ * 一分钟也未必动一次。合在一起发的话，开着熔炉就等于每刻重发 46 个格子。
+ */
+export const S_WindowProgress = S2C.add(
+  definePacket(0x93, 'S_WindowProgress', [
+    ['windowId', 'u8'],
+    ['burnTime', 'u16'],
+    ['burnTotal', 'u16'],
+    ['cookTime', 'u16'],
+  ]),
+);
+
+/** 掉落物坐标的定点数精度：1/32 格 */
+export const ENTITY_POS_SCALE = 32;
+/** S_SpawnItems 里每项的字节数 */
+export const SPAWN_ITEM_STRIDE = 20;
+/** S_EntityMoves 里每项的字节数 */
+export const ENTITY_MOVE_STRIDE = 16;
+
 // ---------------------------------------------------------------------------
 // 便捷类型别名
 // ---------------------------------------------------------------------------

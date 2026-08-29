@@ -84,7 +84,12 @@
 
     // 开发期热重载。自动化测试下必须关掉 —— 测试期间任何一次意外 reload
     // 都会把 window.__mc 连同世界状态一起清空，表现为随机的 "undefined" 报错。
-    if (!location.search.includes('test=smoke')) {
+    //
+    // 判据是"有没有 test= 参数"，不是"是不是 test=smoke"。写死某一个测试名的话，
+    // 下一个自动化脚本换个名字就会重新踩进来 —— persist-check 就是这么踩的：
+    // 页面在 evaluate 执行到一半时被 reload，CDP 报的是
+    // "Inspected target navigated or closed"，看上去和存档毫无关系。
+    if (!/[?&]test=/.test(location.search)) {
       try {
         const es = new EventSource('/__reload');
         es.addEventListener('reload', () => location.reload());

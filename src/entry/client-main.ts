@@ -14,6 +14,8 @@ import { Camera } from '../client/camera.ts';
 import { Input } from '../client/input/input.ts';
 import { installTestHook, recordError, recordLog } from '../client/debug/test-hook.ts';
 import { scheduleFrame } from '../client/frame-scheduler.ts';
+import { ClientEntities } from '../client/entity/client-entities.ts';
+import { ItemEntityRenderer } from '../client/render/item-entity-renderer.ts';
 import { BLOCK_VERT_SRC, BLOCK_FRAG_SRC } from '../client/render/block-shader.ts';
 import { tintColorArray } from '../client/render/block-textures.ts';
 import { buildRenderResources } from '../client/render/resources.ts';
@@ -33,11 +35,13 @@ import { createBlockRegistry } from '../content/blocks.ts';
 import { extractPaddedNeighborhood } from '../core/world/chunk-codec.ts';
 import { stateId } from '../core/world/chunk.ts';
 import { Frustum } from '../core/math/frustum.ts';
-import { MessagePortTransport, PacketChannel } from '../core/net/transport.ts';
+import { startServerHost } from './server-host.ts';
+import { installPacketHandlers } from './net-handlers.ts';
 import {
   S2C, C_Handshake, C_Command, C_PlayerMove, C_PlayerAction, C_UseBlock,
   C_SetViewDistance, C_WindowClick, C_CloseWindow, C_HeldSlot,
   PROTOCOL_VERSION, PlayerActionKind, WindowKind,
+  ENTITY_POS_SCALE, SPAWN_ITEM_STRIDE, ENTITY_MOVE_STRIDE,
 } from '../core/net/packets.ts';
 import { SECTION_SIZE, DEFAULT_RENDER_DISTANCE, TPS, REACH_SURVIVAL, MS_PER_TICK } from '../core/constants.ts';
 import { skyColor, sunBrightness } from '../core/world/day-night.ts';
@@ -105,6 +109,16 @@ const uiCtx = {
   maxStack: (id: number): number => itemRegistry.get(id)?.maxStack ?? 64,
 };
 const particles = new ParticleRenderer(gl);
+const entities = new ClientEntities();
+const itemEntityRenderer = new ItemEntityRenderer(gl);
+/**
+ * 掉落物的 20 Hz 刻累加器。
+ *
+ * 客户端主循环是按帧走的，但掉落物的浮动、旋转与位置插值都必须按**刻**走 ——
+ * 按帧走的话，转速会随帧率变化，而且插值的分母就没有意义了。
+ */
+let entityAccumMs = 0;
+let entityPartialTick = 0;
 const audio = new AudioEngine();
 input.onUserGesture(() => audio.resume());
 /** 粒子与音效用的随机源。固定种子，同一次运行里可复现 */
@@ -115,71 +129,40 @@ const rand = (): number => {
 };
 const player = new LocalPlayer(0.5, 70, 0.5);
 
-
 // ---------------------------------------------------------------------------
 // 服务端：跑在自己的 Worker 里
 //
 // 世界生成一次要 22 ms，放在主线程时玩家一移动帧率就从 60 掉到 19。
 // 搬进 Worker 后主线程只剩渲染与网格化派发。
 // 这里唯一变的是 Transport 实现，ServerCore 及其以下的代码一行没动 —— 这正是
-// 当初把传输抽象成接口的目的。
+// 当初把传输抽象成接口的目的。接线细节见 entry/server-host.ts。
 // ---------------------------------------------------------------------------
-const serverWorker = new Worker(new URL('./server-worker.ts', import.meta.url).href, {
-  type: 'module',
-  name: 'server',
+const host = startServerHost({
+  seed,
+  // 截图回归必须关掉存档：存了的话"同一个种子跑两次"会得到不同的世界 ——
+  // 第二次读的是第一次留下的状态，包括玩家走过的位置与挖掉的方块
+  persist: params.get('persist') !== '0',
+  recordError,
+  recordLog,
 });
-serverWorker.onerror = (ev: ErrorEvent): void => {
-  console.error(`[server-worker] ${ev.message}`);
-  recordError(`服务端 worker 错误: ${ev.message}`);
-};
-const channel = new MessageChannel();
-
-// 心跳线程。
-//
-// 后台标签页会把 worker 里的 setTimeout 掐死 —— 实测前台 20.0 TPS、后台 0，
-// 世界完全停摆。所以另起一条线程专门睡在 Atomics.wait 上敲拍子；
-// 它阻塞的是自己，服务端 worker 仍然是事件驱动的，MessagePort 照收。
-// 需要 SharedArrayBuffer，也就是需要跨源隔离（dev-server 已经带上 COOP/COEP）。
-let clockWorker: Worker | null = null;
-let clockControl: Int32Array | null = null;
-const clockPorts = new MessageChannel();
-
-if (typeof SharedArrayBuffer === 'function' && self.crossOriginIsolated) {
-  clockWorker = new Worker(new URL('./clock-worker.ts', import.meta.url).href, {
-    type: 'module',
-    name: 'clock',
-  });
-  clockWorker.onerror = (ev: ErrorEvent): void => {
-    console.error(`[clock-worker] ${ev.message}`);
-    recordError(`心跳 worker 错误: ${ev.message}`);
-  };
-  const control = new SharedArrayBuffer(STAT_BYTES);
-  clockControl = new Int32Array(control);
-  clockWorker.postMessage(
-    { kind: 'start', port: clockPorts.port1, control },
-    [clockPorts.port1],
-  );
-  serverWorker.postMessage(
-    { kind: 'start', seed, port: channel.port2, clockPort: clockPorts.port2, stats: control },
-    [channel.port2, clockPorts.port2],
-  );
-} else {
-  // 没有跨源隔离就退回 setTimeout。必须说出来：静默降级的话，
-  // "切到后台世界就不动了"会变成一个查不出根因的怪现象。
-  console.warn('[clock] 无 SharedArrayBuffer（未跨源隔离），服务端回落到 setTimeout 心跳');
-  recordLog('[clock] 无 SAB，回落 setTimeout 心跳：后台标签页 TPS 会掉到 0');
-  serverWorker.postMessage({ kind: 'start', seed, port: channel.port2 }, [channel.port2]);
-}
+const net = host.net;
 
 /** 页面关闭时叫停心跳线程 —— 它睡在 futex 上，不主动叫醒就会一直跑 */
 self.addEventListener('pagehide', () => {
-  if (clockControl !== null) {
-    writeStat(clockControl, StatSlot.CLOCK_STOP, 1);
-    Atomics.notify(clockControl, StatSlot.CLOCK_STOP);
-  }
+  host.shutdown();
 });
 
-const net = new PacketChannel(new MessagePortTransport(channel.port1), S2C);
+/**
+ * 关页面前存一次盘。
+ *
+ * 用 visibilitychange 而不是 beforeunload：手机浏览器与某些桌面场景根本
+ * 不触发 beforeunload，而 visibilitychange 是唯一可靠的"页面要没了"信号。
+ * 存盘本身是异步的、可能来不及跑完 —— 所以它只是自动存盘之外的一层保险，
+ * 真正的保障是每 30 秒一次的自动存盘。
+ */
+self.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && host.persist) void host.requestSave();
+});
 let spawned = false;
 let serverTick = 0;
 /** 未回执的指令，按 requestId 索引 */
@@ -206,89 +189,44 @@ let timeOfDay = 0;
 /** 服务端最近一次上报的状态。主线程读不到 worker 内部，只能靠它 */
 const serverStats = { tick: 0, pendingChunks: 0, loadedChunks: 0, tickMs: 0 };
 
-net.onPacket((name, value) => {
-  switch (name) {
-    case 'S_Login': {
-      const sx = value['spawnX'] as number;
-      const sy = value['spawnY'] as number;
-      const sz = value['spawnZ'] as number;
-      // 相机和**身体**都要放到出生点。只挪相机的话，物理下一帧就会
-      // 把相机拽回身体所在的位置（世界原点上空），表现为一出生就掉进虚空
-      player.teleport(sx, sy, sz);
-      camera.setPosition(sx, sy + player.eyeHeight, sz);
-      spawned = true;
-      console.log(`[net] 登录成功，出生点 ${sx.toFixed(1)} ${sy.toFixed(1)} ${sz.toFixed(1)}`);
-      return;
-    }
-    case 'S_ChunkData':
-      world.onChunkData(value['cx'] as number, value['cz'] as number, value['blob'] as Uint8Array);
-      return;
-    case 'S_ChunkUnload': {
-      const cx = value['cx'] as number;
-      const cz = value['cz'] as number;
-      world.onChunkUnload(cx, cz);
-      for (let cy = 0; cy < 8; cy++) renderer.remove(cx, cy, cz);
-      return;
-    }
-    case 'S_BlockUpdate': {
-      const bx = value['x'] as number;
-      const by = value['y'] as number;
-      const bz = value['z'] as number;
-      const newState = value['state'] as number;
-      const oldId = stateId(world.store.getState(bx, by, bz));
-      world.onBlockUpdate(bx, by, bz, newState);
+const interaction = new Interaction({
+  camera, world, tables, audio, particles,
+  player,
+  crackLayer0: atlas.index.get('destroy_stage_0') ?? 0,
+  faceLayer,
+  send: (packet, value) => net.send(packet, value),
+  rand,
+  tintColors,
+});
 
-      // 破坏：炸一把碎屑 + 一声破坏音。
-      // 挂在 S_BlockUpdate 上而不是本地挖掘逻辑里，这样别人挖的方块
-      // 也一样有碎屑和声音 —— 多人时这一条是"世界是活的"的主要来源。
-      if (oldId !== 0 && stateId(newState) === 0) interaction.onBlockBroken(bx, by, bz, oldId);
-      return;
-    }
-    case 'S_TimeUpdate':
-      serverTick = Number(value['worldAge'] as bigint);
-      timeOfDay = Number(value['timeOfDay'] as bigint);
-      return;
-    case 'S_CommandResult': {
-      const id = value['requestId'] as number;
-      const pending = commandWaiters.get(id);
-      if (pending !== undefined) {
-        commandWaiters.delete(id);
-        pending({ ok: value['ok'] as boolean, text: value['text'] as string });
-      }
-      return;
-    }
-    case 'S_WindowItems':
-      ui.onWindowItems(value['windowId'] as number, decodeSlots(value['slots'] as Uint8Array));
-      return;
-    case 'S_OpenWindow': {
-      const kind = value['kind'] as WindowKind;
-      // 外部容器的格数：箱子 27，熔炉 3，其余 0
-      const external = kind === WindowKind.CHEST ? 27 : kind === WindowKind.FURNACE ? 3 : 0;
-      ui.onOpenWindow(value['windowId'] as number, kind, external);
-      document.exitPointerLock();
-      return;
-    }
-    case 'S_CloseWindow':
-      ui.onCloseWindow();
-      return;
-    case 'S_ServerStats':
-      serverStats.tick = value['tick'] as number;
-      serverStats.pendingChunks = value['pendingChunks'] as number;
-      serverStats.loadedChunks = value['loadedChunks'] as number;
-      serverStats.tickMs = (value['tickMicros'] as number) / 100;
-      return;
-    case 'S_Chat':
-      console.log(`[chat] ${value['text'] as string}`);
-      return;
-    case 'S_Disconnect': {
-      const reason = value['reason'] as string;
-      console.error(`[net] 被断开: ${reason}`);
-      recordError(`断开: ${reason}`);
-      return;
-    }
-    default:
-      return;
-  }
+installPacketHandlers(net, {
+  world, entities, ui, renderer, interaction,
+  onLogin: (x, y, z) => {
+    // 相机和**身体**都要放到出生点。只挪相机的话，物理下一帧就会
+    // 把相机拽回身体所在的位置（世界原点上空），表现为一出生就掉进虚空
+    player.teleport(x, y, z);
+    camera.setPosition(x, y + player.eyeHeight, z);
+    spawned = true;
+  },
+  onTime: (age, tod) => {
+    serverTick = age;
+    timeOfDay = tod;
+  },
+  onServerStats: (tick, pending, loaded, tickMs) => {
+    serverStats.tick = tick;
+    serverStats.pendingChunks = pending;
+    serverStats.loadedChunks = loaded;
+    serverStats.tickMs = tickMs;
+  },
+  onCommandResult: (requestId, ok, text) => {
+    const pending = commandWaiters.get(requestId);
+    if (pending === undefined) return;
+    commandWaiters.delete(requestId);
+    pending({ ok, text });
+  },
+  decodeSlots,
+  releasePointer: () => document.exitPointerLock(),
+  recordError,
 });
 
 net.send(C_Handshake, { protocolVersion: PROTOCOL_VERSION, playerName: '玩家' });
@@ -379,6 +317,50 @@ function meshDirtySections(): void {
   }
 }
 
+/**
+ * 把视野里的掉落物攒进 ItemEntityRenderer。
+ *
+ * 方块掉落物取自己六个面的贴图画成小方块，物品取图标画成朝向相机的方片 ——
+ * 判据是"这个 id 在方块表里有定义吗"，与物品栏图标那条路一致。
+ */
+function drawItemEntities(): void {
+  itemEntityRenderer.begin();
+  if (entities.size === 0) return;
+  // 相机的右向量与上向量，画方片时用
+  const cy = Math.cos(camera.yaw);
+  const sy = Math.sin(camera.yaw);
+  const cp = Math.cos(camera.pitch);
+  const sp = Math.sin(camera.pitch);
+  const right = [cy, 0, -sy];
+  const up = [sy * sp, cp, cy * sp];
+  const faces: number[] = [0, 0, 0, 0, 0, 0];
+
+  for (const e of entities.values()) {
+    const [x, y, z] = ClientEntities.interpolate(e, entityPartialTick);
+    // 亮度取所在格的光照，掉落物才会跟着环境明暗走 —— 洞里捡到的东西
+    // 和地面上捡到的一样亮的话，看着很出戏
+    const bx = Math.floor(x);
+    const by = Math.floor(y);
+    const bz = Math.floor(z);
+    const sky = world.store.getSkyLight(bx, by, bz);
+    const block = world.store.getBlockLight(bx, by, bz);
+    const light = Math.max(0.15, Math.max(sky * sunBrightness(timeOfDay), block * 1.5) / 15);
+
+    const isBlock = e.itemId > 0 && e.itemId < 256 && tables.defs[e.itemId] != null;
+    if (isBlock) {
+      for (let f = 0; f < 6; f++) faces[f] = faceLayer[e.itemId * 6 + f] ?? -1;
+    }
+    itemEntityRenderer.push({
+      x, y, z,
+      age: e.age + entityPartialTick,
+      phase: e.phase,
+      faceLayers: isBlock ? faces : null,
+      spriteLayer: iconLayerOf(e.itemId, e.damage),
+      light,
+    }, right, up);
+  }
+}
+
 function renderOnce(): void {
   const w = canvas!.width;
   const h = canvas!.height;
@@ -410,6 +392,8 @@ function renderOnce(): void {
   gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
   renderer.render(shader, frustum, camera.position[0]!, camera.position[1]!, camera.position[2]!);
 
+  drawItemEntities();
+  itemEntityRenderer.render(camera.viewProjection, texture);
   particles.render(camera.viewProjection, camera.yaw, camera.pitch, texture);
   interaction.renderOverlay(overlay, texture);
 
@@ -420,6 +404,11 @@ function renderOnce(): void {
 
 installTestHook({
   clock, camera, input, canvas, renderOnce,
+  saveWorld: () => host.requestSave('save'),
+  wipeSave: () => host.requestSave('wipe'),
+  itemEntities: () => [...entities.values()].map((e) => ({
+    id: e.entityId, x: e.x, y: e.y, z: e.z, item: e.itemId, count: e.count,
+  })),
   drawStats: () => ({ drawCalls: renderer.drawCalls, quads: renderer.quadsDrawn }),
   setSizeLock: (locked: boolean) => {
     sizeLocked = locked;
@@ -432,11 +421,7 @@ installTestHook({
   }),
   pumpWorld,
   command: sendCommand,
-  sharedStats: () => (clockControl === null ? null : {
-    beats: readStat(clockControl, StatSlot.CLOCK_BEATS),
-    serverTicks: readStat(clockControl, StatSlot.SERVER_TICKS),
-    tickCentiMs: readStat(clockControl, StatSlot.SERVER_TICK_CENTIMS),
-  }),
+  sharedStats: host.sharedStats,
   timeOfDay: () => timeOfDay,
   remeshCount: () => world.remeshCount,
   mirrorInfo: (x: number, y: number, z: number) => ({
@@ -476,16 +461,6 @@ installTestHook({
  * 选中、挖掘、放置。抽成一个模块是因为 client-main 已经顶到 600 行的硬上限了 ——
  * 那条规则的用处正是在这种时候：它逼着人把长出来的东西搬走，而不是继续糊。
  */
-const interaction = new Interaction({
-  camera, world, tables, audio, particles,
-  player,
-  crackLayer0: atlas.index.get('destroy_stage_0') ?? 0,
-  faceLayer,
-  send: (packet, value) => net.send(packet, value),
-  rand,
-  tintColors,
-});
-
 // ---------------------------------------------------------------------------
 // 主循环
 // ---------------------------------------------------------------------------
@@ -545,6 +520,21 @@ function frame(nowMs: number): void {
     if (player.mode === 'detached') camera.applyFreeFlight(snap, clock.dt, 12);
     player.update(camera, snap, world.store, tables, clock.dt * 1000);
     interaction.update(snap, clock.dt * 1000);
+  }
+
+  // 掉落物按固定 20 Hz 推进；freeze() 之后一起停住，截图才可复现
+  if (!clock.frozen) {
+    entityAccumMs += clock.dt * 1000;
+    // 上限 5 刻：切回后台标签页再回来时累加器可能积了好几秒，
+    // 一次补完会让所有掉落物瞬移，还不如丢掉
+    let steps = 0;
+    while (entityAccumMs >= MS_PER_TICK && steps < 5) {
+      entities.tick();
+      entityAccumMs -= MS_PER_TICK;
+      steps++;
+    }
+    if (steps >= 5) entityAccumMs = 0;
+    entityPartialTick = Math.min(1, entityAccumMs / MS_PER_TICK);
   }
 
   // 服务端在自己的 Worker 里跑，主线程只需按帧把玩家位置报上去

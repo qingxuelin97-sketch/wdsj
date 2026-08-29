@@ -23,6 +23,10 @@ import { createBlockRegistry } from '../content/blocks.ts';
 import { MessagePortTransport } from '../core/net/transport.ts';
 import { MS_PER_TICK } from '../core/constants.ts';
 import { StatSlot, writeStat } from '../core/shared-stats.ts';
+import { WorldSave } from '../server/save/world-save.ts';
+import { SaveController } from '../server/save/save-controller.ts';
+import { OpfsStorage } from '../platform/storage-opfs.ts';
+import { MemoryStorage, type SaveStorage } from '../platform/storage.ts';
 
 interface StartMessage {
   kind: 'start';
@@ -32,10 +36,24 @@ interface StartMessage {
   clockPort?: MessagePort;
   /** 共享统计槽 */
   stats?: SharedArrayBuffer;
+  /** 是否落盘。测试里可以关掉，免得一次跑测污染上一次的世界 */
+  persist?: boolean;
 }
 
 interface StopMessage {
   kind: 'stop';
+}
+
+/** 主线程要求立刻存盘（关页面前、或者测试钩子调的） */
+interface SaveMessage {
+  kind: 'save';
+  requestId: number;
+}
+
+/** 主线程要求把存档清掉，用于"新建世界" */
+interface WipeMessage {
+  kind: 'wipe';
+  requestId: number;
 }
 
 /**
@@ -103,6 +121,9 @@ class GenPool implements ChunkProvider {
 let server: ServerCore | null = null;
 let stats: Int32Array | null = null;
 let genPool: GenPool | null = null;
+let saveController: SaveController | null = null;
+/** 已经有一次存盘在飞。存盘比 tick 慢得多，不能让它们叠起来 */
+let savingNow = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
 /** 下一次 tick 的目标时刻，用它做漂移校正而不是固定间隔 */
 let nextTickAt = 0;
@@ -122,6 +143,24 @@ function runTick(): void {
   if (stats !== null) {
     writeStat(stats, StatSlot.SERVER_TICKS, server.tickCount);
     writeStat(stats, StatSlot.SERVER_TICK_CENTIMS, Math.round(server.lastTickMs * 100));
+  }
+
+  // 自动存盘。跑在 tick **之外**（await 出去之后世界已经推进完了），
+  // 所以不会把 tick 循环拖成异步 —— ServerCore.tick 必须保持同步
+  if (saveController !== null && !savingNow && saveController.isAutosaveDue()) {
+    savingNow = true;
+    void saveController.saveNow().then(
+      (report) => {
+        savingNow = false;
+        console.log(`[save] 自动存盘：${report.chunks} 个区块 / ${report.regions} 个 region`);
+      },
+      (err: unknown) => {
+        savingNow = false;
+        // 存盘失败必须喊出来。静默失败的表现是"关掉页面再进来东西没了"，
+        // 而那时候已经无从查起
+        console.error('[save] 自动存盘失败', err);
+      },
+    );
   }
 }
 
@@ -144,29 +183,97 @@ function loop(): void {
   timer = setTimeout(loop, Math.max(0, delay));
 }
 
+/** 存档后端。没有 OPFS（私密模式、非安全上下文）时退回内存，并明确说一声 */
+function makeStorage(seed: number): SaveStorage {
+  if (OpfsStorage.available()) return new OpfsStorage(`world-${seed}`);
+  console.warn('[save] 这个环境没有 OPFS，退回内存存档 —— 刷新页面后世界不会保留');
+  return new MemoryStorage();
+}
+
+/**
+ * 起一个世界。
+ *
+ * 顺序是硬性的：**先把存档打开，再放客户端进来**。反过来的话，
+ * 玩家登录时会强制生成出生区块，把存过的内容永久顶掉
+ * （见 server/save/save-controller.ts 的 loadLevel）。
+ */
+async function start(msg: StartMessage): Promise<void> {
+  const registry = createBlockRegistry();
+  const core = new ServerCore({ seed: BigInt(msg.seed), registry });
+  stats = msg.stats !== undefined ? new Int32Array(msg.stats) : null;
+
+  // persist=0 时**根本不挂存档**，而不是挂一个内存后端。
+  //
+  // 差别不是省一点内存：挂上存档之后，区块的来源就从"生成"变成了
+  // "先查存档、没有才生成"，卸载时还会连同光照一起存下来。那条路径完全正确，
+  // 但它让"同一个种子跑两次"不再等价 —— 截图回归要的正是这个等价。
+  if (msg.persist !== false) {
+    const save = new WorldSave(makeStorage(msg.seed));
+    const controller = new SaveController(core, save);
+    const existed = await controller.loadLevel();
+    console.log(existed
+      ? `[save] 读到存档：世界年龄 ${core.world.worldAge}，时间 ${core.world.timeOfDay}`
+      : '[save] 没有存档，新建世界');
+    core.onPlayerReady = (player): void => {
+      if (controller.restorePlayer(player)) console.log('[save] 玩家数据已还原');
+    };
+    saveController = controller;
+  } else {
+    console.log('[save] 已按参数关闭持久化，本次世界不落盘也不读盘');
+  }
+  server = core;
+
+  // 世界生成搬进独立 worker。留在这条线程上时，加载期间单 tick 的
+  // p50 是 96.9 ms、最大 269.6 ms —— 服务端等于在以 10 TPS 跑。
+  const cores = navigator.hardwareConcurrency ?? 8;
+  genPool = new GenPool(msg.seed, recommendedGenWorkers(cores));
+  core.world.setProvider(genPool);
+
+  // 存档准备好了才接客户端
+  core.addClient(new MessagePortTransport(msg.port));
+
+  if (msg.clockPort !== undefined) {
+    msg.clockPort.onmessage = (): void => runTick();
+    msg.clockPort.start();
+    return;
+  }
+  console.warn('[server-worker] 没有心跳线程，回落到 setTimeout —— 后台标签页会停摆');
+  nextTickAt = performance.now() + MS_PER_TICK;
+  timer = setTimeout(loop, MS_PER_TICK);
+}
+
 self.onmessage = (ev: MessageEvent): void => {
-  const msg = ev.data as StartMessage | StopMessage;
+  const msg = ev.data as StartMessage | StopMessage | SaveMessage | WipeMessage;
 
   if (msg.kind === 'start') {
-    const registry = createBlockRegistry();
-    server = new ServerCore({ seed: BigInt(msg.seed), registry });
-    server.addClient(new MessagePortTransport(msg.port));
-    stats = msg.stats !== undefined ? new Int32Array(msg.stats) : null;
+    void start(msg).catch((err: unknown) => {
+      console.error('[server-worker] 启动失败', err);
+    });
+    return;
+  }
 
-    // 世界生成搬进独立 worker。留在这条线程上时，加载期间单 tick 的
-    // p50 是 96.9 ms、最大 269.6 ms —— 服务端等于在以 10 TPS 跑。
-    const cores = navigator.hardwareConcurrency ?? 8;
-    genPool = new GenPool(msg.seed, recommendedGenWorkers(cores));
-    server.world.setProvider(genPool);
-
-    if (msg.clockPort !== undefined) {
-      msg.clockPort.onmessage = (): void => runTick();
-      msg.clockPort.start();
+  if (msg.kind === 'save') {
+    if (saveController === null) {
+      self.postMessage({ kind: 'saved', requestId: msg.requestId, ok: false, chunks: 0 });
       return;
     }
-    console.warn('[server-worker] 没有心跳线程，回落到 setTimeout —— 后台标签页会停摆');
-    nextTickAt = performance.now() + MS_PER_TICK;
-    timer = setTimeout(loop, MS_PER_TICK);
+    void saveController.saveNow().then(
+      (report) => {
+        self.postMessage({ kind: 'saved', requestId: msg.requestId, ok: true, chunks: report.chunks });
+      },
+      (err: unknown) => {
+        console.error('[save] 存盘失败', err);
+        self.postMessage({ kind: 'saved', requestId: msg.requestId, ok: false, chunks: 0 });
+      },
+    );
+    return;
+  }
+
+  if (msg.kind === 'wipe') {
+    void (async (): Promise<void> => {
+      const ok = saveController !== null && await saveController.wipe();
+      self.postMessage({ kind: 'wiped', requestId: msg.requestId, ok });
+    })();
     return;
   }
 
@@ -176,5 +283,6 @@ self.onmessage = (ev: MessageEvent): void => {
     if (genPool !== null) genPool.terminate();
     genPool = null;
     server = null;
+    saveController = null;
   }
 };

@@ -95,6 +95,32 @@ const genWorkers  = Math.min(2, Math.max(1, (cores - 4) >> 3));
   重放因此天然精确
 - 远程实体走 100 ms 延迟快照插值
 
+## 存档：一条同步的路径，只有末端是异步的
+
+`ServerCore.tick()` 全程同步 —— 那是"`node --test` 直接手动 tick 两万次"
+这条验证路径的地基。存档不能破坏它，于是整条链刻意保持同步：
+
+```
+世界状态 --(同步)--> NBT --(同步)--> RLE --(同步)--> region 内存镜像
+                                                         |
+                                                    (异步) flush
+                                                         v
+                                            OPFS / fs / 内存
+```
+
+- `core/nbt/nbt.ts` 不做压缩（gzip 要么引库、要么用异步的 CompressionStream）
+- `core/world/rle.ts` 顶上压缩这一环：400 区块 39 MB → 3.3 MB，纯同步
+- `server/save/region-file.ts` 整份 region 常驻内存，改了就标脏
+- 只有 `WorldSave.flush()` 是异步的，而它跑在**两次 tick 之间**
+
+读的方向同理：`requestRegion` 下单（异步到货），`ensureChunk` 在货到之前
+返回 null 让调用方下个 tick 再来 —— 与 gen worker 完全一样的形状。
+
+**一条不变式：先打开存档，再放客户端进来。** 玩家登录会强制生成出生区块，
+那条路径同步、等不了异步的 region；顺序反了会让出生点周围的存档内容被
+新地形永久顶掉，且没有任何直接症状。`ServerWorld.forcedOverPendingSave`
+计数器盯着这件事，持久化测试断言它是 0。
+
 ## 构建与验证
 
 **开发期无打包器**：`tools/dev-server.mjs` 用 `module.stripTypeScriptTypes` 现场剥离类型。
