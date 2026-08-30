@@ -280,11 +280,11 @@ export function installTestHook(host: HostBridge): void {
      * 不走 setblock 指令 —— 那会绕开挖掘进度、掉落物、工具耐久，
      * 而闸门测试要验的恰恰是那一整条链。
      */
-    async mineBlock(x: number, y: number, z: number): Promise<boolean> {
+    async mineBlock(x: number, y: number, z: number, timeoutMs = 15000): Promise<boolean> {
       // 先站到够得着的地方并瞄准它
       host.sendAction('start-dig', x, y, z);
       const t0 = Date.now();
-      while (Date.now() - t0 < 15000) {
+      while (Date.now() - t0 < timeoutMs) {
         host.pumpWorld();
         await new Promise((r) => setTimeout(r, 16));
         const got = await host.command(`getblock ${x} ${y} ${z}`);

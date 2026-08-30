@@ -11,7 +11,9 @@
 import type { ServerCore } from './server-core.ts';
 import type { ServerPlayer } from './player/server-player.ts';
 import { S_CommandResult, S_TimeUpdate, S_Weather, WindowKind } from '../core/net/packets.ts';
-import { packState } from '../core/world/chunk.ts';
+import { packState, stateId } from '../core/world/chunk.ts';
+import { WORLD_HEIGHT } from '../core/constants.ts';
+import { ARMOR_SLOTS, MAIN_SLOTS, HOTBAR_SLOTS } from './player/player-inventory.ts';
 import { makeStack, type ItemStack } from '../core/item/item-def.ts';
 import { giveToPlayer, syncInventory, showWindow, closeWindow } from './player/inventory-actions.ts';
 import { damagePlayer, respawnPlayer } from './entity/combat.ts';
@@ -76,6 +78,98 @@ value: Record<string, unknown>,
         const [, sx, sy, sz] = parts;
         const x = Number(sx), y = Number(sy), z = Number(sz);
         reply(true, `${core.world.store.getSkyLight(x, y, z)}/${core.world.store.getBlockLight(x, y, z)}`);
+        return;
+      }
+      case 'hold': {
+        // `hold <槽位 0..8>` 或 `hold <物品名>`
+        //
+        // give 只是把东西放进背包，**不会**换到手上 —— 而挖掘看的是手上
+        // 拿的那件。自动化里"给一把铁镐然后去挖钻石矿"因此会拿着上一把
+        // 木镐去挖，表现为"铁镐也挖不动钻石矿"，看着像工具分级坏了。
+        const [, which] = parts;
+        const inv = player.inventory;
+        if (/^\d+$/.test(String(which))) {
+          inv.selectedHotbar = Math.max(0, Math.min(8, Number(which)));
+          reply(true, String(inv.selectedHotbar));
+          return;
+        }
+        // 按名字找：在快捷栏里挑出第一格装着它的
+        const wantId = core.registry.hasBlock(String(which))
+          ? core.registry.idOf(String(which))
+          : core.items.idOf(String(which));
+        for (let i = 0; i < HOTBAR_SLOTS; i++) {
+          const st = inv.slots[ARMOR_SLOTS + MAIN_SLOTS + i];
+          if (st !== undefined && st.id === wantId && st.count > 0) {
+            inv.selectedHotbar = i;
+            syncInventory(core, player);
+            reply(true, String(i));
+            return;
+          }
+        }
+        reply(false, `快捷栏里没有 ${String(which)}`);
+        return;
+      }
+      case 'pos': {
+        // 服务端眼里玩家在哪、脚下与头顶各是什么。
+        //
+        // 存在的理由：客户端的 playerState() 是**客户端预测**的位置，
+        // 而伤害、触及距离这些判定全部用服务端的位置。两者不一致时，
+        // 症状是"我明明站在岩浆里却不掉血"，而光看客户端永远查不出来。
+        const fy = Math.floor(player.y);
+        const nameAt = (x: number, y: number, z: number): string => {
+          const id = stateId(core.world.getBlock(x, y, z));
+          return id === 0 ? 'air' : (core.registry.get(id)?.name ?? `#${id}`);
+        };
+        const bx = Math.floor(player.x);
+        const bz = Math.floor(player.z);
+        // y 打到 6 位小数：判定用的是 Math.floor(y)，而 toFixed(2) 会把
+        // 11.999999 显示成 "12.00" —— 正好把最要命的那种差别藏起来
+        reply(true, `${player.x.toFixed(2)},${player.y.toFixed(6)},${player.z.toFixed(2)}`
+          + ` feet=${nameAt(bx, fy, bz)} head=${nameAt(bx, Math.floor(player.y + 1.62), bz)}`
+          + ` hp=${player.vitals.health} fire=${player.vitals.fireTicks}`);
+        return;
+      }
+      case 'held': {
+        // 手上拿的是什么。诊断用 —— give 与 hold 是两件事
+        const st = player.inventory.held;
+        const nm = st.count === 0 ? 'empty'
+          : (core.registry.get(st.id)?.name ?? core.items.get(st.id)?.name ?? `#${st.id}`);
+        reply(true, `slot=${player.inventory.selectedHotbar} ${nm}x${st.count}`);
+        return;
+      }
+      case 'orescan': {
+        // `orescan x0 z0 x1 z1` —— 统计一片区域里各种矿的 Y 分布。
+        //
+        // 存在的理由是闸门②：整个"下矿"玩法建立在矿物按 Y 带分布上 ——
+        // 钻石只在 Y<16，所以往下挖才是一个有意义的目标。这条规则错了
+        // 游戏照样能跑，只是"挖矿"这件事失去了全部结构，而那在任何
+        // 截图或单项测试里都看不出来。
+        const [, ax, az, bx, bz] = parts;
+        const x0 = Math.min(Number(ax), Number(bx));
+        const x1 = Math.max(Number(ax), Number(bx));
+        const z0 = Math.min(Number(az), Number(bz));
+        const z1 = Math.max(Number(az), Number(bz));
+        if (!Number.isFinite(x0) || !Number.isFinite(z1)) { reply(false, '用法: orescan x0 z0 x1 z1'); return; }
+        const ores: Record<string, { min: number; max: number; n: number }> = {};
+        for (let x = x0; x <= x1; x++) {
+          for (let z = z0; z <= z1; z++) {
+            if (!core.world.isLoaded(x >> 4, z >> 4)) continue;
+            for (let y = 0; y < WORLD_HEIGHT; y++) {
+              const id = stateId(core.world.getBlock(x, y, z));
+              if (id === 0) continue;
+              const name = core.registry.get(id)?.name ?? '';
+              if (!name.endsWith('_ore')) continue;
+              const e = ores[name] ?? { min: 999, max: -1, n: 0 };
+              e.min = Math.min(e.min, y);
+              e.max = Math.max(e.max, y);
+              e.n++;
+              ores[name] = e;
+            }
+          }
+        }
+        const out = Object.entries(ores).sort()
+          .map(([k, v]) => `${k}=${v.n}@${v.min}-${v.max}`);
+        reply(true, out.length === 0 ? 'none' : out.join(' '));
         return;
       }
       case 'weather': {
