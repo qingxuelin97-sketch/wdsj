@@ -21,7 +21,7 @@
  * 详见 `docs/ART-PLAN.md`。
  */
 import { rgb, type TilePainter } from './texgen.ts';
-import { stoneBase, brickGrid } from './tile-materials.ts';
+import { stoneBase, brickGrid, stoneCluster, barkRidges } from './tile-materials.ts';
 
 type Recipe = (p: TilePainter) => void;
 
@@ -60,21 +60,22 @@ export const TERRAIN_RECIPES: Record<string, Recipe> = {
     }
     p.edgeShade(10);
   },
-  sand: (p) => { p.valueNoise(rgb(0xded5a8), 9, 8, 8, 2); p.blobs(rgb(0xe9e1bb), 8, 1.2, 7); p.edgeShade(7); },
+  // 沙、雪、黏土这类**光滑**材质：只要极轻的格点噪声，不要 blobs。
+  // 量化会把小团变成边界清楚的斑，在均匀底上读作"脏"而不是"有颗粒"
+  sand: (p) => { p.valueNoise(rgb(0xded5a8), 13, 5, 5, 2); p.edgeShade(7); },
   gravel: (p) => {
-    p.valueNoise(rgb(0x848484), 14, 6, 6, 2);
-    p.blobs(rgb(0x646464), 9, 1.7, 18);
-    p.blobs(rgb(0x9e9e9e), 7, 1.3, 14);
+    // 4×4 = 十六块约 4px 的碎石，比圆石小一号、明度差更大
+    stoneCluster(p, 4, rgb(0x8a8a8a), rgb(0x5a5a5a), 40);
     p.edgeShade(10);
   },
-  clay: (p) => { p.valueNoise(rgb(0xa4a8b8), 8, 8, 8, 2); p.blobs(rgb(0xb0b4c2), 6, 1.3, 6); p.edgeShade(8); },
+  clay: (p) => { p.valueNoise(rgb(0xa4a8b8), 11, 5, 5, 2); p.edgeShade(8); },
   bedrock: (p) => {
     p.valueNoise(rgb(0x525252), 22, 3, 3, 2);
     p.blobs(rgb(0x2c2c2c), 9, 2.4, 16);
     p.blobs(rgb(0x6e6e6e), 5, 1.6, 12);
     p.edgeShade(14);
   },
-  snow: (p) => { p.valueNoise(rgb(0xf1f6f6), 6, 8, 8, 2); p.blobs(rgb(0xfbfefe), 7, 1.3, 5); p.edgeShade(6); },
+  snow: (p) => { p.valueNoise(rgb(0xf1f6f6), 9, 5, 5, 2); p.edgeShade(6); },
   ice: (p) => {
     p.valueNoise(rgb(0x9ec4f0), 10, 6, 6, 2);
     p.blobs(rgb(0xc4dcf8), 6, 2.0, 10);
@@ -106,31 +107,29 @@ export const TERRAIN_RECIPES: Record<string, Recipe> = {
   // --- 砖块类 ---
   // 圆石不用错缝格：MC 的圆石是大小不一的乱石，规则网格一眼看得出是程序画的
   cobblestone: (p) => {
-    p.valueNoise(rgb(0x575757), 12, 4, 4, 2);
-    p.blobs(rgb(0x8a8a8a), 7, 2.7, 26);
-    p.blobs(rgb(0x777777), 6, 1.9, 22);
-    p.blobs(rgb(0x989898), 4, 1.3, 16);
-    p.edgeShade(13);
+    // 3×3 的抖动网格 = 九块约 5px 的石头，中间留缝。
+    // MC 的圆石辨识度在于"能一块块数出来"，随机撒团给不了这个
+    stoneCluster(p, 3, rgb(0x848484), rgb(0x4e4e4e), 30);
+    p.edgeShade(11);
   },
   mossy_cobblestone: (p) => {
-    p.valueNoise(rgb(0x4b5346), 12, 4, 4, 2);
-    p.blobs(rgb(0x7d8a72), 7, 2.7, 24);
-    p.blobs(rgb(0x6c7963), 6, 1.9, 20);
-    p.blobs(rgb(0x5d7a4a), 6, 1.6, 18);
-    p.edgeShade(13);
+    stoneCluster(p, 3, rgb(0x77836d), rgb(0x424b3d), 28);
+    // 青苔长在缝里，所以补在石子**之后**，团要小、要贴着缝
+    p.blobs(rgb(0x5d7a4a), 7, 1.3, 16);
+    p.edgeShade(11);
   },
   stone_bricks: (p) => brickGrid(p, rgb(0x7a7a7a), rgb(0x5c5c5c), 8, 4, 16),
   nether_brick: (p) => brickGrid(p, rgb(0x44242a), rgb(0x2a1418), 8, 4, 10),
   bricks: (p) => brickGrid(p, rgb(0x96604c), rgb(0xa8a29c), 8, 4, 14),
   sandstone: (p) => {
-    p.valueNoise(rgb(0xd8ce9e), 9, 2, 6, 2);
-    p.blobs(rgb(0xe2d9ab), 6, 1.2, 6);
-    // 横向层理。**必须画在 blobs 之后** —— 先画线再撒斑点的话
-    // 斑点会把线咬得断断续续，层理就没了
-    p.hLine(0, rgb(0xb5aa76));
-    p.hLine(1, rgb(0xcabf90));
-    p.hLine(5, rgb(0xc2b785));
-    p.hLine(11, rgb(0xc2b785));
+    // 层理与底色的差必须**够大**，否则 6 色量化会把它并进底色 ——
+    // 第一版就是这样：线画了，量化完一条都不剩。
+    // 量化是最后一道，配方里任何"很淡的东西"都要按会被并掉来设计
+    p.valueNoise(rgb(0xd8ce9e), 8, 2, 6, 2);
+    p.hLine(0, rgb(0xa89d6a));
+    p.hLine(1, rgb(0xc6bb8c));
+    p.hLine(6, rgb(0xb8ad7e));
+    p.hLine(12, rgb(0xb8ad7e));
     p.edgeShade(7);
   },
 
@@ -190,8 +189,8 @@ export const TERRAIN_RECIPES: Record<string, Recipe> = {
     p.edgeShade(8);
   },
   log_side: (p) => {
-    p.grain(rgb(0x715534), 24, true);
-    p.blobs(rgb(0x584324), 3, 1.2, 8);
+    // 树皮的特征是几道明确的深沟 + 沟旁的亮棱，不是连续的竖条纹
+    barkRidges(p, rgb(0x6f5433), 4);
     p.edgeShade(10);
   },
   log_top: (p) => {
@@ -238,6 +237,6 @@ export const TERRAIN_RECIPES: Record<string, Recipe> = {
     p.blobs(rgb(0xd6d6d6), 6, 1.0, 8);
     // 孔洞必须**成团**。原来 noiseFill 的 density 是逐像素独立挖孔，
     // 出来是一张均匀的筛子，退开看就是一层灰雾；成团的孔才像枝叶间的缝隙
-    p.holes(0.68, 10);
+    p.holes(0.73, 7);
   },
 };

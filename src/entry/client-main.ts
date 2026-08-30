@@ -344,6 +344,7 @@ function renderOnce(): void {
     entityView, itemEntityRenderer, mobRenderer, particles, interaction,
     overlay, ui, uiRenderer, uiCtx, entityPartialTick,
     sky, skyLayers, worldAge: session.worldAge, renderTick: clock.renderTick,
+    anim: { start: atlas.animStart, groups: atlas.animGroups },
     rain: weather.rain, thunder: weather.thunder,
     weatherRenderer, lightningFlashTick, store: world.store,
     debug: showDebug ? collectDebugInfo({

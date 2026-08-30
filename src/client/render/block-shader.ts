@@ -107,6 +107,25 @@ uniform float uSunBrightness;
  * 这样不同群系可以共用同一张贴图。
  */
 uniform vec3 uTintColors[4];
+/*
+ * 贴图动画。水、岩浆、火在 MC 1.0 里是逐帧动画的。
+ *
+ * 图集把动画帧排在 uAnimStart 之后，每 uAnimFrames 层一组。
+ * 层号落在动画区里的，把它换到本组的第 uAnimFrame 帧。
+ * mesher 烘进顶点的是本组的第 0 帧，所以 (layer - uAnimStart) % uAnimFrames
+ * 恒为 0，直接减掉再加当前帧就行。
+ *
+ * 相位来自 clock.renderTick 而不是挂钟（RULES 第 4 条）——
+ * freeze() 一停 renderTick 不再前进，uAnimFrame 就钉住了，
+ * 截图回归照样成立。这也是这套动画能加进来的前提：
+ * 项目里每一个"会让画面自己变"的东西都必须有办法停住。
+ *
+ * 注意这段注释里不能出现反引号 —— 整个着色器源码是个模板字符串，
+ * 一个反引号就把它截断了，报出来是一串莫名其妙的 TS1005。
+ */
+uniform uint uAnimStart;
+uniform uint uAnimFrames;
+uniform uint uAnimFrame;
 
 out vec2 vUv;
 flat out uint vLayer;
@@ -149,7 +168,9 @@ void main() {
   float ao = float((d0 >> 27) & 3u);
 
   vUv = vec2(float(d1 & 511u), float((d1 >> 9) & 511u)) * (1.0 / 16.0);
-  vLayer = (d1 >> 18) & 2047u;
+  uint layer = (d1 >> 18) & 2047u;
+  if (layer >= uAnimStart) layer = layer - ((layer - uAnimStart) % uAnimFrames) + uAnimFrame;
+  vLayer = layer;
 
   float sky   = float(d2 & 15u);
   float block = float((d2 >> 4) & 15u);

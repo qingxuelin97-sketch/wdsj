@@ -14,6 +14,7 @@ import type { Camera } from '../client/camera.ts';
 import type { Frustum } from '../core/math/frustum.ts';
 import type { Shader } from '../client/gl/shader.ts';
 import type { ChunkRenderer } from '../client/render/chunk-renderer.ts';
+import { ANIM_FRAMES } from '../client/render/block-textures.ts';
 import type { ItemEntityRenderer } from '../client/render/item-entity-renderer.ts';
 import type { MobRenderer } from '../client/render/mob-renderer.ts';
 import type { ParticleRenderer } from '../client/render/particle-renderer.ts';
@@ -42,6 +43,8 @@ export interface FrameDeps {
   readonly renderer: ChunkRenderer;
   readonly tintColors: Float32Array;
   readonly texture: WebGLTexture;
+  /** 图集里动画帧区的起点层号与组数，见 block-textures.ts */
+  readonly anim: { start: number; groups: number };
   readonly renderDistance: number;
   readonly timeOfDay: number;
   readonly entityView: EntityView;
@@ -134,6 +137,17 @@ export function drawWorldFrame(d: FrameDeps): void {
   d.shader.setFloat('uFogStart', d.renderDistance * SECTION_SIZE * 0.65);
   d.shader.setFloat('uFogEnd', d.renderDistance * SECTION_SIZE * 1.05);
   d.shader.setInt('uAtlas', 0);
+  // 贴图动画：水/岩浆/火换帧。
+  //
+  // 相位来自 renderTick 而不是挂钟 —— `freeze()` 一停 renderTick 不动，
+  // 这一帧就钉住了，截图回归照样成立。项目里每一个"会让画面自己变"的
+  // 东西都栽过这条（存档、野怪、随机刻、环境粒子，四次），这次一开始就接对。
+  //
+  // 除以 4：16 帧一圈，60 fps 下约 1.07 秒走完，与 MC 的水流速度同量级。
+  // 直接用 renderTick 的话一圈只有 0.27 秒，水会像开了快进
+  d.shader.setUint('uAnimStart', d.anim.start);
+  d.shader.setUint('uAnimFrames', ANIM_FRAMES);
+  d.shader.setUint('uAnimFrame', Math.floor(d.renderTick / 4) % ANIM_FRAMES);
   const tintLoc = d.shader.loc('uTintColors[0]');
   if (tintLoc !== null) gl.uniform3fv(tintLoc, d.tintColors);
 

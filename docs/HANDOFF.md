@@ -36,7 +36,7 @@ node tools/ci.mjs
 | 命令 | 作用 | 耗时 |
 |---|---|---|
 | `node tools/ci.mjs` | 全套 9 步 | ~7 min |
-| `node --test` | 373 个单元测试 | ~2 min |
+| `node --test` | 375 个单元测试 | ~2 min |
 | `node tools/smoke.mjs` | 无头 Chrome，21 张黄金截图 | ~1 min |
 | `UPDATE_GOLDEN=1 node tools/smoke.mjs` | 重生成黄金哈希 | |
 | `node tools/first-night-check.mjs` | 闸门① 第一夜 | ~3 min |
@@ -118,6 +118,13 @@ UPDATE_GOLDEN=1 node tools/smoke.mjs
   并给所有物品图标统一加了轮廓
 - `UiRenderer.text()` **每次调用都重建字模表**，F3 一屏二十来行
   等于每帧重建二十遍。改成只建一次
+
+**2.2 材质做到了什么程度。** 三步：明暗成团（可平铺格点噪声）、
+**调色板量化到 6 色**（27–59 色 → 6 色，这一步才是"像素画"与"程序化噪声"
+的分水岭）、手绘结构（圆石是能一块块数出来的石头，不是重叠的团）。
+水/岩浆/火加了逐帧动画。细节见 `docs/ART-PLAN.md` 与 ROADMAP 第十三、十五节。
+
+改贴图时要记住：**量化是最后一道，任何"很淡的东西"都会被并进底色**。
 
 **2.5 `noiseFill` 与 `speckles` 已从 `texgen.ts` 删除。**
 全部配方都换成了可平铺的 `valueNoise` / `blobs`。留着旧原语只会让

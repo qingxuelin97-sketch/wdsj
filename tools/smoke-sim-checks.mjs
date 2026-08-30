@@ -67,6 +67,49 @@ export async function runSimChecks(ctx) {
     }
     // 与生物那张图同理：水一直在流，硬做哈希会得到一个偶发失败的测试
     log(`waterfall: ${water.hash}（不比对，见 tests/out/waterfall.png）`);
+
+    // --- 贴图动画：水面真的在换帧 ---
+    //
+    // **不能用 screenshotHash 验这件事。** 它内部会 `pinFrame()`，而 pinFrame
+    // 明确地把 renderTick **归零**（见 capture.ts 的注释，那里本来就把
+    // "水与岩浆的贴图帧"列为动画相位之一）。于是每一次截图哈希都渲染在
+    // 第 0 帧，动画对它永远不可见 —— 这是**故意**的设计，黄金截图因此
+    // 天然不受动画影响，不是 bug。第一版用 screenshotHash 验，
+    // 三次拿到同一个哈希，看上去像"动画没接上"，实际是量错了东西。
+    //
+    // 所以走 CDP 的原始截屏，它不经过 pinFrame。
+    // 全程冻结、只用 step() 推 renderTick：世界不动、野怪不走，
+    // 画面里唯一会变的就是动画帧。
+    const rawShot = async () => {
+      const r = await page.send('Page.captureScreenshot', { format: 'png' });
+      return r.data;
+    };
+    await page.evaluate(`
+      ${ensureHook}
+      const m = window.__mc;
+      m.setCamera(${water.x} - 7, ${water.y} + 7, ${water.z} - 9, -0.785, 0.3, 70);
+      m.freeze(false);
+      await m.waitForIdle();
+      m.freeze(true);
+      await m.step(0);
+    `);
+    const shotA = await rawShot();
+    // uAnimFrame = floor(renderTick / 4) % 16，推 8 帧 = 换两帧动画，
+    // 比只推 4 帧更稳（低帧率下合成器偶尔会慢一拍）
+    await page.evaluate(`${ensureHook} await window.__mc.step(8); await window.__mc.step(0);`);
+    const shotB = await rawShot();
+    // 不推进，再截一次：必须与上一张完全一致
+    await page.evaluate(`${ensureHook} await window.__mc.step(0);`);
+    const shotC = await rawShot();
+    await page.evaluate(`${ensureHook} window.__mc.freeze(false);`);
+
+    if (shotA === shotB) {
+      failures.push('推进 renderTick 后画面一个字节都没变 —— 水/岩浆/火的贴图动画没接上');
+    }
+    if (shotB !== shotC) {
+      failures.push('不推进 renderTick 画面却变了 —— 动画相位没有完全由 clock.renderTick 决定');
+    }
+    log(`贴图动画：换帧=${shotA !== shotB ? 'ok' : '**没换**'} 冻结=${shotB === shotC ? 'ok' : '**停不住**'}`);
   }
 
   // --- 生物：真的刷出来、真的画出来、真的能被打 ---
@@ -108,13 +151,21 @@ export async function runSimChecks(ctx) {
       m.freeze(true);
       const listed = m.mobEntities();
       const counts = await m.command('mobs');
-      // 先出图再读顶点数：screenshotHash 内部会真渲染一帧，
-      // 而 mobVerts 报的是**上一帧**提交了多少 —— 顺序反了读到的是 0
-      const hash = await m.screenshotHash();
-      const verts = m.mobVerts();
+      // **不用 screenshotHash**。它要求连续两帧完全一致才采信，而它每次重试
+      // 之间都会 pumpWorld() 推进世界 —— 刚刷出来的九只生物正在各自寻路，
+      // 于是每一帧都不一样，永远稳不下来，抛"画面 12 帧内始终没稳定下来"。
+      //
+      // 而这张图的哈希**根本不参与比对**（golden 里没有 mobs 这一项，
+      // 见下面那行 log）。为一个没人比对的哈希要求画面静止，是白付代价 ——
+      // 付出的还是一个会偶发失败的测试，而这个项目的规约明写着
+      // "一个 flaky 的测试比没有测试更糟"。
+      //
+      // 真正要断言的是"生物被提交给 GL 了"，那由 mobVerts 保证。
+      // screenshot() 内部同样会真渲染一帧，所以先出图再读顶点数的顺序不变。
       const png = await m.screenshot();
+      const verts = m.mobVerts();
       m.freeze(false);
-      return { listed: listed.length, verts, counts: counts.text, hash, png, x, y, z };
+      return { listed: listed.length, verts, counts: counts.text, png, x, y, z };
     `);
     saveShot('mobs', mob.png);
     log(`生物：客户端看到 ${mob.listed} 只，服务端 ${mob.counts}，生物顶点 ${mob.verts}`);
@@ -133,7 +184,7 @@ export async function runSimChecks(ctx) {
     //
     // 真正稳定、也真正想验的两件事是上面那两条断言：九只都同步到了客户端、
     // 渲染器确实提交了顶点。截图留给人看模型对不对。
-    log(`mobs: ${mob.hash}（不比对，见 tests/out/mobs.png）`);
+    log('mobs: 见 tests/out/mobs.png（不做哈希 —— 生物一直在动，见上面的注释）');
 
     // 打一只：血量要掉
     const combat = await page.evaluate(`

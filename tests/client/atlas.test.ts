@@ -23,7 +23,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createBlockRegistry } from '../../src/content/blocks.ts';
 import { createItemRegistry } from '../../src/content/items.ts';
-import { buildAtlas, buildFaceLayerTable } from '../../src/client/render/block-textures.ts';
+import { buildAtlas, buildFaceLayerTable, ANIM_FRAMES } from '../../src/client/render/block-textures.ts';
 import { DESTROY_STAGE_NAMES, RECIPES } from '../../src/client/render/tile-recipes.ts';
 import { ITEM_RECIPES } from '../../src/client/render/item-recipes.ts';
 import { SKY_TILE_NAMES } from '../../src/client/render/tile-recipes-sky.ts';
@@ -138,4 +138,61 @@ test('方块配方与物品配方不能同名', () => {
   const blocks = new Set(Object.keys(RECIPES));
   const dup = Object.keys(ITEM_RECIPES).filter((k) => blocks.has(k));
   assert.deepEqual(dup, [], `物品配方与方块配方同名: ${dup.join(', ')}（物品那份会被静默忽略）`);
+});
+
+/**
+ * 贴图动画的图集布局。
+ *
+ * 浏览器那边只能验"画面确实换帧了"（冒烟里那项走的是 CDP 原始截屏 ——
+ * `screenshotHash` 内部会 `pinFrame()` 把 renderTick 归零，动画对它
+ * 永远不可见，那是**故意**的设计）。而布局本身是纯数据，在这里验更快也更细。
+ */
+test('动画贴图：帧排在静态层之后，名字指向动画区', () => {
+  const names = ['stone', 'dirt', 'water', 'lava', 'fire'];
+  const atlas = buildAtlas(names);
+  // 三张动画贴图（water / lava / fire），各 ANIM_FRAMES 帧
+  assert.equal(atlas.animGroups, 3);
+  assert.equal(atlas.animStart, names.length);
+  assert.equal(atlas.layers, names.length + 3 * ANIM_FRAMES);
+
+  // 静态贴图的层号必须仍等于它在 names 里的下标 —— mesher 烘的 faceLayer、
+  // UI 取图标、粒子取层号全都直接用 index.get()，动画不能把它们推移
+  assert.equal(atlas.index.get('stone'), 0);
+  assert.equal(atlas.index.get('dirt'), 1);
+
+  for (const n of ['water', 'lava', 'fire']) {
+    const layer = atlas.index.get(n)!;
+    assert.ok(layer >= atlas.animStart, `${n} 的层号该落在动画区里，实得 ${layer}`);
+    // 着色器算的是 `layer - (layer - animStart) % ANIM_FRAMES + frame`，
+    // 这要求名字指向的正是本组的**第 0 帧**，否则换帧会串组
+    assert.equal((layer - atlas.animStart) % ANIM_FRAMES, 0, `${n} 没有指向本组第 0 帧`);
+  }
+});
+
+test('动画贴图：每一帧都和上一帧不同，且滚满一圈回到原样', () => {
+  const atlas = buildAtlas(['water_flow']);
+  const base = atlas.index.get('water_flow')!;
+  const frameAt = (f: number): Uint8Array =>
+    atlas.data.slice((base + f) * TILE_BYTES, (base + f + 1) * TILE_BYTES);
+
+  // 逐帧都得变。有一帧没变就说明那一帧的滚动量算成了 0，
+  // 表现是动画"卡一下"，肉眼很难发现
+  for (let f = 1; f < ANIM_FRAMES; f++) {
+    assert.notDeepEqual(frameAt(f), frameAt(f - 1), `第 ${f} 帧与第 ${f - 1} 帧相同`);
+  }
+
+  // 循环闭合：16 帧 × 每帧 1px = 16px = 贴图宽度，所以第 16 帧就是第 0 帧。
+  // 不闭合的话动画每转一圈会"跳"一下 —— 这正是滚动式动画唯一会错的地方
+  const rolledFull = frameAt(0);
+  const oneMore = new Uint8Array(TILE_BYTES);
+  const last = frameAt(ANIM_FRAMES - 1);
+  for (let y = 0; y < TILE_SIZE; y++) {
+    for (let x = 0; x < TILE_SIZE; x++) {
+      const sy = (y - 1 + TILE_SIZE) % TILE_SIZE;
+      for (let c = 0; c < 4; c++) {
+        oneMore[(y * TILE_SIZE + x) * 4 + c] = last[(sy * TILE_SIZE + x) * 4 + c]!;
+      }
+    }
+  }
+  assert.deepEqual(oneMore, rolledFull, '最后一帧再滚一步该回到第 0 帧，动画没有闭合');
 });

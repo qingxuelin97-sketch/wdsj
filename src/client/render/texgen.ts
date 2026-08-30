@@ -392,6 +392,87 @@ export class TilePainter {
   }
 
   /**
+   * 调色板量化：把整块贴图压到 k 种颜色。
+   *
+   * ## 这是"像素画"与"程序化噪声"之间最大的一道坎
+   *
+   * 实测本项目量化前每张贴图有 **27–59 种**不同颜色（256 个像素）。
+   * 真正的 16×16 手绘像素画通常只有 **4–10 种** —— MC 1.0 的贴图就是
+   * 在画图软件里选几个色一格一格点出来的。
+   *
+   * 颜色一多，相邻像素之间的差就变成连续渐变，观感是"喷枪扫过"；
+   * 颜色一少，每一块色都有清楚的边界，观感才是"一格一格点的"。
+   * 这与噪声成不成团是**两件事**：`valueNoise` 解决了"明暗成团"，
+   * 但每个团内部仍是连续值，退远了看依旧发糊。
+   *
+   * ## 做法：确定性 k-means
+   *
+   * 初始质心取**按亮度排序后的等分位点** —— 不是随机撒点。
+   * 随机初始化会让同一张贴图两次跑出不同结果，而贴图必须逐字节确定
+   * （黄金哈希、`atlas.test.ts` 都盯着这条）。
+   *
+   * 只统计不透明像素：透明处的 RGB 是 `bleedEdges` 补上去的邻近色，
+   * 把它们算进去会把质心往边缘色拖。
+   */
+  quantize(k = 6, iterations = 8): this {
+    const pixels: number[] = [];
+    for (let i = 0; i < TILE * TILE; i++) {
+      if (this.data[i * 4 + 3]! > 0) pixels.push(i);
+    }
+    if (pixels.length === 0) return this;
+
+    const lum = (i: number): number =>
+      this.data[i * 4]! * 0.299 + this.data[i * 4 + 1]! * 0.587 + this.data[i * 4 + 2]! * 0.114;
+    const sorted = [...pixels].sort((a, b) => lum(a) - lum(b));
+
+    // 质心初值取亮度分位点。等分位而不是等间距 —— 贴图的亮度分布通常
+    // 集中在中段，等间距会让两端的质心分不到任何像素，白白浪费色号
+    const cent: number[][] = [];
+    for (let c = 0; c < k; c++) {
+      const i = sorted[Math.min(sorted.length - 1, Math.floor(((c + 0.5) / k) * sorted.length))]!;
+      cent.push([this.data[i * 4]!, this.data[i * 4 + 1]!, this.data[i * 4 + 2]!]);
+    }
+
+    const assign = new Int32Array(TILE * TILE);
+    for (let iter = 0; iter < iterations; iter++) {
+      for (const i of pixels) {
+        let best = 0;
+        let bestD = Infinity;
+        for (let c = 0; c < k; c++) {
+          const dr = this.data[i * 4]! - cent[c]![0]!;
+          const dg = this.data[i * 4 + 1]! - cent[c]![1]!;
+          const db = this.data[i * 4 + 2]! - cent[c]![2]!;
+          const d = dr * dr + dg * dg + db * db;
+          if (d < bestD) { bestD = d; best = c; }
+        }
+        assign[i] = best;
+      }
+      const sum = Array.from({ length: k }, () => [0, 0, 0, 0]);
+      for (const i of pixels) {
+        const s = sum[assign[i]!]!;
+        s[0]! += this.data[i * 4]!;
+        s[1]! += this.data[i * 4 + 1]!;
+        s[2]! += this.data[i * 4 + 2]!;
+        s[3]! += 1;
+      }
+      for (let c = 0; c < k; c++) {
+        const s = sum[c]!;
+        // 空簇保持原位，不重新撒 —— 重撒会引入迭代间的不稳定
+        if (s[3]! === 0) continue;
+        cent[c] = [Math.round(s[0]! / s[3]!), Math.round(s[1]! / s[3]!), Math.round(s[2]! / s[3]!)];
+      }
+    }
+
+    for (const i of pixels) {
+      const c = cent[assign[i]!]!;
+      this.data[i * 4] = c[0]!;
+      this.data[i * 4 + 1] = c[1]!;
+      this.data[i * 4 + 2] = c[2]!;
+    }
+    return this;
+  }
+
+  /**
    * 沿不透明区域的外缘描一圈深色轮廓。物品图标专用。
    *
    * 为什么必须有：物品图标会画在**任何背景**上 —— 物品栏的浅灰、

@@ -100,6 +100,12 @@ export class Shader {
     if (l !== null) this.gl.uniform1i(l, value);
   }
 
+  /** 无符号整型 uniform。GLSL 里 `uint` 必须用 uniform1ui，用 1i 会静默不生效 */
+  setUint(name: string, value: number): void {
+    const l = this.loc(name);
+    if (l !== null) this.gl.uniform1ui(l, value >>> 0);
+  }
+
   dispose(): void {
     this.gl.deleteProgram(this.program);
     this.uniforms.clear();
