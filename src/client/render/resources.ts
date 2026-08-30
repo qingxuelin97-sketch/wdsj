@@ -25,10 +25,12 @@ export function buildRenderResources(
   caps: GlCaps,
   anisoExt: { TEXTURE_MAX_ANISOTROPY_EXT: number } | null,
   extraTextures: readonly string[],
+  /** 资源包覆盖层，见 resource-pack.ts。不传就全部程序化生成 */
+  packTiles?: ReadonlyMap<string, Uint8Array>,
 ): RenderResources {
   // 方块贴图 + 挖掘裂纹 + 物品图标全部烘进同一个纹理数组：
   // 世界渲染与 UI 共用一次纹理绑定，也省掉一套并行的资源管理
-  const atlas = buildAtlas([...tables.collectTextureNames(), ...DESTROY_STAGE_NAMES, ...extraTextures]);
+  const atlas = buildAtlas([...tables.collectTextureNames(), ...DESTROY_STAGE_NAMES, ...extraTextures], packTiles);
   const faceLayer = buildFaceLayerTable(tables, atlas);
 
   const mesherTables: MesherTables = {

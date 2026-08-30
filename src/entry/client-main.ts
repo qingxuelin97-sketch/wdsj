@@ -27,6 +27,7 @@ import { XP_ORB_ITEM_ID } from '../core/item/item-def.ts';
 import { BLOCK_VERT_SRC, BLOCK_FRAG_SRC } from '../client/render/block-shader.ts';
 import { tintColorArray } from '../client/render/block-textures.ts';
 import { buildRenderResources } from '../client/render/resources.ts';
+import { loadResourcePack } from '../client/render/resource-pack.ts';
 import { SkyRenderer } from '../client/render/sky-renderer.ts';
 import { WeatherRenderer } from '../client/render/weather-renderer.ts';
 import { ParticleEmitters } from '../client/particle/emitters.ts';
@@ -68,21 +69,38 @@ console.log(`[gl] ${caps.rendererName}`);
 // ---------------------------------------------------------------------------
 // 内容表与贴图
 // ---------------------------------------------------------------------------
+const params = new URLSearchParams(location.search);
+
 const registry = createBlockRegistry();
 const tables = registry.getTables();
 // 贴图集与 GPU 纹理。物品图标也一并烘进去 —— UI 与世界共用一个 sampler
 const itemRegistry = createItemRegistry();
+// 经验球的图标既不属于方块也不属于物品，要显式塞进图集
+const extraTextures = [
+  ...itemRegistry.all().map((d) => d.texture), 'xp_orb', ...SKY_TILE_NAMES, ...PARTICLE_TEXTURE_NAMES,
+];
+
+// 资源包覆盖层。`?pack=<url>` 指向一个解开的 MC 资源包（见 docs/ART-PLAN.md）；
+// 不给就全部程序化生成。**仓库自身不含任何外部素材**，这只是留给使用者
+// 指向本地素材的口子 —— 素材一个字节都不进 git。
+//
+// 这里用了顶层 await：贴图必须在建 GL 纹理之前就位，而纹理又是后面
+// 所有东西的地基。加载器自带超时，最坏情况是等 15 秒后全用程序化的，
+// 不会卡死在这。
+const packUrl = params.get('pack') ?? '';
+const pack = packUrl === ''
+  ? null
+  : await loadResourcePack(packUrl, [...tables.collectTextureNames(), ...extraTextures]);
+if (pack !== null) for (const n of pack.notes) recordLog(n);
+
 const { atlas, faceLayer, mesherTables, texture } = buildRenderResources(
-  gl, tables, caps, anisoExt,
-  // 经验球的图标既不属于方块也不属于物品，要显式塞进图集
-  [...itemRegistry.all().map((d) => d.texture), 'xp_orb', ...SKY_TILE_NAMES, ...PARTICLE_TEXTURE_NAMES],
+  gl, tables, caps, anisoExt, extraTextures, pack?.tiles,
 );
 recordLog(`方块 ${registry.size} 种 · 物品 ${itemRegistry.size} 件 · 贴图 ${atlas.layers} 张`);
 
 // ---------------------------------------------------------------------------
 // 运行时对象
 // ---------------------------------------------------------------------------
-const params = new URLSearchParams(location.search);
 const seed = Number(params.get('seed') ?? 1234);
 const renderDistance = Number(params.get('rd') ?? DEFAULT_RENDER_DISTANCE);
 
@@ -203,7 +221,7 @@ const skyLayers = {
   clouds: atlas.index.get('clouds') ?? 0,
   moons: Array.from({ length: 8 }, (_, i) => atlas.index.get(`moon_phase_${i}`) ?? 0),
   rain: atlas.index.get('rain') ?? 0,
-  snow: atlas.index.get('snow') ?? 0,
+  snow: atlas.index.get('snowflake') ?? 0,
 };
 
 const interaction = new Interaction({

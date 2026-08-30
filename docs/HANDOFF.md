@@ -42,6 +42,7 @@ node tools/ci.mjs
 | `node tools/first-night-check.mjs` | 闸门① 第一夜 | ~3 min |
 | `node tools/mine-check.mjs` | 闸门② 下矿 | ~1 min |
 | `node tools/persist-check.mjs` | 闸门③ 存读 | ~1 min |
+| `node tools/tile-sheet.mjs` | 贴图渲成 PNG 肉眼看，不起浏览器 | ~1 s |
 | 任一 gate 加 `--head` | 有头浏览器，肉眼看 | |
 
 ---
@@ -80,6 +81,41 @@ hash 记在 `docs/ROADMAP.md` 的里程碑表里。
 
 **所以接手后的第一优先级是把闸门②修绿** —— 那是眼下唯一挡在 80 线
 前面的东西，也是唯一一处"已知有问题"的地方。
+
+---
+
+## 二·五、最近这轮：材质与 UI（已完成）
+
+计划与全部细节在 **`docs/ART-PLAN.md`**，这里只说接手时要知道的三件事。
+
+**1. 黄金哈希需要重录一次。** 这轮动了贴图内容、图集层号与界面绘制，
+21 张截图哈希全部会变，是预期内的。
+
+```bash
+UPDATE_GOLDEN=1 node tools/smoke.mjs
+```
+
+⚠️ **只能在录原版黄金值的那台机器上重录。** 哈希绑死在光栅化结果上，
+软渲染与真 GPU 逐像素不同。这轮是在一台只有 SwiftShader 的容器上做的，
+所以**没有**重录，`tests/screenshots/hashes.json` 原样未动。
+
+**2. 顺手挖出两个既有 bug。** 都不是这轮改坏的：
+
+- 世界里的**雪块一直是半透明的雪花粒子图** —— `RECIPES` 里
+  `...SKY_RECIPES` 展开在后面，天气粒子那张也叫 `snow`，把方块的雪盖掉了。
+  粒子已改名 `snowflake`
+- `gold_block` 的内嵌边框**从来没画出来过** —— 最后一句 `noiseFill`
+  重填整块，把上一句画的框冲干净了
+
+**3. 想要原版材质，用资源包覆盖层，别往仓库里塞素材。**
+
+```bash
+node tools/dev-server.mjs --pack "<解开的资源包目录>"
+# 然后开 http://127.0.0.1:8080/?pack=/pack/
+```
+
+逐张覆盖，包里没有的退回程序化生成。素材留在你自己盘上。
+往仓库提交 Mojang 的 png 是再分发，公开仓库会被 DMCA —— 这条别破。
 
 ---
 

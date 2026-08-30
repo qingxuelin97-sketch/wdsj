@@ -21,6 +21,44 @@ export interface SlotRect {
 export const SLOT = 18;
 const PAD = 1;
 
+/**
+ * MC 的界面配色。**照抄不估** —— 与 `docs/RULES.md` 第 6 条同一条道理。
+ *
+ * 原来这里写的是 0.78 / 0.86 / 0.55 / 0.66 这类拍脑袋的灰度，
+ * 画出来是两层平板。MC 的界面之所以一眼认得出，靠的不是灰度值本身，
+ * 而是 **Windows-95 式的斜面**：外凸的面板左上白、右下深灰；
+ * 内凹的槽位反过来。少了这一层，多准的灰度也还是草图。
+ */
+const C = {
+  white: 1,
+  panel: 198 / 255, // #C6C6C6 面板底
+  slot: 139 / 255, // #8B8B8B 槽位底
+  shadow: 85 / 255, // #555555 面板右下阴影
+  slotDark: 55 / 255, // #373737 槽位左上暗边
+};
+
+/** 外凸面板：黑外框 + 左上白高光 + 右下深灰阴影 + 面板底 */
+function panelRaised(ui: UiRenderer, x: number, y: number, w: number, h: number): void {
+  ui.rect(x, y, w, h, 0, 0, 0, 1);
+  ui.rect(x + 1, y + 1, w - 2, h - 2, C.shadow, C.shadow, C.shadow, 1);
+  // 高光只铺左上两条，右下留着露出上一层的深灰
+  ui.rect(x + 1, y + 1, w - 3, h - 3, C.white, C.white, C.white, 1);
+  ui.rect(x + 2, y + 2, w - 4, h - 4, C.panel, C.panel, C.panel, 1);
+}
+
+/**
+ * 内凹槽位，18×18。
+ *
+ * 尺寸正好等于 `SLOT` 的步进，所以相邻槽位严丝合缝地拼起来：
+ * 前一格的右下亮边紧挨后一格的左上暗边 —— MC 那种连成一片的
+ * 格子网就是这么来的，格与格之间留缝反而会散。
+ */
+function slotInset(ui: UiRenderer, x: number, y: number): void {
+  ui.rect(x, y, SLOT, SLOT, C.slotDark, C.slotDark, C.slotDark, 1);
+  ui.rect(x + 1, y + 1, SLOT - 1, SLOT - 1, C.white, C.white, C.white, 1);
+  ui.rect(x + 1, y + 1, SLOT - 2, SLOT - 2, C.slot, C.slot, C.slot, 1);
+}
+
 /** 玩家的 27 主存放 + 9 快捷栏，摆在面板下半部 */
 function playerGrid(startIndex: number, x0: number, y0: number): SlotRect[] {
   const out: SlotRect[] = [];
@@ -109,13 +147,10 @@ export function drawWindow(
   const panelTop = 24;
   // 高度要正好包住最后一行快捷栏（y=118+3*18+4=176，加一格 18 到 194）
   const panelH = 176;
-  ui.rect(px - 8, panelTop, 9 * SLOT + 16, panelH, 0.78, 0.78, 0.78, 1);
-  ui.rect(px - 6, panelTop + 2, 9 * SLOT + 12, panelH - 4, 0.86, 0.86, 0.86, 1);
+  panelRaised(ui, px - 8, panelTop, 9 * SLOT + 16, panelH);
 
   for (const s of layout) {
-    // 槽位：凹陷感靠一圈深边
-    ui.rect(s.x, s.y, SLOT - PAD, SLOT - PAD, 0.55, 0.55, 0.55, 1);
-    ui.rect(s.x + 1, s.y + 1, SLOT - PAD - 2, SLOT - PAD - 2, 0.66, 0.66, 0.66, 1);
+    slotInset(ui, s.x, s.y);
 
     const stack = slots[s.index];
     if (stack === undefined || isEmpty(stack)) continue;
@@ -126,7 +161,8 @@ export function drawWindow(
 
   // 悬停高亮
   const hit = layout.find((s) => s.index === hovered);
-  if (hit !== undefined) ui.rect(hit.x, hit.y, SLOT - PAD, SLOT - PAD, 1, 1, 1, 0.35);
+  // 高亮只盖 16×16 的内容区，不盖斜面 —— 盖住斜面槽位就"平"了
+  if (hit !== undefined) ui.rect(hit.x + 1, hit.y + 1, SLOT - 2, SLOT - 2, 1, 1, 1, 0.35);
 
   // 手上拿着的那一堆跟着鼠标走
   if (!isEmpty(cursor)) {
@@ -147,12 +183,19 @@ export function drawHotbar(
   const w = 9 * SLOT + 4;
   const x0 = (UI_WIDTH - w) / 2;
   const y0 = UI_HEIGHT - SLOT - 6;
-  ui.rect(x0, y0, w, SLOT + 4, 0.1, 0.1, 0.1, 0.6);
+  // 快捷栏是压在世界上的，不能像容器面板那样用不透明的浅灰 ——
+  // 那会在画面底部糊掉一整条。MC 用的是半透明深色 + 一圈亮边
+  ui.rect(x0 - 1, y0 - 1, w + 2, SLOT + 6, 0, 0, 0, 0.55);
+  ui.rect(x0, y0, w, SLOT + 4, 0.55, 0.55, 0.55, 0.45);
+  ui.rect(x0 + 1, y0 + 1, w - 2, SLOT + 2, 0.13, 0.13, 0.13, 0.72);
 
   for (let i = 0; i < 9; i++) {
     const sx = x0 + 2 + i * SLOT;
     const sy = y0 + 2;
-    ui.rect(sx, sy, SLOT - PAD, SLOT - PAD, 0.35, 0.35, 0.35, 0.7);
+    // 槽位之间的分隔靠一条暗边 + 一条亮边，与容器界面同一套斜面语言
+    ui.rect(sx, sy, SLOT, SLOT, 0.09, 0.09, 0.09, 0.55);
+    ui.rect(sx + 1, sy + 1, SLOT - 1, SLOT - 1, 0.68, 0.68, 0.68, 0.30);
+    ui.rect(sx + 1, sy + 1, SLOT - 2, SLOT - 2, 0.31, 0.31, 0.31, 0.55);
     const stack = slots[hotbarStart + i];
     if (stack !== undefined && !isEmpty(stack)) {
       const layer = ctx.iconLayer(stack.id, stack.damage);

@@ -176,6 +176,230 @@ export class TilePainter {
     return this;
   }
 
+  /**
+   * 环绕写像素。越界的坐标从对边绕回来。
+   *
+   * `set()` 遇到越界是直接丢弃的，那对"画在中间"的图元没问题，
+   * 但对**随机撒在整块上**的图元（斑点、团块）就会出两个毛病：
+   *   1. 靠右靠下的图元被切掉一半，靠左靠上永远不会有半个图元
+   *      —— 同一张贴图铺成一面墙，接缝处一侧密一侧疏
+   *   2. 贴图不再无缝
+   * 环绕之后被切掉的那半从对边长回来，两个毛病一起没了。
+   *
+   * alpha 默认**保持原样**：这样团块画在树叶这类 cutout 贴图上时
+   * 不会把孔洞填实。要画出新的不透明像素就显式传 a。
+   */
+  setWrapped(x: number, y: number, r: number, g: number, b: number, a?: number): void {
+    const i = this.idx(((x % TILE) + TILE) % TILE, ((y % TILE) + TILE) % TILE);
+    this.data[i] = r;
+    this.data[i + 1] = g;
+    this.data[i + 2] = b;
+    if (a !== undefined) this.data[i + 3] = a;
+  }
+
+  /**
+   * 可平铺的格点噪声场，返回 16×16 个 [0,1) 的值。
+   *
+   * 这是本文件里最要紧的一个东西。原来的 `noiseFill` 是**逐像素独立**的
+   * 白噪声，16×16 上看就是电视雪花点：单看有变化，退开一步相邻像素
+   * 互相平均，整块糊成一片均匀的灰。真正的像素画靠的是**成团的明暗**，
+   * 人眼读的是团块不是像素。
+   *
+   * 做法是经典的 value noise：撒 cellsX×cellsY 个格点，格点之间用
+   * smoothstep 做双线性插值，再叠几个倍频。**取模保证平铺** ——
+   * x=16 落回格点 0，所以左右边缘天然接得上。
+   *
+   * cellsX / cellsY 分开给是为了做**方向性**纹理：格点在 x 上少、
+   * y 上多，值就沿 x 变得慢、沿 y 变得快，看上去是横向的条纹（木纹）。
+   */
+  noiseField(cellsX: number, cellsY: number, octaves = 2): Float32Array {
+    const out = new Float32Array(TILE * TILE);
+    let amp = 1;
+    let total = 0;
+    for (let o = 0; o < octaves; o++) {
+      const nx = cellsX * (1 << o);
+      const ny = cellsY * (1 << o);
+      const grid = new Float32Array(nx * ny);
+      for (let i = 0; i < grid.length; i++) grid[i] = this.rand();
+      for (let y = 0; y < TILE; y++) {
+        const fy = (y / TILE) * ny;
+        const y0 = Math.floor(fy) % ny;
+        const y1 = (y0 + 1) % ny;
+        const ty = fy - Math.floor(fy);
+        const sy = ty * ty * (3 - 2 * ty);
+        for (let x = 0; x < TILE; x++) {
+          const fx = (x / TILE) * nx;
+          const x0 = Math.floor(fx) % nx;
+          const x1 = (x0 + 1) % nx;
+          const tx = fx - Math.floor(fx);
+          const sx = tx * tx * (3 - 2 * tx);
+          const a = grid[y0 * nx + x0]! * (1 - sx) + grid[y0 * nx + x1]! * sx;
+          const b = grid[y1 * nx + x0]! * (1 - sx) + grid[y1 * nx + x1]! * sx;
+          out[y * TILE + x]! += (a * (1 - sy) + b * sy) * amp;
+        }
+      }
+      total += amp;
+      amp *= 0.5;
+    }
+    for (let i = 0; i < out.length; i++) out[i]! /= total;
+    return out;
+  }
+
+  /**
+   * 用可平铺格点噪声填充。`noiseFill` 的替代品 ——
+   * 同样是"基色 ± amp"，但明暗是成团的而不是逐像素乱跳。
+   */
+  valueNoise(c: Rgb, amp: number, cellsX = 4, cellsY = 4, octaves = 2): this {
+    const f = this.noiseField(cellsX, cellsY, octaves);
+    for (let y = 0; y < TILE; y++) {
+      for (let x = 0; x < TILE; x++) {
+        const d = (f[y * TILE + x]! - 0.5) * 2 * amp;
+        this.set(x, y, c.r + d, c.g + d, c.b + d);
+      }
+    }
+    return this;
+  }
+
+  /**
+   * 方向性纹理：木纹、矿脉层理这类"沿一个方向拉长"的花纹。
+   * 本质就是各向异性的格点噪声 —— 顺纹方向格点少（变化慢），
+   * 横纹方向格点多（变化快）。
+   */
+  grain(c: Rgb, amp: number, vertical = false): this {
+    return vertical ? this.valueNoise(c, amp, 9, 2, 2) : this.valueNoise(c, amp, 2, 9, 2);
+  }
+
+  /**
+   * 成团斑块。矿石、沙砾、青苔用这个，替代 `speckles`。
+   *
+   * 与 `speckles` 的两点不同：形状是**带扰动的圆**而不是正方形，
+   * 且用 `setWrapped` 环绕，所以不会在边上被切掉。
+   */
+  blobs(c: Rgb, count: number, radius = 2, jitter = 18): this {
+    for (let i = 0; i < count; i++) {
+      const cx = Math.floor(this.rand() * TILE);
+      const cy = Math.floor(this.rand() * TILE);
+      const r = radius * (0.65 + this.rand() * 0.7);
+      const d = (this.rand() - 0.5) * jitter;
+      const rr = Math.ceil(r);
+      for (let dy = -rr; dy <= rr; dy++) {
+        for (let dx = -rr; dx <= rr; dx++) {
+          // 半径上加噪声，边界就不是标准圆 —— 标准圆在 16×16 上太规整，
+          // 一眼看得出是程序画的
+          if (Math.hypot(dx, dy) > r + (this.rand() - 0.5) * 0.9) continue;
+          this.setWrapped(cx + dx, cy + dy, c.r + d, c.g + d, c.b + d);
+        }
+      }
+    }
+    return this;
+  }
+
+  /**
+   * MC 风格的矿石团：亮色核心外面套一圈暗边。
+   *
+   * 直接撒亮点（原来的做法）在石头底上是"洒了一把糖"，糊成一片；
+   * 加了暗边之后每一团才有轮廓，退远了也数得清几团。
+   */
+  oreBlobs(core: Rgb, rim: Rgb, count: number, radius = 2): this {
+    for (let i = 0; i < count; i++) {
+      const cx = Math.floor(this.rand() * TILE);
+      const cy = Math.floor(this.rand() * TILE);
+      const r = radius * (0.7 + this.rand() * 0.6);
+      const rr = Math.ceil(r) + 1;
+      const wobble: number[] = [];
+      for (let k = 0; k < (rr * 2 + 1) ** 2; k++) wobble.push((this.rand() - 0.5) * 0.9);
+      let k = 0;
+      // 先铺暗边（半径 +1），再盖亮核，顺序反了核心会被边吃掉
+      for (let dy = -rr; dy <= rr; dy++) {
+        for (let dx = -rr; dx <= rr; dx++) {
+          if (Math.hypot(dx, dy) <= r + 0.8 + wobble[k++]!) {
+            this.setWrapped(cx + dx, cy + dy, rim.r, rim.g, rim.b);
+          }
+        }
+      }
+      k = 0;
+      for (let dy = -rr; dy <= rr; dy++) {
+        for (let dx = -rr; dx <= rr; dx++) {
+          const d = (this.rand() - 0.5) * 20;
+          if (Math.hypot(dx, dy) <= r + wobble[k++]! * 0.6) {
+            this.setWrapped(cx + dx, cy + dy, core.r + d, core.g + d, core.b + d);
+          }
+        }
+      }
+    }
+    return this;
+  }
+
+  /**
+   * 边缘暗化：只压**下边和右边**，不是四边。
+   *
+   * 为什么要有：一整面同材质的墙，如果每格贴图边上没有任何变化，
+   * 铺开就是一大块均匀的色 —— 看不出是由方块砌的。
+   *
+   * 为什么只压两边：四边都压出来的是一圈**边框**，铺开像贴了一墙浴室瓷砖，
+   * 一眼假。只压下右两边等于假设光从左上来，相邻两格之间落一道细影，
+   * 既能数出格数又读作立体 —— 这也是 MC 的贴图给人的感觉。
+   * 第一版做的是四边，在 2×2 平铺图上一看就是网格。
+   *
+   * 只作用于不透明像素：cutout 贴图（树叶、玻璃）的透明处不能碰，
+   * 否则 `bleedEdges` 补的颜色会被这里改掉。
+   */
+  edgeShade(strength = 14): this {
+    for (let y = 0; y < TILE; y++) {
+      for (let x = 0; x < TILE; x++) {
+        const depth = Math.min(TILE - 1 - x, TILE - 1 - y);
+        if (depth > 1) continue;
+        const i = this.idx(x, y);
+        if (this.data[i + 3]! === 0) continue;
+        const f = depth === 0 ? 1 : 0.35;
+        this.data[i] = this.data[i]! - strength * f;
+        this.data[i + 1] = this.data[i + 1]! - strength * f;
+        this.data[i + 2] = this.data[i + 2]! - strength * f;
+      }
+    }
+    return this;
+  }
+
+  /**
+   * Bayer 4×4 有序抖动：按 ratio 的比例把 c 点到现有像素上。
+   *
+   * 用处是在**两个相近的色**之间做过渡而不引入第三个色 —— 16 色以内的
+   * 像素画传统做法。4 整除 16，所以天然平铺。
+   */
+  dither(c: Rgb, ratio: number): this {
+    const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+    for (let y = 0; y < TILE; y++) {
+      for (let x = 0; x < TILE; x++) {
+        const i = this.idx(x, y);
+        if (this.data[i + 3]! === 0) continue;
+        if ((BAYER[(y % 4) * 4 + (x % 4)]! + 0.5) / 16 >= ratio) continue;
+        this.data[i] = c.r;
+        this.data[i + 1] = c.g;
+        this.data[i + 2] = c.b;
+      }
+    }
+    return this;
+  }
+
+  /**
+   * 成团挖孔：噪声场超过阈值的地方把 alpha 置 0，**RGB 原样保留**。
+   *
+   * 保留 RGB 是 cutout 贴图的硬要求（见 `bleedEdges` 的注释）：透明处若是
+   * 黑色，mipmap 会把它平均进相邻的不透明像素，树叶缩小后边缘发黑。
+   *
+   * 为什么要成团：逐像素独立挖孔（`noiseFill` 的 density 参数）出来是一张
+   * 均匀的筛子，退开一步就是一层灰雾。真实的枝叶缝隙是几处连片的洞。
+   */
+  holes(threshold: number, cells = 6): this {
+    const f = this.noiseField(cells, cells, 2);
+    for (let y = 0; y < TILE; y++) {
+      for (let x = 0; x < TILE; x++) {
+        if (f[y * TILE + x]! > threshold) this.data[this.idx(x, y) + 3] = 0;
+      }
+    }
+    return this;
+  }
+
   /** 顶部草叶：在纯色底上从顶端长出高度 3-6 的随机草茎 */
   grassOverlay(top: Rgb, height: [number, number] = [3, 6]): this {
     for (let x = 0; x < TILE; x++) {

@@ -8,26 +8,9 @@
 import { TilePainter, rgb, mulberry32, fnv1a, type Rgb } from './texgen.ts';
 import { SKY_RECIPES } from './tile-recipes-sky.ts';
 import { PARTICLE_RECIPES } from './tile-recipes-particles.ts';
+import { TERRAIN_RECIPES } from './tile-recipes-terrain.ts';
 
 type Recipe = (p: TilePainter) => void;
-
-/** 错缝砖格，用于圆石、石砖、红砖 */
-function brickGrid(p: TilePainter, base: Rgb, mortar: Rgb, cellW: number, cellH: number, jitter: number): void {
-  p.noiseFill(mortar, 8);
-  const rows = Math.ceil(16 / cellH);
-  for (let row = 0; row < rows; row++) {
-    const offset = (row % 2) * Math.floor(cellW / 2);
-    for (let col = -1; col < Math.ceil(16 / cellW) + 1; col++) {
-      const x0 = col * cellW + offset;
-      const d = (p.rand() - 0.5) * jitter;
-      p.rect(x0, row * cellH, cellW - 1, cellH - 1, {
-        r: base.r + d,
-        g: base.g + d,
-        b: base.b + d,
-      });
-    }
-  }
-}
 
 /** 在透明底上画一株十字植物的正面 */
 function plant(p: TilePainter, stem: Rgb, bloom: Rgb | null, height: number): void {
@@ -78,89 +61,7 @@ function mushroom(p: TilePainter, cap: Rgb, spots: boolean): void {
 }
 
 export const RECIPES: Record<string, Recipe> = {
-  // --- 地形 ---
-  stone: (p) => { p.noiseFill(rgb(0x808080), 20); p.speckles(rgb(0x6f6f6f), 6, 2); },
-  dirt: (p) => { p.noiseFill(rgb(0x866043), 22); p.speckles(rgb(0x6f4f38), 5, 2); },
-  // grass_top 是灰度，颜色由群系 tint 乘上去
-  grass_top: (p) => { p.noiseFill(rgb(0xd8d8d8), 22); },
-  // grass_side **不染色**（方块定义里 tintFaces 只勾了 UP 面），所以这里必须画成彩色：
-  // 下半是泥土本色，顶部长出一圈绿色草边。整块染色会把泥土也染绿。
-  grass_side: (p) => { p.noiseFill(rgb(0x866043), 22); p.grassOverlay(rgb(0x6aa03c), [2, 5]); },
-  sand: (p) => { p.noiseFill(rgb(0xe0d8b0), 12); },
-  gravel: (p) => { p.noiseFill(rgb(0x8a8a8a), 26); p.speckles(rgb(0x6a6a6a), 10, 2); },
-  clay: (p) => { p.noiseFill(rgb(0xa4a8b8), 12); },
-  bedrock: (p) => { p.noiseFill(rgb(0x525252), 30); p.speckles(rgb(0x2a2a2a), 12, 3); },
-  snow: (p) => { p.noiseFill(rgb(0xf0f5f5), 8); },
-  ice: (p) => { p.noiseFill(rgb(0x9ec4f0), 14); p.speckles(rgb(0xbcd8f8), 5, 3); },
-  mycelium_top: (p) => { p.noiseFill(rgb(0x6f6167), 20); p.speckles(rgb(0x8b7b86), 12, 2); },
-  mycelium_side: (p) => { p.noiseFill(rgb(0x866043), 22); p.grassOverlay(rgb(0x6f6167)); },
-  end_stone: (p) => { p.noiseFill(rgb(0xdcdca8), 14); p.speckles(rgb(0xc4c48c), 6, 2); },
-  netherrack: (p) => { p.noiseFill(rgb(0x703434), 26); p.speckles(rgb(0x5a2828), 8, 2); },
-  soul_sand: (p) => { p.noiseFill(rgb(0x53403a), 18); p.speckles(rgb(0x3a2b26), 6, 3); },
-  glowstone: (p) => { p.noiseFill(rgb(0xceac6b), 18); p.speckles(rgb(0xf8e8a8), 10, 2); },
-
-  // --- 砖块类 ---
-  cobblestone: (p) => brickGrid(p, rgb(0x7f7f7f), rgb(0x5c5c5c), 4, 4, 34),
-  mossy_cobblestone: (p) => { brickGrid(p, rgb(0x6f7d64), rgb(0x4e5a48), 4, 4, 30); p.speckles(rgb(0x5d7a4a), 8, 2); },
-  stone_bricks: (p) => brickGrid(p, rgb(0x7a7a7a), rgb(0x5f5f5f), 8, 4, 16),
-  bricks: (p) => brickGrid(p, rgb(0x96604c), rgb(0xb0b0b0), 8, 4, 14),
-  sandstone: (p) => { p.noiseFill(rgb(0xd8ce9e), 10); p.hLine(0, rgb(0xc0b684)); p.hLine(4, rgb(0xc8be8e)); p.hLine(12, rgb(0xc8be8e)); },
-
-  // --- 矿石：石头底 + 矿物斑点 ---
-  coal_ore: (p) => { p.noiseFill(rgb(0x808080), 20); p.speckles(rgb(0x1a1a1a), 6, 2); },
-  iron_ore: (p) => { p.noiseFill(rgb(0x808080), 20); p.speckles(rgb(0xd8a882), 6, 2); },
-  gold_ore: (p) => { p.noiseFill(rgb(0x808080), 20); p.speckles(rgb(0xf0d048), 5, 2); },
-  diamond_ore: (p) => { p.noiseFill(rgb(0x808080), 20); p.speckles(rgb(0x5decdc), 5, 2); },
-  lapis_ore: (p) => { p.noiseFill(rgb(0x808080), 20); p.speckles(rgb(0x2b4bab), 6, 2); },
-  redstone_ore: (p) => { p.noiseFill(rgb(0x808080), 20); p.speckles(rgb(0xd02020), 6, 2); },
-
-  // --- 金属与宝石方块 ---
-  gold_block: (p) => { p.noiseFill(rgb(0xf2d33c), 10); p.rect(1, 1, 14, 14, rgb(0xfae05c)); p.noiseFill(rgb(0xf2d33c), 6); },
-  iron_block: (p) => { p.noiseFill(rgb(0xdbdbdb), 8); },
-  diamond_block: (p) => { p.noiseFill(rgb(0x64e6dc), 12); p.speckles(rgb(0x9ff2ea), 6, 2); },
-  lapis_block: (p) => { p.noiseFill(rgb(0x2b4bab), 18); p.speckles(rgb(0x3f63c8), 8, 2); },
-
-  // --- 木材 ---
-  planks: (p) => {
-    p.noiseFill(rgb(0xb08a52), 14);
-    const seam = rgb(0x8a6a3c);
-    p.hLine(0, seam); p.hLine(5, seam); p.hLine(10, seam); p.hLine(15, seam);
-  },
-  log_side: (p) => {
-    p.noiseFill(rgb(0x6b5030), 16);
-    for (let x = 0; x < 16; x += 4) p.vLine(x, rgb(0x54401f));
-  },
-  log_top: (p) => {
-    p.noiseFill(rgb(0x9a7b4f), 14);
-    for (const r of [2, 4, 6]) {
-      for (let a = 0; a < 72; a++) {
-        const t = (a / 72) * Math.PI * 2;
-        p.set(Math.round(7.5 + Math.cos(t) * r), Math.round(7.5 + Math.sin(t) * r), 0x6b, 0x50, 0x30);
-      }
-    }
-  },
-  // 灰度：由 FOLIAGE tint 染色
-  leaves: (p) => { p.noiseFill(rgb(0xcfcfcf), 34, 0.86); },
-  bookshelf: (p) => {
-    p.noiseFill(rgb(0xb08a52), 12);
-    for (const rowY of [1, 9]) {
-      for (let x = 0; x < 16; x += 3) {
-        const hue = [0x8b3a3a, 0x3a5f8b, 0x4f8b3a, 0x8b7a3a][Math.floor(p.rand() * 4)] ?? 0x8b3a3a;
-        p.rect(x, rowY, 2, 6, rgb(hue));
-      }
-    }
-  },
-  crafting_table_top: (p) => {
-    p.noiseFill(rgb(0xa5763f), 12);
-    for (let i = 1; i < 3; i++) { p.hLine(i * 5, rgb(0x6b4a24)); p.vLine(i * 5, rgb(0x6b4a24)); }
-  },
-  crafting_table_side: (p) => {
-    p.noiseFill(rgb(0xb08a52), 12);
-    p.rect(0, 0, 16, 4, rgb(0x8a6a3c));
-    p.rect(2, 6, 5, 4, rgb(0x7a5a2c));
-    p.rect(9, 6, 5, 4, rgb(0x7a5a2c));
-  },
-
+  ...TERRAIN_RECIPES,
   // --- 熔炉 ---
   furnace_top: (p) => { p.noiseFill(rgb(0x707070), 16); p.rect(4, 4, 8, 8, rgb(0x5e5e5e)); },
   furnace_side: (p) => { p.noiseFill(rgb(0x707070), 16); },
@@ -396,7 +297,6 @@ export const RECIPES: Record<string, Recipe> = {
   enchanting_table_top: (p) => { p.noiseFill(rgb(0x2a1a3a), 12); p.speckles(rgb(0xc03060), 6, 2); },
   enchanting_table_side: (p) => { p.noiseFill(rgb(0x2a1a3a), 12); p.rect(0, 0, 16, 3, rgb(0x8a2a4a)); },
   sponge: (p) => { p.noiseFill(rgb(0xc6c64a), 20); p.speckles(rgb(0x8a8a2a), 18, 2); },
-  nether_brick: (p) => brickGrid(p, rgb(0x44242a), rgb(0x2a1418), 8, 4, 10),
   cactus_top: (p) => { p.noiseFill(rgb(0x5a8a3a), 12); p.speckles(rgb(0x3f6a28), 6, 2); },
   cactus_side: (p) => {
     p.noiseFill(rgb(0x4f7a30), 12);

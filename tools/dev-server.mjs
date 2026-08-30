@@ -33,6 +33,19 @@ const argOf = (name, dflt) => {
 };
 const PORT = Number(argOf('--port', 8080));
 
+/**
+ * 资源包挂载点。`--pack <dir>` 把一个**仓库外**的目录挂到 `/pack/`。
+ *
+ * 为什么要有：资源包覆盖层（src/client/render/resource-pack.ts）要通过
+ * HTTP 拿 PNG，而素材按纪律不能进仓库。跨域另起一个服务器又要处理 CORS
+ * 和 COEP（本服务器给所有响应打了 require-corp，跨域资源会被直接拦掉）。
+ * 挂载在同源之下最省事。
+ *
+ * 用法: node tools/dev-server.mjs --pack "D:/.minecraft/unpacked"
+ *       然后开 http://127.0.0.1:8080/?pack=/pack/
+ */
+const PACK_DIR = argOf('--pack', '') === '' ? null : path.resolve(argOf('--pack', ''));
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -53,9 +66,20 @@ const stripCache = new Map();
 /** 打开的 SSE 连接，用于热重载 */
 const sseClients = new Set();
 
-/** 把 URL 路径安全地映射到磁盘路径，越界返回 null */
+/**
+ * 把 URL 路径安全地映射到磁盘路径，越界返回 null。
+ *
+ * `/pack/...` 走挂载的资源包目录，其余走仓库根。两边都要做越界检查 ——
+ * 少了它 `/pack/../../etc/passwd` 就能读到挂载目录外面去。
+ */
 function resolveSafe(urlPath) {
   const decoded = decodeURIComponent(urlPath);
+  if (decoded.startsWith('/pack/')) {
+    if (PACK_DIR === null) return null;
+    const abs = path.resolve(PACK_DIR, '.' + decoded.slice('/pack'.length));
+    const rel = path.relative(PACK_DIR, abs);
+    return rel.startsWith('..') || path.isAbsolute(rel) ? null : abs;
+  }
   const abs = path.resolve(ROOT, '.' + decoded);
   const rel = path.relative(ROOT, abs);
   if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
@@ -190,4 +214,7 @@ for (const dir of ['src', 'assets', 'index.html']) {
 server.listen(PORT, () => {
   console.log(`dev-server  http://localhost:${PORT}/   root=${ROOT}`);
   console.log('  .ts 现场类型剥离 · COOP/COEP 已开(SAB 可用) · /__reload SSE · /__log 日志汇聚');
+  if (PACK_DIR !== null) {
+    console.log(`  资源包挂在 /pack/ -> ${PACK_DIR}   用 http://localhost:${PORT}/?pack=/pack/ 打开`);
+  }
 });

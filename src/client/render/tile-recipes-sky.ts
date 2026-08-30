@@ -108,13 +108,18 @@ export const SKY_RECIPES: Record<string, (p: TilePainter) => void> = {
   },
 
   /**
-   * 雪：散开的小方块，比雨慢也比雨软。
+   * 雪花**粒子**（不是雪方块的贴图）。散开的小方块，比雨慢也比雨软。
+   *
+   * 名字必须是 snowflake 而不是 snow：`RECIPES` 是一个对象字面量，
+   * `...SKY_RECIPES` 展开在地形那批**后面**，同名键后者胜。
+   * 原来这里叫 snow，于是雪方块（id 80）和雪层拿到的是这张
+   * 半透明的粒子图 —— 世界里的雪是"能看穿、上面浮着几点白"的。
    *
    * 和雨相反，雪要的就是稀疏 —— 一片片分得开的雪花，慢慢飘。
    * 画成 2×2 而不是单像素：单像素在远处会被 alpha 测试整个丢掉，
    * 表现是"雪只在眼前有，稍远一点就没了"。
    */
-  snow(p: TilePainter): void {
+  snowflake(p: TilePainter): void {
     clear(p);
     const rand = mulberry32(fnv1a('snowflake'));
     for (let i = 0; i < 16; i++) {

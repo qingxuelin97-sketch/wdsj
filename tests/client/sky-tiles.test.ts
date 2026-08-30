@@ -24,7 +24,9 @@ function litPixels(p: TilePainter): number {
 }
 
 test('天空贴图齐全：太阳、云、雨、雪、8 个月相', () => {
-  for (const n of ['sun', 'clouds', 'rain', 'snow']) {
+  // 雪花粒子的贴图名是 snowflake 而不是 snow：`RECIPES` 里 SKY_RECIPES
+  // 展开在方块配方**后面**，同名键后者胜 —— 叫 snow 会把雪方块的贴图盖掉
+  for (const n of ['sun', 'clouds', 'rain', 'snowflake']) {
     assert.ok(SKY_TILE_NAMES.includes(n), `缺少 ${n}`);
   }
   for (let i = 0; i < 8; i++) {
@@ -91,7 +93,7 @@ test('云可以无缝平铺 —— 左右边缘与上下边缘要接得上', () 
 
 test('雨是竖的短丝，雪是散开的点', () => {
   const rain = paint('rain');
-  const snow = paint('snow');
+  const snow = paint('snowflake');
 
   // 阈值 25。两次调低都是有原因的：
   //   从 128 降到 40 —— 单条雨丝是**故意画得很淡**的（视野里同时叠着

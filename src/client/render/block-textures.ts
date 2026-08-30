@@ -23,11 +23,30 @@ export interface TileAtlas {
  * 顺序由传入的名字数组决定，所以调用方（BlockTables.collectTextureNames）必须给出
  * 稳定排序，否则层号会随注册顺序变动，截图黄金值就白记了。
  */
-export function buildAtlas(names: readonly string[]): TileAtlas {
+export function buildAtlas(
+  names: readonly string[],
+  /**
+   * 资源包覆盖层：这里给了的名字直接用给的像素，不跑配方。
+   * 见 `resource-pack.ts` —— 仓库自身不含任何外部素材，
+   * 这只是给使用者指向本地素材留的口子。
+   */
+  overrides?: ReadonlyMap<string, Uint8Array>,
+): TileAtlas {
   const data = new Uint8Array(TILE_BYTES * names.length);
   const index = new Map<string, number>();
   for (let i = 0; i < names.length; i++) {
     const name = names[i]!;
+    index.set(name, i);
+    const override = overrides?.get(name);
+    if (override !== undefined && override.length === TILE_BYTES) {
+      // 外部贴图同样要做边缘渗色：资源包里的 cutout 图（树叶、玻璃）
+      // 透明处往往是纯黑，直接用会在缩小时渗出黑边，和自己画的一个毛病
+      const painter = new TilePainter(name);
+      painter.data.set(override);
+      painter.bleedEdges();
+      data.set(painter.data, i * TILE_BYTES);
+      continue;
+    }
     // 方块贴图与物品图标共用一个纹理数组：UI 里画物品和世界里画方块
     // 用的是同一个 sampler，省掉一次纹理切换，也省掉一套并行的资源管理
     const recipe = RECIPES[name] ?? ITEM_RECIPES[name];
@@ -40,7 +59,6 @@ export function buildAtlas(names: readonly string[]): TileAtlas {
     // 含 cutout 的贴图靠它避免 mipmap 把透明处的颜色混进边缘。
     painter.bleedEdges();
     data.set(painter.data, i * TILE_BYTES);
-    index.set(name, i);
   }
   return { data, layers: names.length, tileSize: TILE_SIZE, index };
 }

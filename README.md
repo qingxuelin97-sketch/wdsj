@@ -4,6 +4,8 @@
 
 TypeScript + 原生 WebGL2 + Web Workers，**零 npm 依赖**。
 所有美术与音频资源均为程序化生成的原创内容，不含任何 Mojang 素材。
+想用原版材质的话，游戏支持**资源包覆盖层** —— 素材由你自己指定、留在你自己盘上，
+不进这个仓库，见 [docs/ART-PLAN.md](docs/ART-PLAN.md)。
 
 > **接手这个项目？先读 [docs/HANDOFF.md](docs/HANDOFF.md)** —— 现在做到哪了、
 > 代码为什么长这样、下一步该干什么，以及唯一一个已知未解决的问题。
@@ -18,12 +20,16 @@ node tools/smoke.mjs --head        # 有头模式跑冒烟测试，方便肉眼�
 node tools/persist-check.mjs       # 闸门③：真浏览器建结构 -> 存盘 -> 重开 -> 全还原
 node tools/first-night-check.mjs   # 闸门①：打木 -> 合成 -> 掩体 -> 熬过有怪的一夜
 node tools/mine-check.mjs          # 闸门②：下矿 -> 火把照明 -> 挖到钻石 -> 活着回来
-UPDATE_GOLDEN=1 node tools/smoke.mjs   # 重新生成截图黄金哈希
+UPDATE_GOLDEN=1 node tools/smoke.mjs   # 重新生成截图黄金哈希（只在录它的那台机器上跑）
+node tools/tile-sheet.mjs          # 把程序化贴图渲成 PNG 供肉眼检查，不用起浏览器
 ```
+
+`tile-sheet` 每格默认按 2×2 平铺画，贴图接不接得上一眼就看得出 ——
+单看一格永远发现不了。`node tools/tile-sheet.mjs stone dirt --scale 8` 看单张。
 
 常用 URL 参数：`?seed=1234` 换种子，`?rd=8` 改视距，`?persist=0` 关存档、
 `?mobs=0` 关自然刷怪、`?randomTicks=0` 关随机刻、`?particles=0` 关环境粒子、
-`?debug=1` 默认打开 F3。
+`?debug=1` 默认打开 F3、`?pack=/pack/` 启用资源包覆盖层。
 
 **截图回归前四个都要关**，它们是同一类东西 —— 都会让世界自己变，
 于是画面永远不静止：存档让"同一个种子跑两次"读到上一次的世界，
@@ -67,6 +73,7 @@ docs/          设计、路线图、规约、评分表、有意偏差
 | [docs/RULES.md](docs/RULES.md) | 编码规约，前 4 条由 CI 强制 |
 | [docs/RUBRIC.md](docs/RUBRIC.md) | 100 分评分表与三项闸门测试 |
 | [docs/DEVIATIONS.md](docs/DEVIATIONS.md) | 明知与 1.0 不同、但有意为之的地方 |
+| [docs/ART-PLAN.md](docs/ART-PLAN.md) | 材质与 UI 的优化计划、素材来源立场、资源包覆盖层 |
 
 ## 当前进度
 
