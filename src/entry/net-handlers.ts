@@ -34,6 +34,10 @@ export interface PacketContext {
   onLogin(x: number, y: number, z: number): void;
   /** 世界时间更新 */
   onTime(worldAge: number, timeOfDay: number): void;
+  /** 天气变了。rain/thunder 是 0..1，服务端已经平滑过，客户端照用即可 */
+  onWeather(rain: number, thunder: number): void;
+  /** 闪电劈在某处 */
+  onLightning(x: number, y: number, z: number): void;
   /** 服务端状态上报 */
   onServerStats(tick: number, pending: number, loaded: number, tickMs: number): void;
   /** 指令回执 */
@@ -89,6 +93,13 @@ export function installPacketHandlers(net: PacketChannel, ctx: PacketContext): v
         if (oldId !== 0 && stateId(newState) === 0) ctx.interaction.onBlockBroken(bx, by, bz, oldId);
         return;
       }
+      case 'S_Weather':
+        // 服务端发的是 0..100 的整数，这里还原成 0..1
+        ctx.onWeather((value['rain'] as number) / 100, (value['thunder'] as number) / 100);
+        return;
+      case 'S_Lightning':
+        ctx.onLightning(value['x'] as number, value['y'] as number, value['z'] as number);
+        return;
       case 'S_TimeUpdate':
         ctx.onTime(Number(value['worldAge'] as bigint), Number(value['timeOfDay'] as bigint));
         return;

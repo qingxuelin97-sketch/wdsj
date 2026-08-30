@@ -200,6 +200,42 @@ export function getBiome(id: number): BiomeDef {
   return b;
 }
 
+/**
+ * 按 id 取群系，取不到给 null。
+ *
+ * 和 getBiome 的区别只在"取不到怎么办"。每刻都要跑的路径（天气）用这个：
+ * 一个损坏的存档不该让服务端整个停摆，让那一格不下雨就够了。
+ *
+ * **不要用 `BIOMES[id]` 代替它。** id 是不连续的（8 和 9 留给下界与末地），
+ * 所以从下标 8 起，数组下标就和 id 对不上了 —— BIOMES[12] 是蘑菇岛
+ * 而不是 id 为 12 的冰原。这个错误不会报任何错，只会让雪原下雨、
+ * 蘑菇岛下雪，而且要盯着一片特定的地形看很久才看得出来。
+ */
+export function findBiome(id: number): BiomeDef | null {
+  return BY_ID[id] ?? null;
+}
+
+/** 一个群系头顶会下什么 */
+export type Precipitation = 'none' | 'rain' | 'snow';
+
+/**
+ * 群系的降水类型。
+ *
+ * MC 用两个开关（enableRain / enableSnow）而不是直接看温度，因为沙漠的
+ * 温度高但**完全不下雨**，而不是"下热雨"。这里照抄那个形状：
+ * rainfall 为 0 就是彻底不降水。
+ *
+ * 放在 content 而不是 server：服务端要用它决定积不积雪，客户端要用它
+ * 决定这一列画雨还是画雪，而两边**必须给出同一个答案** ——
+ * 各写一份的话，会出现"客户端在下雪、服务端在积水"这种没人看得懂的画面。
+ */
+export function precipitationOf(biomeId: number): Precipitation {
+  // findBiome 而不是 BIOMES[id] —— id 不连续，见上面的说明
+  const b = findBiome(biomeId);
+  if (b === null || b.rainfall <= 0) return 'none';
+  return b.snowy ? 'snow' : 'rain';
+}
+
 export function getBiomeByName(name: string): BiomeDef {
   const b = BIOMES.find((x) => x.name === name);
   if (b === undefined) throw new Error(`未知的群系名 '${name}'`);

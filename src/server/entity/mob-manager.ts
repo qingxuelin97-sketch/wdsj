@@ -130,7 +130,11 @@ export class MobManager {
 
   tick(): void {
     const world = this.core.world;
-    const day = isDaytime(world.timeOfDay);
+    // 天气要参与判据：雷暴天的白天天光低到能刷怪、僵尸也不烧。
+    // 这是 MC 的行为，也是雷暴之所以让人紧张的全部原因 ——
+    // 少传这两个参数，天气就只剩画面效果
+    const w = world.weather.snapshot();
+    const day = isDaytime(world.timeOfDay, w.rainStrength, w.thunderStrength);
 
     if (this.naturalSpawning && world.worldAge % SPAWN_INTERVAL === 0) this.trySpawn(day);
 

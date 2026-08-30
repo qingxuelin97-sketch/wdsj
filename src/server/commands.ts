@@ -10,7 +10,7 @@
  */
 import type { ServerCore } from './server-core.ts';
 import type { ServerPlayer } from './player/server-player.ts';
-import { S_CommandResult, S_TimeUpdate, WindowKind } from '../core/net/packets.ts';
+import { S_CommandResult, S_TimeUpdate, S_Weather, WindowKind } from '../core/net/packets.ts';
 import { packState } from '../core/world/chunk.ts';
 import { makeStack, type ItemStack } from '../core/item/item-def.ts';
 import { giveToPlayer, syncInventory, showWindow, closeWindow } from './player/inventory-actions.ts';
@@ -76,6 +76,37 @@ value: Record<string, unknown>,
         const [, sx, sy, sz] = parts;
         const x = Number(sx), y = Number(sy), z = Number(sz);
         reply(true, `${core.world.store.getSkyLight(x, y, z)}/${core.world.store.getBlockLight(x, y, z)}`);
+        return;
+      }
+      case 'weather': {
+        // `weather clear|rain|thunder [刻数]`
+        //
+        // 强度直接拉到位（snapStrength），不等那 5 秒淡入 ——
+        // 自动化脚本设完天气紧接着就要截图，等淡入等不起，
+        // 而且"等多久算够"又是一个会飘的判断
+        const [, mode, ticks] = parts;
+        const w = core.world.weather;
+        const dur = ticks === undefined ? 12000 : Number(ticks);
+        if (mode === 'clear') w.set(false, false, dur);
+        else if (mode === 'rain') w.set(true, false, dur);
+        else if (mode === 'thunder') w.set(true, true, dur);
+        else {
+          const s = w.snapshot();
+          reply(true, `${s.raining ? 'rain' : 'clear'}${s.thundering ? '+thunder' : ''} `
+            + `${s.rainStrength.toFixed(2)}/${s.thunderStrength.toFixed(2)} `
+            + `rainTime=${w.rainTime} thunderTime=${w.thunderTime}`);
+          return;
+        }
+        w.snapStrength();
+        // 让下一刻必定广播出去 —— 否则量化后的值恰好没变时收不到包
+        core.lastSentRain = -1;
+        for (const p of core.eachPlayer()) {
+          p.channel.send(S_Weather, {
+            rain: Math.round(w.snapshot().rainStrength * 100),
+            thunder: Math.round(w.snapshot().thunderStrength * 100),
+          });
+        }
+        reply(true, 'ok');
         return;
       }
       case 'settled': {

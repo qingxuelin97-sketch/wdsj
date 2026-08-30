@@ -24,8 +24,13 @@ import type { DrawContext } from '../client/ui/inventory-screen.ts';
 import type { Interaction } from '../client/player/interaction.ts';
 import type { EntityView } from './entity-view.ts';
 import type { SkyRenderer } from '../client/render/sky-renderer.ts';
+import type { WeatherRenderer } from '../client/render/weather-renderer.ts';
 import { skyColor, sunBrightness } from '../core/world/day-night.ts';
 import { SECTION_SIZE } from '../core/constants.ts';
+import type { ChunkStore } from '../core/world/block-view.ts';
+
+/** 闪电闪白多少帧。6 帧 ≈ 100ms，再长就成了"天亮了" */
+const LIGHTNING_FLASH_FRAMES = 6;
 
 export interface FrameDeps {
   readonly gl: WebGL2RenderingContext;
@@ -49,12 +54,21 @@ export interface FrameDeps {
   readonly uiCtx: DrawContext;
   readonly entityPartialTick: number;
   readonly sky: SkyRenderer;
-  readonly skyLayers: { sun: number; clouds: number; moons: readonly number[] };
+  readonly skyLayers: {
+    sun: number; clouds: number; moons: readonly number[];
+    rain: number; snow: number;
+  };
   /** 服务端权威的世界年龄。月相按天走，要用它而不是当日时间 */
   readonly worldAge: number;
   /** 渲染刻。云的漂移由它驱动，freeze() 之后要停住 */
   readonly renderTick: number;
   readonly rain: number;
+  readonly thunder: number;
+  readonly weatherRenderer: WeatherRenderer;
+  /** 最近一次闪电所在的渲染刻，-1 表示没有 */
+  readonly lightningFlashTick: number;
+  /** 客户端的世界镜像。雨要按列查群系与地面高度 */
+  readonly store: ChunkStore;
 }
 
 export function drawWorldFrame(d: FrameDeps): void {
@@ -68,7 +82,21 @@ export function drawWorldFrame(d: FrameDeps): void {
   gl.cullFace(gl.BACK);
   gl.frontFace(gl.CCW);
   // 天空色随昼夜变化，雾色跟着天空走 —— 远处的地形才不会在夜里浮出一层白边
-  const sky = skyColor(d.timeOfDay);
+  // 天空色带上天气：雨天去饱和 + 压暗，雷暴更甚。
+  // 闪电劈下的那几帧整片天空刷白 —— 这是雷暴唯一一个"吓人"的瞬间，
+  // 而它只值 6 帧
+  const flashFrames = d.lightningFlashTick >= 0 ? d.renderTick - d.lightningFlashTick : 999;
+  const flash = flashFrames >= 0 && flashFrames < LIGHTNING_FLASH_FRAMES
+    ? 1 - flashFrames / LIGHTNING_FLASH_FRAMES
+    : 0;
+  const base = skyColor(d.timeOfDay, d.rain, d.thunder);
+  const sky = flash > 0
+    ? {
+      r: base.r + (1 - base.r) * flash * 0.85,
+      g: base.g + (1 - base.g) * flash * 0.85,
+      b: base.b + (1 - base.b) * flash * 0.85,
+    }
+    : base;
   gl.clearColor(sky.r, sky.g, sky.b, 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
@@ -85,7 +113,7 @@ export function drawWorldFrame(d: FrameDeps): void {
     timeOfDay: d.timeOfDay,
     worldAge: d.worldAge,
     renderTick: d.renderTick,
-    rain: d.rain,
+    rain: Math.min(1, d.rain + d.thunder * 0.5),
     texture: d.texture,
     sunLayer: d.skyLayers.sun,
     moonLayers: d.skyLayers.moons,
@@ -95,7 +123,9 @@ export function drawWorldFrame(d: FrameDeps): void {
 
   d.shader.use();
   d.shader.setMat4('uViewProj', d.camera.viewProjection);
-  d.shader.setFloat('uSunBrightness', sunBrightness(d.timeOfDay));
+  // 世界的光照亮度也要跟着天气走 —— 天暗了地面却不暗的话，
+  // 雨看起来像贴在画面上的一层滤镜
+  d.shader.setFloat('uSunBrightness', Math.min(1, sunBrightness(d.timeOfDay, d.rain, d.thunder) + flash * 0.7));
   d.shader.setVec3('uFogColor', sky.r, sky.g, sky.b);
   d.shader.setVec3('uCameraPos', d.camera.position[0]!, d.camera.position[1]!, d.camera.position[2]!);
   d.shader.setFloat('uFogStart', d.renderDistance * SECTION_SIZE * 0.65);
@@ -118,6 +148,23 @@ export function drawWorldFrame(d: FrameDeps): void {
   d.mobRenderer.render(d.camera.viewProjection);
   d.particles.render(d.camera.viewProjection, d.camera.yaw, d.camera.pitch, d.texture);
   d.interaction.renderOverlay(d.overlay, d.texture);
+
+  // 雨雪排在最后一个世界元素：它是半透明的，要能被地形遮挡（深度测试开着），
+  // 但不该遮挡别的半透明物件，所以自己不写深度
+  d.weatherRenderer.render({
+    viewProj: d.camera.viewProjection,
+    cameraX: d.camera.position[0]!,
+    cameraY: d.camera.position[1]!,
+    cameraZ: d.camera.position[2]!,
+    cameraYaw: d.camera.yaw,
+    rain: d.rain,
+    renderTick: d.renderTick,
+    store: d.store,
+    texture: d.texture,
+    rainLayer: d.skyLayers.rain,
+    snowLayer: d.skyLayers.snow,
+    brightness: Math.max(0.25, sunBrightness(d.timeOfDay, d.rain, d.thunder)),
+  });
 
   // 界面画在最后，且用**虚拟像素**坐标系（见 d.ui-d.renderer.ts）
   d.ui.draw(d.uiRenderer, d.uiCtx);

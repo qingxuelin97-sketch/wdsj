@@ -36,6 +36,11 @@ export interface LevelData {
   spawnX: number;
   spawnY: number;
   spawnZ: number;
+  /** 天气。不存的话读档必定是晴天，一场雨会被存盘打断 */
+  raining: boolean;
+  thundering: boolean;
+  rainTime: number;
+  thunderTime: number;
 }
 
 /** player.dat 里的东西 */
@@ -208,6 +213,12 @@ export class WorldSave {
         spawnX: getInt(data, 'SpawnX'),
         spawnY: getInt(data, 'SpawnY'),
         spawnZ: getInt(data, 'SpawnZ'),
+        // 老存档没有这几个字段，getInt 给 0 —— 正好是"晴天、计时器待抽"，
+        // 是个合理的默认，不需要额外的版本判断
+        raining: getInt(data, 'raining') !== 0,
+        thundering: getInt(data, 'thundering') !== 0,
+        rainTime: getInt(data, 'rainTime'),
+        thunderTime: getInt(data, 'thunderTime'),
       };
     } catch {
       return null;
@@ -223,6 +234,10 @@ export class WorldSave {
         SpawnX: nbt.int(level.spawnX),
         SpawnY: nbt.int(level.spawnY),
         SpawnZ: nbt.int(level.spawnZ),
+        raining: nbt.int(level.raining ? 1 : 0),
+        thundering: nbt.int(level.thundering ? 1 : 0),
+        rainTime: nbt.int(level.rainTime),
+        thunderTime: nbt.int(level.thunderTime),
         // 存的是**我们自己的**存档版本号，不是 MC 的。格式一改就 +1，
         // 读到不认识的版本宁可当作没有存档，也不要按错的布局解析
         SaveVersion: nbt.int(SAVE_VERSION),

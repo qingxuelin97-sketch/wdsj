@@ -194,6 +194,32 @@ export const S_TimeUpdate = S2C.add(
   ]),
 );
 
+/**
+ * 天气。只在**变化时**发，不每刻发。
+ *
+ * 强度用 u8 的 0..100 而不是 f32：这个值唯一的用途是渲染雨的密度和
+ * 压暗天色，1% 的分辨率绰绰有余，省下的三个字节乘以在线人数乘以每次变化。
+ *
+ * 客户端拿到之后**自己每帧插值**吗？不。强度已经是服务端平滑过的
+ * （每刻 ±0.01），照着用就行 —— 客户端再插一次会让两边对不上，
+ * 而"雨有多大"是会影响刷怪判据的，必须一致。
+ */
+export const S_Weather = S2C.add(
+  definePacket(0x98, 'S_Weather', [
+    ['rain', 'u8'],
+    ['thunder', 'u8'],
+  ]),
+);
+
+/** 闪电劈在哪。客户端据此放一道光和一声雷 */
+export const S_Lightning = S2C.add(
+  definePacket(0x99, 'S_Lightning', [
+    ['x', 'i32'],
+    ['y', 'i32'],
+    ['z', 'i32'],
+  ]),
+);
+
 /** 强制设置玩家位置（传送、和解失败时的纠正） */
 export const S_PlayerPosLook = S2C.add(
   definePacket(0x86, 'S_PlayerPosLook', [

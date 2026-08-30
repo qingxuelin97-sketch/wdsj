@@ -81,6 +81,10 @@ export class SaveController {
         spawnX: Math.floor(this.core.spawnX),
         spawnY: Math.floor(this.core.spawnY),
         spawnZ: Math.floor(this.core.spawnZ),
+        raining: this.core.world.weather.raining,
+        thundering: this.core.world.weather.thundering,
+        rainTime: this.core.world.weather.rainTime,
+        thunderTime: this.core.world.weather.thunderTime,
       });
       const regions = await this.save.flush();
       this.lastSaveTick = this.core.tickNumber;
@@ -107,6 +111,15 @@ export class SaveController {
     if (level === null) return false;
     this.core.world.worldAge = level.worldAge;
     this.core.world.timeOfDay = level.timeOfDay;
+    const w = this.core.world.weather;
+    w.raining = level.raining;
+    w.thundering = level.thundering;
+    w.rainTime = level.rainTime;
+    w.thunderTime = level.thunderTime;
+    // 强度**不**存盘，读档时直接拉到位。存了也没用：它是 raining 的
+    // 确定性函数，而"读档时看着雨慢慢淡进来"比直接下着更奇怪 ——
+    // 玩家关游戏时正在下大雨，回来该还是大雨
+    w.snapStrength();
     this.core.spawnX = level.spawnX;
     this.core.spawnY = level.spawnY;
     this.core.spawnZ = level.spawnZ;

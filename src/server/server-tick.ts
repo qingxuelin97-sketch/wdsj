@@ -9,13 +9,14 @@
  * 熔炉点火赶不上这一刻的光照）。
  */
 import type { ServerCore } from './server-core.ts';
-import { S_BlockUpdate, S_TimeUpdate, S_ServerStats } from '../core/net/packets.ts';
+import { S_BlockUpdate, S_TimeUpdate, S_ServerStats, S_Weather, S_Lightning } from '../core/net/packets.ts';
 import { chunkKey } from '../core/world/chunk.ts';
 import type { ServerPlayer } from './player/server-player.ts';
 import { advanceDigging } from './player/block-interaction.ts';
 import { tickBlockEntities } from './world/block-entity-tick.ts';
 import { runScheduledTick } from './world/block-ticks.ts';
 import { runRandomTicks } from './world/random-ticks.ts';
+import { runWeatherTick } from './world/weather-tick.ts';
 import { tickItems, broadcastItems } from './entity/item-manager.ts';
 import { tickArrows } from './entity/combat.ts';
 import { tickVitals } from './player/player-vitals.ts';
@@ -53,6 +54,22 @@ export function runServerTick(core: ServerCore): void {
   // 与计划刻分开：计划刻是"我知道 N 刻之后要做什么"，
   // 随机刻是"这件事迟早会发生但没人知道什么时候"
   if (core.randomTicks) runRandomTicks(core.world);
+
+  // 天气：状态机推进 + 闪电/积雪。
+  //
+  // 挂在 randomTicks 这个开关下面，和随机刻同进退。理由一样：
+  // 截图回归要的是"同一个种子跑两次得到同一个世界"，而一场雨会点着树、
+  // 铺上雪 —— 那是真正的世界变更，两次跑到的时刻不同结果就不同
+  if (core.randomTicks) {
+    core.world.weather.tick(core.world.random);
+    for (const s of runWeatherTick(core.world)) {
+      for (const player of core.eachPlayer()) {
+        if (!player.isSubscribed(s.x >> 4, s.z >> 4)) continue;
+        player.channel.send(S_Lightning, { x: s.x, y: s.y, z: s.z });
+      }
+    }
+    broadcastWeather(core);
+  }
 
   // 方块实体（熔炉）。排在挖掘之后、光照之前：熔炉点火会换方块 id，
   // 那是一次真正的方块变更，得赶上这一刻的光照与广播
@@ -174,4 +191,24 @@ function unloadDistantChunks(core: ServerCore): void {
     if (!keep.has(chunk.key)) doomed.push([chunk.cx, chunk.cz]);
   }
   for (const [cx, cz] of doomed) core.world.unloadChunk(cx, cz);
+}
+
+/**
+ * 天气变了才广播。
+ *
+ * 强度每刻都在 ±0.01 地爬，量化到 0..100 之后大约每刻都会变一档 ——
+ * 但那只在淡入淡出的那 5 秒里发生，其余时间一个包都不发。
+ * 每刻无脑发的话，一个静止的世界也会持续吐包，而它 99.9% 的时间
+ * 携带的是同一个数。
+ */
+function broadcastWeather(core: ServerCore): void {
+  const w = core.world.weather.snapshot();
+  const rain = Math.round(w.rainStrength * 100);
+  const thunder = Math.round(w.thunderStrength * 100);
+  if (rain === core.lastSentRain && thunder === core.lastSentThunder) return;
+  core.lastSentRain = rain;
+  core.lastSentThunder = thunder;
+  for (const player of core.eachPlayer()) {
+    player.channel.send(S_Weather, { rain, thunder });
+  }
 }

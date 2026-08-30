@@ -14,7 +14,7 @@
 import { PacketChannel, type Transport } from '../core/net/transport.ts';
 import {
   C2S, PROTOCOL_VERSION, 
-  S_Login, S_Disconnect, S_Chat, 
+  S_Login, S_Disconnect, S_Chat, S_Weather,
   S_WindowProgress,
 } from '../core/net/packets.ts';
 import { ServerWorld } from './world/server-world.ts';
@@ -108,6 +108,18 @@ export class ServerCore {
    * 来做逐像素比对，就像 persist=0 与 mobs=0 那样。
    */
   randomTicks = true;
+
+  /**
+   * 上一次广播出去的天气，量化到 0..100。
+   *
+   * 只为了"变了才发"这一个判断而存在。放在 core 上而不是 server-tick 的
+   * 模块级变量里：模块级变量会被同进程里的第二个 ServerCore 共用，
+   * 而单测经常同时开两个（存档那组测试就是靠两个 core 才能证明
+   * 数据真的落盘了）
+   */
+  lastSentRain = -1;
+  lastSentThunder = -1;
+
   /**
    * 玩家握手完成、位置已定，但**登录包还没发出去**时的回调。
    *
@@ -311,6 +323,13 @@ export class ServerCore {
       spawnZ: player.z,
     });
     player.channel.send(S_Chat, { text: `欢迎，${player.name}` });
+    // 天气只在变化时广播，所以新玩家要单独补一份 ——
+    // 否则进游戏时正在下的雨，要等到它停了才看得见
+    const w = this.world.weather.snapshot();
+    player.channel.send(S_Weather, {
+      rain: Math.round(w.rainStrength * 100),
+      thunder: Math.round(w.thunderStrength * 100),
+    });
     // 立刻算一次订阅，让第一批区块在本 tick 就开始推送
     player.updateSubscriptions(this.world);
     player.channel.flush();

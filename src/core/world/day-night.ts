@@ -67,8 +67,16 @@ export function lightBrightness(level: number): number {
   return (1 - f) / (f * 3 + 1);
 }
 
-/** 天空颜色，随昼夜在白昼蓝与夜空深蓝之间过渡 */
-export function skyColor(timeOfDay: number): { r: number; g: number; b: number } {
+/**
+ * 天空颜色，随昼夜在白昼蓝与夜空深蓝之间过渡。
+ *
+ * 下雨时**去饱和 + 压暗**，而不是简单乘一个系数：雨天的天不是"暗一点的蓝"，
+ * 是灰的。做法是把 rgb 拉向它们自己的灰度值，再整体压暗。
+ * 只压暗不去饱和的话，暴雨天的天空是一片深蓝，看着像夜里而不是像下雨。
+ */
+export function skyColor(
+  timeOfDay: number, rain = 0, thunder = 0,
+): { r: number; g: number; b: number } {
   const angle = celestialAngle(timeOfDay);
   // MC 用 cos(angle*2π)*2+0.5 夹到 0..1 当作"白昼程度"
   const day = Math.min(1, Math.max(0, Math.cos(angle * Math.PI * 2) * 2 + 0.5));
@@ -77,7 +85,22 @@ export function skyColor(timeOfDay: number): { r: number; g: number; b: number }
   const r = (0.11 + 0.42 * day) * (1 - dusk) + 0.72 * dusk;
   const g = (0.13 + 0.53 * day) * (1 - dusk) + 0.42 * dusk;
   const b = (0.26 + 0.63 * day) * (1 - dusk) + 0.32 * dusk;
-  return { r, g, b };
+
+  // 两个因子**相乘**，和 skyLightSubtracted 是同一个形状。
+  //
+  // 写成 min(1, rain + thunder) 那样相加是错的：雨一到 1 就顶住上限，
+  // 雷暴再怎么强天色也不会更暗了 —— 而"雷暴比普通下雨更黑"正是
+  // 雷暴唯一的视觉标志。
+  if (rain <= 0 && thunder <= 0) return { r, g, b };
+  const gray = r * 0.3 + g * 0.59 + b * 0.11;
+  // 去饱和只看雨：雨天的天是灰的，而雷暴天是**更暗的**灰，不是更灰的灰
+  const desat = 0.7 * rain;
+  const dim = (1 - 0.45 * rain) * (1 - 0.35 * thunder);
+  return {
+    r: (r * (1 - desat) + gray * desat) * dim,
+    g: (g * (1 - desat) + gray * desat) * dim,
+    b: (b * (1 - desat) + gray * desat) * dim,
+  };
 }
 
 /** 太阳在天空中的方位角（弧度），供后续画日月用 */
@@ -92,7 +115,11 @@ export function sunAngleRadians(timeOfDay: number): number {
  * 僵尸烧不烧、怪刷不刷的是**天光被扣掉多少**，而那条曲线在日出日落
  * 前后各有一段过渡。用时间硬切的话，怪会在日出那一刻整齐地烧起来，
  * 而 MC 里是天亮的过程中陆续烧。
+ *
+ * 天气也走这条路：下雨扣 5/16、雷暴再扣 5/16，两个都满时白天的天光
+ * 只剩不到一半。于是**雷暴天的白天怪会刷、僵尸不烧** —— 这不是给天气
+ * 单独加的特判，是同一条曲线自然给出的结果。
  */
-export function isDaytime(timeOfDay: number): boolean {
-  return skyLightSubtracted(timeOfDay) <= 3;
+export function isDaytime(timeOfDay: number, rain = 0, thunder = 0): boolean {
+  return skyLightSubtracted(timeOfDay, rain, thunder) <= 3;
 }

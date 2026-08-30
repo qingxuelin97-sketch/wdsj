@@ -68,27 +68,63 @@ export const SKY_RECIPES: Record<string, (p: TilePainter) => void> = {
     }
   },
 
-  // 雨：竖直细线。贴图里只放几条，拉长交给粒子
+  /**
+   * 雨：一根根**短促的**竖直雨丝。
+   *
+   * 关键是**留白**。第一版把每条线从上画到下、铺满 11 个列，
+   * 渲染出来是一整幅半透明的帘子 —— 均匀、静止、毫无下落感，
+   * 因为一块处处相同的东西往下滚是看不出来在动的。
+   *
+   * 真正让人看出"在下雨"的是**间隙**：一段雨丝、一段空、再一段雨丝，
+   * 滚动时眼睛跟着那些间隙走，才读得出下落。
+   *
+   * 竖向被截断不要紧：这张图是纵向平铺的，被切断的雨丝会在下一块里
+   * 接着长出来，正好是连续的。
+   */
   rain(p: TilePainter): void {
     clear(p);
-    const rand = mulberry32(fnv1a('rain'));
-    for (let i = 0; i < 5; i++) {
+    const rand = mulberry32(fnv1a('raindrops'));
+    for (let i = 0; i < 22; i++) {
       const x = Math.floor(rand() * 16);
-      const y0 = Math.floor(rand() * 8);
-      const y1 = Math.min(16, y0 + 8 + Math.floor(rand() * 6));
-      for (let y = y0; y < y1; y++) p.set(x, y, 150, 175, 235, 190);
+      const y0 = Math.floor(rand() * 16);
+      const len = 3 + Math.floor(rand() * 4);
+      // 每条自己的亮度与浓度，让雨有远近层次而不是一堵均匀的墙
+      const bright = 0.65 + rand() * 0.35;
+      const r = Math.round(160 * bright);
+      const g = Math.round(185 * bright);
+      const b = Math.round(245 * bright);
+      // 单条雨丝要**很淡**。视野里同时有上百条雨带互相叠着，
+      // 每条都画得清清楚楚的话叠出来是一堵白墙，世界整个看不见了。
+      // 雨的密度感来自"很多条很淡的"，不是"几条很浓的"
+      const alpha = 55 + Math.floor(rand() * 55);
+      for (let k = 0; k < len; k++) {
+        // 对 16 取模：跨过下边界的部分从上边接回来，平铺时是连续的
+        const y = (y0 + k) % 16;
+        // 头尾淡一点，雨丝才有"速度"而不是一根火柴棍
+        const t = k === 0 || k === len - 1 ? 0.45 : 1;
+        p.set(x, y, r, g, b, Math.round(alpha * t));
+      }
     }
   },
 
-  // 雪：散开的小方点，比雨慢也比雨软
+  /**
+   * 雪：散开的小方块，比雨慢也比雨软。
+   *
+   * 和雨相反，雪要的就是稀疏 —— 一片片分得开的雪花，慢慢飘。
+   * 画成 2×2 而不是单像素：单像素在远处会被 alpha 测试整个丢掉，
+   * 表现是"雪只在眼前有，稍远一点就没了"。
+   */
   snow(p: TilePainter): void {
     clear(p);
     const rand = mulberry32(fnv1a('snowflake'));
-    for (let i = 0; i < 14; i++) {
+    for (let i = 0; i < 16; i++) {
       const x = Math.floor(rand() * 15);
       const y = Math.floor(rand() * 15);
-      p.set(x, y, 250, 250, 255, 225);
-      if (rand() < 0.5) p.set(x + 1, y, 250, 250, 255, 200);
+      const a = 190 + Math.floor(rand() * 65);
+      p.set(x, y, 252, 252, 255, a);
+      p.set(x + 1, y, 252, 252, 255, Math.round(a * 0.8));
+      p.set(x, y + 1, 252, 252, 255, Math.round(a * 0.8));
+      p.set(x + 1, y + 1, 252, 252, 255, Math.round(a * 0.6));
     }
   },
 

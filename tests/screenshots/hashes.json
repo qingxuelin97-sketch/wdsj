@@ -11,9 +11,11 @@
   "sky-sunset": "45e5c93a",
   "sky-moon": "63d1636d",
   "sky-clouds": "8d3ed52b",
-  "ui-hotbar": "7bce4eac",
-  "ui-inventory": "b0c7eb8d",
-  "shapes": "5ee98e9b",
-  "gallery": "a257e579",
-  "night-glowstone": "ac4fc066"
+  "rain": "29ecb637",
+  "thunder": "ff71ed77",
+  "ui-hotbar": "3aaae37c",
+  "ui-inventory": "3345a069",
+  "shapes": "614ed0d3",
+  "gallery": "74ec7a08",
+  "night-glowstone": "5fcbd144"
 }

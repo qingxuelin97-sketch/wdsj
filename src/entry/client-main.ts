@@ -28,6 +28,7 @@ import { BLOCK_VERT_SRC, BLOCK_FRAG_SRC } from '../client/render/block-shader.ts
 import { tintColorArray } from '../client/render/block-textures.ts';
 import { buildRenderResources } from '../client/render/resources.ts';
 import { SkyRenderer } from '../client/render/sky-renderer.ts';
+import { WeatherRenderer } from '../client/render/weather-renderer.ts';
 import { SKY_TILE_NAMES } from '../client/render/tile-recipes-sky.ts';
 import { ChunkRenderer } from '../client/render/chunk-renderer.ts';
 import { OverlayRenderer } from '../client/render/overlay-renderer.ts';
@@ -213,6 +214,8 @@ const serverStats = { tick: 0, pendingChunks: 0, loadedChunks: 0, tickMs: 0 };
 
 /** 服务端权威的天气，0..1。渲染只读它，绝不自己推进 */
 const weather = { rain: 0, thunder: 0 };
+/** 最近一次闪电落在哪一个渲染刻。-1 表示没劈过 */
+let lightningFlashTick = -1;
 
 /**
  * 天空。日月星云都在这里，画在世界之前。
@@ -221,10 +224,13 @@ const weather = { rain: 0, thunder: 0 };
  * 那是内容层的事 —— 它只要一个层号。
  */
 const sky = new SkyRenderer(gl);
+const weatherRenderer = new WeatherRenderer(gl);
 const skyLayers = {
   sun: atlas.index.get('sun') ?? 0,
   clouds: atlas.index.get('clouds') ?? 0,
   moons: Array.from({ length: 8 }, (_, i) => atlas.index.get(`moon_phase_${i}`) ?? 0),
+  rain: atlas.index.get('rain') ?? 0,
+  snow: atlas.index.get('snow') ?? 0,
 };
 
 const interaction = new Interaction({
@@ -268,6 +274,22 @@ installPacketHandlers(net, {
   onTime: (age, tod) => {
     serverTick = age;
     timeOfDay = tod;
+  },
+  onWeather: (rain, thunder) => {
+    weather.rain = rain;
+    weather.thunder = thunder;
+  },
+  onLightning: (x, y, z) => {
+    // 闪电本身是一瞬间的事：记下时刻，渲染那边照着它闪几帧白光。
+    // 用 renderTick 而不是挂钟 —— freeze() 之后闪电也该停在那一帧上
+    lightningFlashTick = clock.renderTick;
+    // 声音按水平方位左右分声道。雷声本身用爆炸那条参数 —— 低通 500Hz
+    // 的长噪声加一段下滑的音调，正是雷的形状
+    const dx = x - camera.position[0]!;
+    const dz = z - camera.position[2]!;
+    const pan = Math.max(-1, Math.min(1, dx / Math.max(8, Math.abs(dz) + Math.abs(dx))));
+    audio.play(MobSound.EXPLODE, pan, 0.55);
+    void y;
   },
   onServerStats: (tick, pending, loaded, tickMs) => {
     serverStats.tick = tick;
@@ -384,7 +406,9 @@ function renderOnce(): void {
     texture, renderDistance, timeOfDay,
     entityView, itemEntityRenderer, mobRenderer, particles, interaction,
     overlay, ui, uiRenderer, uiCtx, entityPartialTick,
-    sky, skyLayers, worldAge: serverTick, renderTick: clock.renderTick, rain: weather.rain,
+    sky, skyLayers, worldAge: serverTick, renderTick: clock.renderTick,
+    rain: weather.rain, thunder: weather.thunder,
+    weatherRenderer, lightningFlashTick, store: world.store,
   });
 }
 

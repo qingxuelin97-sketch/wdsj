@@ -72,6 +72,16 @@ const CASES = [
   { name: 'sky-sunset', offset: [0, 14, 0], look: [0, -0.05], fov: 80, size: [640, 360], time: 12800 },
   { name: 'sky-moon', offset: [0, 4, 0], look: [0, -1.20], fov: 80, size: [640, 360], time: 18000 },
   { name: 'sky-clouds', offset: [0, 4, 0], look: [0, -0.55], fov: 80, size: [640, 360], time: 6000 },
+  // 天气。正午下雨 —— 挑正午是因为要看的是"天灰下来了"，
+  // 夜里拍的话分不清是天黑还是下雨
+  {
+    name: 'rain', offset: [0, 14, 0], look: [0, -0.05], fov: 75, size: [640, 360],
+    time: 6000, weather: 'rain',
+  },
+  {
+    name: 'thunder', offset: [0, 14, 0], look: [0, -0.05], fov: 75, size: [640, 360],
+    time: 6000, weather: 'thunder',
+  },
 ];
 
 function log(msg) {
@@ -188,6 +198,10 @@ async function main() {
         const m = window.__mc;
         m.setCanvasSize(${c.size[0]}, ${c.size[1]});
         await m.setTime(${c.time ?? DEFAULT_TIME});
+        // 天气：不写就一律 clear。**必须显式设成 clear**，
+        // 因为天气会自己变 —— 前一个场景恰好赶上一场雨的话，
+        // 后面每一张图都会莫名其妙地灰一层
+        await m.command('weather ${c.weather ?? 'clear'}');
         m.setCamera(
           ${spawnPos.x} + ${c.offset[0]}, ${spawnPos.y} + ${c.offset[1]}, ${spawnPos.z} + ${c.offset[2]},
           ${c.look[0]}, ${c.look[1]}, ${c.fov}

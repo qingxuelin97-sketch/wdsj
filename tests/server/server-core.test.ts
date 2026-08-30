@@ -197,8 +197,15 @@ test('挖掉方块会广播 S_BlockUpdate', () => {
     server.world.getBlock(target![0], target![1], target![2]), AIR_STATE,
     `200 tick 内应该挖穿；玩家在 ${[...server.eachPlayer()][0]!.digProgress.toFixed(3)} 进度上停住了`,
   );
-  const update = client.last('S_BlockUpdate');
-  assert.ok(update !== undefined, '挖掉方块后应收到 S_BlockUpdate');
+  // 按**位置**找，不能取最后一条。
+  //
+  // 随机刻每刻都在改别处的方块（草蔓延、草因为变暗而死回泥土），
+  // 挖穿之后再跑几刻，最后一条 S_BlockUpdate 多半是别人的。
+  // 这个坑在 M13 已经踩过一次（放置那个测试），当时只修了那一处 ——
+  // 同一个文件里另一处一模一样的写法留到了现在，靠的是"恰好没被随机刻撞上"。
+  const update = client.of('S_BlockUpdate')
+    .find((u) => u['x'] === target![0] && u['y'] === target![1] && u['z'] === target![2]);
+  assert.ok(update !== undefined, '挖掉方块后应收到那一格的 S_BlockUpdate');
   assert.equal(update!['state'], AIR_STATE);
 });
 

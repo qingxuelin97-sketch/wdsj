@@ -89,19 +89,56 @@ test('云可以无缝平铺 —— 左右边缘与上下边缘要接得上', () 
   assert.ok(Math.abs(top - bottom) <= 6, `上下边缘覆盖率差太多：${top} vs ${bottom}`);
 });
 
-test('雨是竖的，雪是散的', () => {
+test('雨是竖的短丝，雪是散开的点', () => {
   const rain = paint('rain');
   const snow = paint('snow');
-  // 雨：某些列有很多像素，某些列一个都没有
-  const colOf = (p: TilePainter): number[] => {
-    const cols = new Array<number>(16).fill(0);
-    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
-      if (p.data[(y * 16 + x) * 4 + 3]! > 128) cols[x] = cols[x]! + 1;
+
+  // 阈值 25。两次调低都是有原因的：
+  //   从 128 降到 40 —— 单条雨丝是**故意画得很淡**的（视野里同时叠着
+  //     上百条，浓了会糊成一堵白墙），按 128 去数一个像素都数不到
+  //   从 40 再降到 25 —— 雨丝的头尾又刻意再淡一档（那是"速度感"的来源），
+  //     阈值 40 正好把两头切掉，量出来的平均段长 2.5 反而比雪还短，
+  //     看着像"雨不是竖的"。而那纯粹是尺子的问题，不是图的问题
+  const VISIBLE = 25;
+  // 量的是**平均**连续段长，不是最长的那一段。
+  //
+  // "最长段"分不出"一条雨丝"和"三片雪花恰好叠在一起" —— 后者是随机
+  // 撒点必然会发生的巧合，而它在画面上完全看不出异样。
+  // 平均段长直接对应"streaky 还是 dotty"，才是这个断言真正想问的
+  const columnRuns = (p: TilePainter): { meanRun: number; maxRun: number; filled: number } => {
+    const runs: number[] = [];
+    let filled = 0;
+    for (let x = 0; x < 16; x++) {
+      let run = 0;
+      for (let y = 0; y < 16; y++) {
+        if (p.data[(y * 16 + x) * 4 + 3]! > VISIBLE) {
+          run++; filled++;
+        } else if (run > 0) {
+          runs.push(run); run = 0;
+        }
+      }
+      if (run > 0) runs.push(run);
     }
-    return cols;
+    const meanRun = runs.length === 0 ? 0 : runs.reduce((a, b) => a + b, 0) / runs.length;
+    return { meanRun, maxRun: runs.length === 0 ? 0 : Math.max(...runs), filled };
   };
-  const rainCols = colOf(rain);
-  const snowCols = colOf(snow);
-  assert.ok(Math.max(...rainCols) >= 8, `雨该是长竖线，最长一列只有 ${Math.max(...rainCols)}`);
-  assert.ok(Math.max(...snowCols) <= 4, `雪不该连成竖线，最长一列有 ${Math.max(...snowCols)}`);
+
+  const r = columnRuns(rain);
+  const s = columnRuns(snow);
+
+  assert.ok(r.meanRun >= 3.5, `雨该是竖着的一段，平均只有 ${r.meanRun.toFixed(1)} 像素`);
+  assert.ok(
+    r.maxRun < 16,
+    `雨丝不该从头连到尾（${r.maxRun}）—— 连满的话滚动起来看不出在动，`
+    + '那正是第一版画成一幅静止帘子的原因',
+  );
+  assert.ok(r.filled > 40, `雨该有一定密度，实得 ${r.filled} 个可见像素`);
+
+  assert.ok(
+    s.meanRun < r.meanRun,
+    `雪该比雨更"点状"：雪平均段长 ${s.meanRun.toFixed(1)}，雨 ${r.meanRun.toFixed(1)}`,
+  );
+  assert.ok(s.meanRun <= 3, `雪的平均段长该在 2 上下（2×2 的方点），实得 ${s.meanRun.toFixed(1)}`);
+  assert.ok(s.filled > 20, `雪也得看得见，实得 ${s.filled} 个可见像素`);
+  assert.ok(s.filled < r.filled, '雪该比雨稀疏');
 });

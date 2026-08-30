@@ -112,17 +112,41 @@ try {
     if (beforePickup === 0) fail('挖穿之后地上没有掉落物');
     else ok('地上有 ' + beforePickup + ' 个掉落物');
     // 走过去把地上的都捡干净。拾取每刻每人只捡一个实体，而且掉落物
-    // 落地的位置有随机散布 —— 所以是"走过去等到捡完"，不是"站一会儿"
+    // 落地的位置有随机散布 —— 所以是"走过去等到捡完"，不是"站一会儿"。
+    //
+    // 终止条件是**背包里有原木**，不是"客户端看不到掉落物了"。
+    //
+    // 后者曾经让这一步随机失败：itemEntities() 读的是**客户端镜像**，
+    // 而传送会让区块订阅翻一遍，镜像在那一瞬间可能先空掉再补回来。
+    // 循环于是提前退出，然后报"走过去也没捡到"—— 而真相是它根本没走完。
+    // 判据要盯住真正想要的东西（我拿到木头了），不是一个相关但不等价的信号。
     const pickupT0 = Date.now();
-    while (m.itemEntities().length > 0 && Date.now() - pickupT0 < 20000) {
+    let afterWood = await m.command('inv');
+    while ((m.itemEntities().length > 0 || !afterWood.text.includes('log'))
+           && Date.now() - pickupT0 < 20000) {
       const rest = m.itemEntities()[0];
-      await m.command('tp ' + rest.x.toFixed(2) + ' ' + (py + 1) + ' ' + rest.z.toFixed(2));
-      m.attachPlayer(rest.x, py + 1, rest.z);
-      for (let i = 0; i < 40; i++) await new Promise(r => requestAnimationFrame(r));
+      if (rest !== undefined) {
+        // 走到**它所在的那一格**，不是走到一个固定高度。
+        //
+        // 原来传送到 py + 1（挖之前的地面高度 + 1）。掉落物会滚下坡、
+        // 掉进挖出来的坑，实测有落到 py - 2 的 —— 那时玩家脚下 68、
+        // 物品 67，正好卡在 1.0 的拾取半径边界上，捡不到。
+        // 而报出来的是"走过去也没捡到"，听起来像拾取坏了。
+        await m.command('tp ' + rest.x.toFixed(2) + ' ' + (rest.y + 0.5).toFixed(2)
+          + ' ' + rest.z.toFixed(2));
+        m.attachPlayer(rest.x, rest.y + 0.5, rest.z);
+      }
+      for (let i = 0; i < 20; i++) await new Promise(r => requestAnimationFrame(r));
+      afterWood = await m.command('inv');
     }
 
-    const afterWood = await m.command('inv');
-    if (!afterWood.text.includes('log')) fail('走过去也没捡到原木：[' + afterWood.text + ']');
+    if (!afterWood.text.includes('log')) {
+      const w = await m.command('weather');
+      fail('走过去也没捡到原木：[' + afterWood.text + ']'
+        + ' 剩余掉落物=' + JSON.stringify(m.itemEntities().slice(0, 4))
+        + ' 玩家=' + JSON.stringify(m.playerState())
+        + ' 天气=' + w.text);
+    }
     else ok('捡到原木：' + afterWood.text);
 
     // --- 2. 合成：原木 -> 木板 -> 木棍 + 工作台 -> 木镐 ---

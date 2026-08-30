@@ -13,6 +13,7 @@ import type { BlockRegistry } from '../../core/registry/block-registry.ts';
 import type { BlockTables } from '../../core/registry/block-tables.ts';
 import { WORLD_HEIGHT, DAY_LENGTH_TICKS, CHUNK_SIZE, SECTIONS_PER_COLUMN } from '../../core/constants.ts';
 import { JavaRandom } from '../../core/rng/java-random.ts';
+import { Weather } from '../../core/world/weather.ts';
 import { BlockEntityStore } from './block-entity-store.ts';
 import { blockEntityKindFor, createBlockEntity, type BlockEntity } from './block-entity.ts';
 import { ScheduledTickQueue } from './scheduled-ticks.ts';
@@ -70,6 +71,15 @@ export class ServerWorld {
   readonly blockEntities = new BlockEntityStore();
   /** 计划刻队列（流体、红石、沙子下落都靠它） */
   readonly scheduled = new ScheduledTickQueue();
+
+  /**
+   * 天气。状态机是纯的（core/world/weather.ts），世界后果在
+   * world/weather-tick.ts —— 这里只是那份状态住的地方。
+   *
+   * 放在 world 而不是 core 上：天气要跟着世界一起存读，而且下界与末地
+   * 各自有自己的（那两个维度永远不下雨）。
+   */
+  readonly weather = new Weather();
   /** 世界里的掉落物，按实体 id 索引 */
   readonly items = new Map<number, ItemEntity>();
   /**

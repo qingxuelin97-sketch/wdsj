@@ -264,7 +264,9 @@ export class SkyRenderer {
    */
   render(f: SkyFrame): void {
     const gl = this.gl;
-    const sky = skyColor(f.timeOfDay);
+    // 必须把 rain 传进去。只改 clearColor 是不够的 —— 穹顶整个盖在清屏色
+    // 上面，玩家看到的是穹顶。第一版就是这么"下着雨天却still是蓝的"
+    const sky = skyColor(f.timeOfDay, f.rain);
     // 天顶比地平线稍深、稍蓝。这个差值就是"天空有层次"的全部来源 ——
     // 单一颜色的天空看起来像一块背景板，而不是一片天
     const topR = sky.r * 0.78;
