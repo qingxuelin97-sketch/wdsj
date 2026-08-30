@@ -20,46 +20,10 @@
  *
  * 详见 `docs/ART-PLAN.md`。
  */
-import { rgb, type TilePainter, type Rgb } from './texgen.ts';
+import { rgb, type TilePainter } from './texgen.ts';
+import { stoneBase, brickGrid } from './tile-materials.ts';
 
 type Recipe = (p: TilePainter) => void;
-
-/** 六种矿石共用的石头底。分出来是为了让六张矿石图的底完全一致 */
-function stoneBase(p: TilePainter): void {
-  p.valueNoise(rgb(0x7e7e7e), 15, 4, 4, 2);
-  p.blobs(rgb(0x707070), 4, 2.0, 8);
-}
-
-/**
- * 错缝砖格。砖块类（圆石以外）用这个。
- *
- * 比原来多两样东西：砖面本身带格点噪声（不是纯色 + 一个随机偏移），
- * 以及每块砖**顶边提亮、底边压暗** —— 砖有了厚度才不像贴在墙上的色块。
- */
-function brickGrid(p: TilePainter, base: Rgb, mortar: Rgb, cellW: number, cellH: number, jitter: number): void {
-  p.valueNoise(mortar, 9, 8, 8, 1);
-  const rows = Math.ceil(16 / cellH);
-  for (let row = 0; row < rows; row++) {
-    const offset = (row % 2) * Math.floor(cellW / 2);
-    for (let col = -1; col < Math.ceil(16 / cellW) + 1; col++) {
-      const x0 = col * cellW + offset;
-      const d = (p.rand() - 0.5) * jitter;
-      const r = base.r + d;
-      const g = base.g + d;
-      const b = base.b + d;
-      // 用 setWrapped 而不是 rect：rect 走 set()，越界直接丢弃，
-      // 于是错缝行左右两端的半块砖被切掉，贴图接不上
-      for (let y = 0; y < cellH - 1; y++) {
-        for (let x = 0; x < cellW - 1; x++) {
-          const n = (p.rand() - 0.5) * 8;
-          const top = y === 0 ? 9 : 0;
-          const bottom = y === cellH - 2 ? -11 : 0;
-          p.setWrapped(x0 + x, row * cellH + y, r + n + top + bottom, g + n + top + bottom, b + n + top + bottom, 255);
-        }
-      }
-    }
-  }
-}
 
 export const TERRAIN_RECIPES: Record<string, Recipe> = {
   // --- 地形 ---

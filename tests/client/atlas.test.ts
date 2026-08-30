@@ -24,7 +24,8 @@ import assert from 'node:assert/strict';
 import { createBlockRegistry } from '../../src/content/blocks.ts';
 import { createItemRegistry } from '../../src/content/items.ts';
 import { buildAtlas, buildFaceLayerTable } from '../../src/client/render/block-textures.ts';
-import { DESTROY_STAGE_NAMES } from '../../src/client/render/tile-recipes.ts';
+import { DESTROY_STAGE_NAMES, RECIPES } from '../../src/client/render/tile-recipes.ts';
+import { ITEM_RECIPES } from '../../src/client/render/item-recipes.ts';
 import { SKY_TILE_NAMES } from '../../src/client/render/tile-recipes-sky.ts';
 import { PARTICLE_TEXTURE_NAMES } from '../../src/content/particles.ts';
 import { TILE_BYTES, TILE_SIZE } from '../../src/client/render/texgen.ts';
@@ -124,4 +125,17 @@ test('尺寸不对的覆盖贴图被忽略，退回配方', () => {
   assert.equal(atlas.tileSize, TILE_SIZE);
   const allWhite = atlas.data.every((v, i) => (i % 4 === 3 ? true : v === 255));
   assert.ok(!allWhite, '尺寸不对的覆盖不该被采用');
+});
+
+test('方块配方与物品配方不能同名', () => {
+  // `buildAtlas` 里是 `RECIPES[name] ?? ITEM_RECIPES[name]` —— 方块优先。
+  // 一旦有同名，那件物品会**静默地**拿到方块的贴图，而且不会走
+  // 物品专属的轮廓/体积处理。表现是"某件物品的图标莫名其妙变成了一个方块面"，
+  // 没有任何报错，只能靠肉眼在物品栏里发现。
+  //
+  // 现在的命名靠 `_item` 后缀避开（door_item / bed_item / cake_item），
+  // 但那只是约定，没有任何东西强制它 —— 所以在这里钉死。
+  const blocks = new Set(Object.keys(RECIPES));
+  const dup = Object.keys(ITEM_RECIPES).filter((k) => blocks.has(k));
+  assert.deepEqual(dup, [], `物品配方与方块配方同名: ${dup.join(', ')}（物品那份会被静默忽略）`);
 });

@@ -90,7 +90,8 @@ function encodePng(rgba, w, h) {
 
 const load = (rel) => import(pathToFileURL(path.join(ROOT, rel)).href);
 
-const { TilePainter, TILE_SIZE } = await load('src/client/render/texgen.ts');
+const { TILE_SIZE, TILE_BYTES } = await load('src/client/render/texgen.ts');
+const { buildAtlas } = await load('src/client/render/block-textures.ts');
 const { RECIPES } = await load('src/client/render/tile-recipes.ts');
 const { ITEM_RECIPES } = await load('src/client/render/item-recipes.ts');
 
@@ -117,11 +118,18 @@ for (let i = 0; i < W * H; i++) {
   sheet[i * 4 + 3] = 255;
 }
 
+// **必须走 buildAtlas**，不能自己 new TilePainter 跑配方。
+//
+// 第一版就是自己跑的，于是这张图和游戏里显示的**不是一个东西**：
+// buildAtlas 会给物品图标额外加轮廓与体积感（见那边的注释），
+// 自己跑就全看不到 —— 结果是照着这张图调了半天，游戏里的样子另一回事。
+// 检查工具与真实产物之间有任何一步不一致，这个工具就是在骗人。
+const atlas = buildAtlas(names);
+
 for (let i = 0; i < names.length; i++) {
   const name = names[i];
-  const p = new TilePainter(name);
-  all[name](p);
-  p.bleedEdges(); // 与 buildAtlas 一致，否则看到的不是最终结果
+  const at = atlas.index.get(name) * TILE_BYTES;
+  const tile = atlas.data.subarray(at, at + TILE_BYTES);
   const ox = GAP + (i % cols) * (cell + GAP);
   const oy = GAP + Math.floor(i / cols) * (cell + GAP);
   for (let y = 0; y < cell; y++) {
@@ -129,12 +137,12 @@ for (let i = 0; i < names.length; i++) {
       const sx = Math.floor(x / SCALE) % TILE_SIZE;
       const sy = Math.floor(y / SCALE) % TILE_SIZE;
       const s = (sy * TILE_SIZE + sx) * 4;
-      const a = p.data[s + 3] / 255;
+      const a = tile[s + 3] / 255;
       const d = ((oy + y) * W + ox + x) * 4;
       // 透明处混上背板，才看得出 cutout 的形状
-      sheet[d] = p.data[s] * a + sheet[d] * (1 - a);
-      sheet[d + 1] = p.data[s + 1] * a + sheet[d + 1] * (1 - a);
-      sheet[d + 2] = p.data[s + 2] * a + sheet[d + 2] * (1 - a);
+      sheet[d] = tile[s] * a + sheet[d] * (1 - a);
+      sheet[d + 1] = tile[s + 1] * a + sheet[d + 1] * (1 - a);
+      sheet[d + 2] = tile[s + 2] * a + sheet[d + 2] * (1 - a);
     }
   }
 }

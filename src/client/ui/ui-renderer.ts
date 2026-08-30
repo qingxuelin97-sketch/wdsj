@@ -82,6 +82,8 @@ export class UiRenderer {
   private quads = 0;
   /** 因为超过 MAX_QUADS 而被丢掉的矩形数。非 0 就说明画面缺了东西 */
   dropped = 0;
+  /** 字模表，首次画文字时建立 */
+  private font: Font | null = null;
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
@@ -199,7 +201,11 @@ export class UiRenderer {
     str: string, x: number, y: number, scale = 1,
     r = 1, g = 1, b = 1, shadow = true,
   ): void {
-    const font = buildFont();
+    // 字模表只建一次。原来是**每次调用**都 buildFont() ——
+    // F3 一屏二十来行，等于每帧重建二十遍九十多个字形的 typed array。
+    // 字模是编译期常量，没有任何理由重建
+    this.font ??= buildFont();
+    const font = this.font;
     if (shadow) this.textPass(font, str, x + scale, y + scale, scale, 0, 0, 0, 0.75);
     this.textPass(font, str, x, y, scale, r, g, b, 1);
   }

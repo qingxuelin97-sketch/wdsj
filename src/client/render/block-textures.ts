@@ -49,12 +49,25 @@ export function buildAtlas(
     }
     // 方块贴图与物品图标共用一个纹理数组：UI 里画物品和世界里画方块
     // 用的是同一个 sampler，省掉一次纹理切换，也省掉一套并行的资源管理
-    const recipe = RECIPES[name] ?? ITEM_RECIPES[name];
+    const blockRecipe = RECIPES[name];
+    const recipe = blockRecipe ?? ITEM_RECIPES[name];
     if (recipe === undefined) {
       throw new Error(`贴图 '${name}' 没有配方 —— 在 src/client/render/tile-recipes.ts 里补上`);
     }
     const painter = new TilePainter(name);
     recipe(painter);
+    if (blockRecipe === undefined) {
+      // 物品图标统一加轮廓与体积感。
+      //
+      // 放在这里而不是每个配方里，是因为它对**所有**图标都成立，
+      // 而 item-recipes.ts 是按原型生成的（一个 `ingot()` 派生出十几件物品）——
+      // 写进原型会漏掉那些手写的特例，写进每个配方则要改一百多处。
+      //
+      // 为什么必须有：图标会画在任何背景上（物品栏浅灰、快捷栏半透明黑、
+      // 掉在草地上时的绿）。没轮廓的图标碰上明度相近的底就整个糊进去。
+      painter.formShade();
+      painter.outline();
+    }
     // 所有贴图统一做一遍边缘渗色。不含透明像素的贴图会在第一轮就退出，代价可忽略；
     // 含 cutout 的贴图靠它避免 mipmap 把透明处的颜色混进边缘。
     painter.bleedEdges();

@@ -71,6 +71,33 @@ export class TilePainter {
     this.data[i + 3] = a;
   }
 
+  /**
+   * 全部清成透明。cutout 贴图（植物、火把、栏杆……）的第一句都是它。
+   *
+   * 分出来是因为 `for y for x set(x,y,0,0,0,0)` 这个写法在配方表里
+   * 原样重复了十几处，每处都占两行，把配方本身淹掉了。
+   */
+  clear(): this {
+    this.data.fill(0);
+    return this;
+  }
+
+  /**
+   * 在现有像素上加减亮度，保留色相与 alpha。
+   *
+   * 做边框高光/阴影用。直接 `set` 一个算好的颜色也行，但那要求调用方
+   * 知道底下是什么色 —— 底一改就得跟着改，而"提亮一点"是与底色无关的意图。
+   */
+  shade(x: number, y: number, delta: number): this {
+    if (x < 0 || x >= TILE || y < 0 || y >= TILE) return this;
+    const i = this.idx(x, y);
+    if (this.data[i + 3]! === 0) return this;
+    this.data[i] = this.data[i]! + delta;
+    this.data[i + 1] = this.data[i + 1]! + delta;
+    this.data[i + 2] = this.data[i + 2]! + delta;
+    return this;
+  }
+
   /** 整块填充 */
   fill(c: Rgb, a = 255): this {
     for (let y = 0; y < TILE; y++) {
@@ -80,39 +107,22 @@ export class TilePainter {
   }
 
   /**
-   * 噪声填充：每像素在基色上做 ±variance 的随机扰动。
-   * density < 1 时按概率留空（用于树叶这类有孔洞的贴图）。
+   * 这里原来有 `noiseFill`（逐像素独立的白噪声填充）与 `speckles`
+   * （随机方点）。两个都删了，不是清理，是**拆掉一个坑**：
+   *
+   *   - `noiseFill` 画出来是电视雪花点。相邻像素毫无相关性，退开一步
+   *     被眼睛平均成一片均匀的糊。整套贴图的"糊感"根源就是它
+   *   - `speckles` 从随机点画 size×size 方块，而 `set()` 越界直接丢弃 ——
+   *     靠右靠下的点被切掉一半、靠左靠上永远没有半个点，
+   *     于是同一张贴图铺成墙时接缝处一侧密一侧疏
+   *
+   * 替代品分别是 `valueNoise`（可平铺的格点噪声，明暗成团）
+   * 与 `blobs` / `oreBlobs`（环绕的不规则团块）。留着旧的只会让下一个人
+   * 顺手再用一次，把问题重新引进来。
+   *
+   * 透明像素的 RGB 必须填基色、只把 alpha 置 0 —— 见 `bleedEdges` 与
+   * `holes` 的注释，那条规矩对任何 cutout 贴图都成立。
    */
-  noiseFill(c: Rgb, variance: number, density = 1): this {
-    for (let y = 0; y < TILE; y++) {
-      for (let x = 0; x < TILE; x++) {
-        const d = (this.rand() - 0.5) * 2 * variance;
-        // 透明像素的 RGB 也要填上基色，只把 alpha 置 0。
-        //
-        // 写成 rgb(0,0,0)+alpha(0) 看似无害（反正透明），但 generateMipmap 会把这些
-        // 黑色 RGB 平均进相邻的不透明像素，于是树叶在画面上出现一片黑斑 —— 采样到的
-        // alpha 过了 0.5 的 discard 阈值，颜色却已经被黑色污染了。这就是所谓的
-        // alpha 渗色，任何带 cutout 的贴图都必须这么处理。
-        const transparent = density < 1 && this.rand() > density;
-        this.set(x, y, c.r + d, c.g + d, c.b + d, transparent ? 0 : 255);
-      }
-    }
-    return this;
-  }
-
-  /** 随机斑点，用于矿石、沙砾、基岩 */
-  speckles(c: Rgb, count: number, maxSize = 2): this {
-    for (let i = 0; i < count; i++) {
-      const size = 1 + Math.floor(this.rand() * maxSize);
-      const x0 = Math.floor(this.rand() * TILE);
-      const y0 = Math.floor(this.rand() * TILE);
-      const d = (this.rand() - 0.5) * 24;
-      for (let y = y0; y < y0 + size; y++) {
-        for (let x = x0; x < x0 + size; x++) this.set(x, y, c.r + d, c.g + d, c.b + d);
-      }
-    }
-    return this;
-  }
 
   rect(x0: number, y0: number, w: number, h: number, c: Rgb, a = 255): this {
     for (let y = y0; y < y0 + h; y++) {
@@ -376,6 +386,52 @@ export class TilePainter {
         this.data[i] = c.r;
         this.data[i + 1] = c.g;
         this.data[i + 2] = c.b;
+      }
+    }
+    return this;
+  }
+
+  /**
+   * 沿不透明区域的外缘描一圈深色轮廓。物品图标专用。
+   *
+   * 为什么必须有：物品图标会画在**任何背景**上 —— 物品栏的浅灰、
+   * 快捷栏的半透明黑、掉在草地上时的绿。没有轮廓的图标一旦碰上
+   * 明度相近的底就整个糊进去。原来的煤炭（近黑的碎点）压在深色
+   * 快捷栏上几乎完全看不见，就是这个毛病。
+   *
+   * 只写**当前透明**的像素，所以不会吃掉图标本身的形状。
+   */
+  outline(c: Rgb = { r: 22, g: 20, b: 18 }, alpha = 235): this {
+    const snapshot = this.data.slice();
+    const solid = (x: number, y: number): boolean =>
+      x >= 0 && x < TILE && y >= 0 && y < TILE && snapshot[this.idx(x, y) + 3]! > 40;
+    for (let y = 0; y < TILE; y++) {
+      for (let x = 0; x < TILE; x++) {
+        if (snapshot[this.idx(x, y) + 3]! > 40) continue;
+        // 只看四邻，不看对角：看八邻的话轮廓会在斜边上鼓出一圈，
+        // 一把剑的斜刃会变成锯齿
+        if (!solid(x - 1, y) && !solid(x + 1, y) && !solid(x, y - 1) && !solid(x, y + 1)) continue;
+        this.set(x, y, c.r, c.g, c.b, alpha);
+      }
+    }
+    return this;
+  }
+
+  /**
+   * 给不透明区域做体积感：右下侧邻着透明的像素压暗，左上侧的提亮。
+   *
+   * 与 `edgeShade` 是两回事 —— 那个按**贴图边框**算，这个按**图形轮廓**算，
+   * 所以适用于物品图标这种画在透明底上的东西。
+   */
+  formShade(strength = 26): this {
+    const snapshot = this.data.slice();
+    const clear = (x: number, y: number): boolean =>
+      x < 0 || x >= TILE || y < 0 || y >= TILE || snapshot[this.idx(x, y) + 3]! <= 40;
+    for (let y = 0; y < TILE; y++) {
+      for (let x = 0; x < TILE; x++) {
+        if (snapshot[this.idx(x, y) + 3]! <= 40) continue;
+        if (clear(x + 1, y) || clear(x, y + 1)) this.shade(x, y, -strength);
+        else if (clear(x - 1, y) || clear(x, y - 1)) this.shade(x, y, strength * 0.55);
       }
     }
     return this;

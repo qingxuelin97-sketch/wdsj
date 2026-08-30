@@ -36,7 +36,7 @@ node tools/ci.mjs
 | 命令 | 作用 | 耗时 |
 |---|---|---|
 | `node tools/ci.mjs` | 全套 9 步 | ~7 min |
-| `node --test` | 366 个单元测试 | ~3 min |
+| `node --test` | 373 个单元测试 | ~2 min |
 | `node tools/smoke.mjs` | 无头 Chrome，21 张黄金截图 | ~1 min |
 | `UPDATE_GOLDEN=1 node tools/smoke.mjs` | 重生成黄金哈希 | |
 | `node tools/first-night-check.mjs` | 闸门① 第一夜 | ~3 min |
@@ -95,17 +95,34 @@ hash 记在 `docs/ROADMAP.md` 的里程碑表里。
 UPDATE_GOLDEN=1 node tools/smoke.mjs
 ```
 
+改贴图时先用 `node tools/tile-sheet.mjs <名字...>` 看 —— 一秒一轮，
+不用起浏览器，每格按 2×2 平铺画所以接缝一眼可见。
+它走的是 `buildAtlas`，与游戏里显示的完全一致。
+
 ⚠️ **只能在录原版黄金值的那台机器上重录。** 哈希绑死在光栅化结果上，
 软渲染与真 GPU 逐像素不同。这轮是在一台只有 SwiftShader 的容器上做的，
 所以**没有**重录，`tests/screenshots/hashes.json` 原样未动。
 
-**2. 顺手挖出两个既有 bug。** 都不是这轮改坏的：
+**2. 顺手挖出几个既有 bug。** 都不是这轮改坏的：
 
 - 世界里的**雪块一直是半透明的雪花粒子图** —— `RECIPES` 里
   `...SKY_RECIPES` 展开在后面，天气粒子那张也叫 `snow`，把方块的雪盖掉了。
   粒子已改名 `snowflake`
 - `gold_block` 的内嵌边框**从来没画出来过** —— 最后一句 `noiseFill`
   重填整块，把上一句画的框冲干净了
+- **死亡界面上是一条空的灰带子** —— 代码注释说"点阵字模画不出汉字"，
+  那句话在写它的时候是对的，后来补了完整的 5×7 ASCII 字模，
+  前提不成立了但没跟着改。现在画的是 `YOU DIED` / `CLICK TO RESPAWN`
+- **煤炭图标几乎看不见** —— 它走的是"粉末"原型，26 粒近黑碎点撒在
+  透明底上，压在深色快捷栏里就没了。改成 `lump` 原型，
+  并给所有物品图标统一加了轮廓
+- `UiRenderer.text()` **每次调用都重建字模表**，F3 一屏二十来行
+  等于每帧重建二十遍。改成只建一次
+
+**2.5 `noiseFill` 与 `speckles` 已从 `texgen.ts` 删除。**
+全部配方都换成了可平铺的 `valueNoise` / `blobs`。留着旧原语只会让
+下一个人顺手再用一次 —— 想加贴图的话看 `tile-recipes-terrain.ts`
+的头注释，那里写了标准的三段式画法。
 
 **3. 想要原版材质，用资源包覆盖层，别往仓库里塞素材。**
 

@@ -8,6 +8,7 @@
  * 槽位编号与服务端窗口一一对应，见 server/player/player-inventory.ts 顶部。
  */
 import { UiRenderer, UI_WIDTH, UI_HEIGHT } from './ui-renderer.ts';
+import { GLYPH_ADVANCE } from './font.ts';
 import { WindowKind } from '../../core/net/packets.ts';
 import { isEmpty, type ItemStack } from '../../core/item/item-def.ts';
 
@@ -19,7 +20,6 @@ export interface SlotRect {
 }
 
 export const SLOT = 18;
-const PAD = 1;
 
 /**
  * MC 的界面配色。**照抄不估** —— 与 `docs/RULES.md` 第 6 条同一条道理。
@@ -115,7 +115,9 @@ export function layoutFor(kind: WindowKind, externalCount = 0): SlotRect[] {
 /** 命中测试：屏幕上的虚拟像素坐标落在哪个槽位里 */
 export function slotAt(layout: readonly SlotRect[], x: number, y: number): number {
   for (const s of layout) {
-    if (x >= s.x && x < s.x + SLOT - PAD && y >= s.y && y < s.y + SLOT - PAD) return s.index;
+    // 命中框与 slotInset 画出来的 18×18 一致。原来是 SLOT-PAD(17)，
+    // 而槽位现在正好铺满 18 —— 差那一列会让最右/最下一像素点不中
+    if (x >= s.x && x < s.x + SLOT && y >= s.y && y < s.y + SLOT) return s.index;
   }
   return -1;
 }
@@ -349,12 +351,30 @@ function halfHeart(ui: UiRenderer, x: number, y: number, r: number, g: number, b
  */
 export function drawDeathScreen(ui: UiRenderer): void {
   ui.rect(0, 0, UI_WIDTH, UI_HEIGHT, 0.45, 0.02, 0.02, 0.6);
-  // "你死了"用点阵数字画不出来，改成一个醒目的图形：一颗碎掉的心
-  const cx = UI_WIDTH / 2 - 12;
-  const cy = UI_HEIGHT / 2 - 26;
-  heart(ui, cx, cy, 0.55, 0.08, 0.08, 1);
-  heart(ui, cx + 16, cy, 0.55, 0.08, 0.08, 1);
-  // 一条提示带，宽度暗示"按键重生"
-  ui.rect(UI_WIDTH / 2 - 60, UI_HEIGHT / 2 + 6, 120, 14, 0.15, 0.15, 0.15, 0.9);
-  ui.rect(UI_WIDTH / 2 - 58, UI_HEIGHT / 2 + 8, 116, 10, 0.35, 0.35, 0.35, 0.9);
+  // 这里原来写着「"你死了"用点阵数字画不出来，改成一个醒目的图形」——
+  // 那句话在写它的时候是对的：当时 UiRenderer 只有一个 3×5 的**纯数字**字模。
+  // 后来为了 F3 补了完整的 5×7 ASCII 字模（font.ts），前提早就不成立了，
+  // 但这段没跟着改，于是死亡界面上是一条**空的**提示带 ——
+  // 一个看不出要按什么的灰条。截图回归也没报，因为它只比对哈希，
+  // 而"带子里没字"和"带子里有字"都是稳定的哈希。
+  centeredText(ui, 'YOU DIED', UI_HEIGHT / 2 - 30, 2, 0.85, 0.15, 0.15);
+  // 一条提示带 + 真正的字
+  const bw = 120;
+  const bx = (UI_WIDTH - bw) / 2;
+  const by = UI_HEIGHT / 2 + 6;
+  ui.rect(bx, by, bw, 16, 0.06, 0.06, 0.06, 0.92);
+  ui.rect(bx + 1, by + 1, bw - 2, 14, 0.42, 0.42, 0.42, 0.92);
+  ui.rect(bx + 1, by + 1, bw - 3, 13, 0.24, 0.24, 0.24, 0.95);
+  // 文案必须与 frame-input.ts 的 handleDeath 对得上：那里接的是
+  // attack / use / inventory 三个键，不是某个专用的重生键。
+  // 写"PRESS R"就是假的 —— 玩家按 R 不会有任何反应
+  centeredText(ui, 'CLICK TO RESPAWN', by + 5, 1, 0.92, 0.92, 0.92);
+}
+
+/** 按设计分辨率把一行字居中。字宽 = 字数 × 步进 − 末尾那一格间隙 */
+function centeredText(
+  ui: UiRenderer, str: string, y: number, scale: number, r: number, g: number, b: number,
+): void {
+  const w = str.length * GLYPH_ADVANCE * scale - scale;
+  ui.text(str, Math.round((UI_WIDTH - w) / 2), y, scale, r, g, b);
 }

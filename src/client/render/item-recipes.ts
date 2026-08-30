@@ -16,7 +16,7 @@ type Painter = (p: TilePainter) => void;
 
 /** 清空成全透明 */
 function clear(p: TilePainter): void {
-  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) p.set(x, y, 0, 0, 0, 0);
+  p.clear();
 }
 
 function px(p: TilePainter, x: number, y: number, c: Rgb, a = 255): void {
@@ -69,14 +69,43 @@ function gem(color: Rgb): Painter {
 }
 
 /** 粉末/颗粒：一撮散点 */
+/**
+ * 粉末：一小堆散开的颗粒。红石、火药、糖、骨粉、种子用它。
+ *
+ * 原来撒在 10×8 的范围里、共 26 粒，太散 —— 读起来像"图标坏了掉渣"，
+ * 不像一堆粉。收紧到一个中心堆，边缘再稀疏几粒才像。
+ */
 function dust(color: Rgb): Painter {
   return (p) => {
     clear(p);
-    for (let i = 0; i < 26; i++) {
-      const x = 3 + Math.floor(p.rand() * 10);
-      const y = 6 + Math.floor(p.rand() * 8);
+    for (let i = 0; i < 34; i++) {
+      // 两次随机取平均 -> 往中心聚，边缘自然变稀
+      const x = 4 + Math.floor((p.rand() + p.rand()) * 4);
+      const y = 7 + Math.floor((p.rand() + p.rand()) * 3);
       px(p, x, y, p.rand() < 0.3 ? shade(color, 1.3) : color);
     }
+  };
+}
+
+/**
+ * 矿块：一整块带棱角的疙瘩。煤与木炭用它。
+ *
+ * 它们原来走的是 `dust` —— 于是煤炭是"26 粒近黑的碎点撒在透明底上"，
+ * 压在深色快捷栏上几乎完全看不见。煤在 MC 里是**一整块**，
+ * 形状信息全在轮廓上，散点把轮廓彻底丢了。
+ */
+function lump(color: Rgb): Painter {
+  return (p) => {
+    clear(p);
+    const hi = shade(color, 1.7);
+    for (let y = 4; y < 13; y++) {
+      // 每行宽度不同，边界带抖动 —— 规则的椭圆看着像颗药丸
+      const half = 5 - Math.round(Math.abs(y - 8) * 0.7);
+      const jitter = p.rand() < 0.35 ? 1 : 0;
+      for (let x = 8 - half - jitter; x <= 7 + half; x++) px(p, x, y, color);
+    }
+    // 左上一小片高光，煤那种"玻璃质"的反光靠它
+    for (let i = 0; i < 4; i++) px(p, 5 + (i % 2), 6 + Math.floor(i / 2), hi);
   };
 }
 
@@ -259,12 +288,12 @@ export const ITEM_RECIPES: Record<string, Painter> = {
 
   // --- 材料 ---
   stick,
-  coal: dust(rgb(0x2a2a2a)),
-  charcoal: dust(rgb(0x40342a)),
+  coal: lump(rgb(0x2a2a2a)),
+  charcoal: lump(rgb(0x40342a)),
   diamond: gem(rgb(0x5ce0d8)),
   iron_ingot: ingot(rgb(0xd8d8d8)),
   gold_ingot: ingot(rgb(0xf0d040)),
-  gold_nugget: dust(rgb(0xf0d040)),
+  gold_nugget: lump(rgb(0xd8b830)),
   brick_item: ingot(rgb(0xa05a48)),
   clay_ball: blob(rgb(0xa4a8b8)),
   flint: gem(rgb(0x4a4a4a)),
@@ -342,7 +371,14 @@ export const ITEM_RECIPES: Record<string, Painter> = {
   potion: vessel(rgb(0xc0e0e8), rgb(0xd040d0)),
   cauldron_item: vessel(rgb(0x4a4a4a), null),
   brewing_stand_item: rodShape(rgb(0xa0a0a0)),
-  flint_and_steel: (p) => { clear(p); fillRect(p, 3, 6, 6, 5, rgb(0xd8d8d8)); fillRect(p, 9, 8, 4, 4, rgb(0x4a4a4a)); },
+  // 打火石：一把钢条 + 一块燧石。原来是两个不挨着的矩形，
+  // 读不出是一件东西 —— 两部分必须接触，眼睛才把它们当成一个物体
+  flint_and_steel: (p) => {
+    clear(p);
+    for (let i = 0; i < 8; i++) { px(p, 3 + i, 9 - i + (i > 4 ? i - 4 : 0), rgb(0xc8c8c8)); px(p, 3 + i, 10 - i + (i > 4 ? i - 4 : 0), rgb(0x8a8a8a)); }
+    fillRect(p, 8, 8, 5, 5, rgb(0x50494a));
+    fillRect(p, 9, 9, 3, 3, rgb(0x6a6264));
+  },
   shears: (p) => {
     clear(p);
     const m = rgb(0xd8d8d8);
