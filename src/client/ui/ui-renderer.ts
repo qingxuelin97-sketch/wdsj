@@ -13,6 +13,7 @@
  * 与 MC 的 GUI scale 是一回事。
  */
 import { Shader } from '../gl/shader.ts';
+import { buildFont, GLYPH_H, GLYPH_W, GLYPH_ADVANCE, type Font } from './font.ts';
 
 /** 界面的设计分辨率。所有布局坐标都在这个尺度上 */
 export const UI_WIDTH = 320;
@@ -20,7 +21,16 @@ export const UI_HEIGHT = 240;
 
 /** 每个顶点：x, y, u, v, layer, r, g, b, a */
 const FLOATS_PER_VERTEX = 9;
-const MAX_QUADS = 1024;
+/**
+ * 一批最多几个矩形。
+ *
+ * 4096 是被 F3 逼出来的：一屏调试文字有二十行，每行四十来个字符，
+ * 每个字符十来个亮点段 —— 七八百到一千出头。原来的上限正好是 1024，
+ * 于是 F3 被**悄悄截断**，画面上表现为右下角那几行没了。
+ *
+ * 内存代价：4096 × 6 顶点 × 9 float × 4 字节 ≈ 884 KB，一次性分配。
+ */
+const MAX_QUADS = 4096;
 
 const VERT = `#version 300 es
 precision highp float;
@@ -70,6 +80,8 @@ export class UiRenderer {
   private readonly data = new Float32Array(MAX_QUADS * 6 * FLOATS_PER_VERTEX);
   private cursor = 0;
   private quads = 0;
+  /** 因为超过 MAX_QUADS 而被丢掉的矩形数。非 0 就说明画面缺了东西 */
+  dropped = 0;
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
@@ -94,7 +106,10 @@ export class UiRenderer {
   /** 上一次 flush 画了多少矩形，排查用 */
   lastQuads = 0;
 
+  /** 一帧开头复位。lastQuads 在这里归零，所以它统计的是**整帧**的量 */
   begin(): void {
+    this.dropped = 0;
+    this.lastQuads = 0;
     this.cursor = 0;
     this.quads = 0;
   }
@@ -114,7 +129,12 @@ export class UiRenderer {
     u0: number, v0: number, u1: number, v1: number,
     layer: number, r: number, g: number, b: number, a: number,
   ): void {
-    if (this.quads >= MAX_QUADS) return;
+    if (this.quads >= MAX_QUADS) {
+      // 悄悄丢弃是最难查的那种 bug：画面少一块，没有任何报错。
+      // 记下来，F3 会显示它，冒烟检查也会断言它是 0
+      this.dropped++;
+      return;
+    }
     const d = this.data;
     let o = this.cursor;
     // 虚拟像素 -> 裁剪空间。y 轴翻转，让 (0,0) 在左上角，和布局代码的直觉一致
@@ -166,9 +186,66 @@ export class UiRenderer {
     }
   }
 
+  /**
+   * 画一段文字。
+   *
+   * 每个亮起的像素是一个矩形。一行 40 个字符大约 120 个矩形，
+   * 而缓冲上限是 1024 —— 所以 F3 那样十几行的叠层要**单独 flush**，
+   * 不能和物品栏挤在同一批里。
+   *
+   * @param shadow 画黑色描边。文字压在花花绿绿的世界上时没它读不出来
+   */
+  text(
+    str: string, x: number, y: number, scale = 1,
+    r = 1, g = 1, b = 1, shadow = true,
+  ): void {
+    const font = buildFont();
+    if (shadow) this.textPass(font, str, x + scale, y + scale, scale, 0, 0, 0, 0.75);
+    this.textPass(font, str, x, y, scale, r, g, b, 1);
+  }
+
+  private textPass(
+    font: Font, str: string, x: number, y: number, scale: number,
+    r: number, g: number, b: number, a: number,
+  ): void {
+    let cx = x;
+    for (let i = 0; i < str.length; i++) {
+      const code = str.charCodeAt(i);
+      if (code >= font.first && code <= font.last) {
+        const base = (code - font.first) * GLYPH_H;
+        for (let row = 0; row < GLYPH_H; row++) {
+          const v = font.bits[base + row]!;
+          if (v === 0) continue;
+          // 同一行里连续的亮点合成一个矩形。"HHHH" 这种笔画密的字
+          // 能把矩形数砍掉三成，而缓冲只有 1024 个
+          let col = 0;
+          while (col < GLYPH_W) {
+            if ((v >> (GLYPH_W - 1 - col) & 1) === 0) { col++; continue; }
+            let end = col;
+            while (end < GLYPH_W && (v >> (GLYPH_W - 1 - end) & 1) === 1) end++;
+            this.rect(cx + col * scale, y + row * scale, (end - col) * scale, scale, r, g, b, a);
+            col = end;
+          }
+        }
+      }
+      cx += GLYPH_ADVANCE * scale;
+    }
+    void x;
+  }
+
   /** 把攒下的矩形一次画完 */
+  /**
+   * 把攒下的矩形一次画完，然后**清空这一批**。
+   *
+   * 清空这件事原来没做，于是同一帧里第二次 flush 会把第一批连同第二批
+   * 一起再画一遍 —— 半透明的面板叠两层就变深了，而且矩形数会一路涨到
+   * 上限被截断。F3 是第一个需要分两批画的东西，这个 bug 也就是那时才露头。
+   *
+   * "flush 之后这一批就没了"是批处理器该有的语义，begin() 于是变成
+   * 一帧开头的可选复位。
+   */
   flush(texture: WebGLTexture): void {
-    this.lastQuads = this.quads;
+    this.lastQuads += this.quads;
     if (this.quads === 0) return;
     const gl = this.gl;
     this.shader.use();
@@ -195,6 +272,9 @@ export class UiRenderer {
     gl.disable(gl.BLEND);
     gl.enable(gl.CULL_FACE);
     gl.enable(gl.DEPTH_TEST);
+
+    this.cursor = 0;
+    this.quads = 0;
   }
 }
 

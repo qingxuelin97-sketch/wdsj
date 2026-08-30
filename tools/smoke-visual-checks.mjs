@@ -17,8 +17,17 @@
 export async function runVisualChecks(ctx) {
   const { page, ensureHook, spawnPos, log, failures, actual, golden, saveShot } = ctx;
   const UPDATE = ctx.update;
+  /**
+   * 出生点 —— 所有位置的基准。
+   *
+   * **不要用 m.stats() 的当前相机做基准。** 这些检查跑在一长串检查之后，
+   * 相机停在哪完全取决于上一项干了什么。以相机为基准的话，黄金值实际上
+   * 绑死在检查的**顺序**上：往中间插一项新检查，后面每一张图都会无端变掉，
+   * 而报出来的是"萤石夜景变了""粒子那张变了"，看着像渲染坏了。
+   *
+   * 加 F3 检查那次就是这样连累了萤石与粒子两项。
+   */
   const SPAWN = spawnPos;
-  void SPAWN;
 
   // --- 方块陈列阵：一张截图覆盖所有形状 ---
   //
@@ -31,11 +40,15 @@ export async function runVisualChecks(ctx) {
     m.setCanvasSize(720, 405);
     m.freeze(false);
     await m.setTime(6000);
+    // 天气必须**显式**设成 clear，和 setTime 是同一条纪律。
+    // 天气是全局状态，前面留下什么就是什么 —— smoke.mjs 那批黄金截图的
+    // 最后一张正是 thunder，于是方块陈列阵一直是在暴雨里拍的，
+    // 而雨恰好糊住了它要验的东西。
+    await m.command('weather clear');
     await m.waitForIdle();
-    const s0 = m.stats();
-    const gx = Math.round(s0.cameraX) - 8;
+    const gx = Math.round(${SPAWN.x}) - 8;
     const gy = 100;
-    const gz = Math.round(s0.cameraZ) - 8;
+    const gz = Math.round(${SPAWN.z}) - 8;
     const placed = Number((await m.command('gallery ' + gx + ' ' + gy + ' ' + gz)).text);
     // 斜上方俯视整片阵列。yaw/pitch 由"看向阵列中心"算出来，
     // 手写角度的话阵列稍微一挪就跑出画面 —— 上一版就是这么拍到山坡的
@@ -63,11 +76,11 @@ export async function runVisualChecks(ctx) {
     m.setCanvasSize(800, 500);
     m.freeze(false);
     await m.setTime(6000);
-    const s0 = m.stats();
+    await m.command('weather clear');
     // 摆到远离陈列阵的地方，两者别挤进同一张画面
-    const rx = Math.round(s0.cameraX) + 40;
+    const rx = Math.round(${SPAWN.x}) + 40;
     const ry = 110;
-    const rz = Math.round(s0.cameraZ);
+    const rz = Math.round(${SPAWN.z});
     const placed = Number((await m.command('shapes ' + rx + ' ' + ry + ' ' + rz)).text);
     // 正对这片网格，稍微俯视，能同时看到顶面和侧面
     const rows = Math.ceil(placed / 7);
@@ -121,6 +134,7 @@ export async function runVisualChecks(ctx) {
     m.setCanvasSize(640, 360);
     m.freeze(false);
     await m.setTime(6000);
+    await m.command('weather clear');
     await m.waitForIdle();
     // 等碎屑落完。前面的挖掘用例炸出来的粒子还活着的话，
     // 两次截图之间它们会自己消失，看上去就像"网格过期了"
@@ -145,4 +159,54 @@ export async function runVisualChecks(ctx) {
   } else {
     log(`网格已收敛：重做前后同为 ${converged.before}`);
   }
+
+  // --- F3 调试叠层 ---
+  //
+  // 画在 canvas 里而不是 DOM 里，就是为了这一项能成立：截图回归比对的是
+  // canvas 的像素，DOM 里的文字根本不在那张图上。用 DOM 的话这条验收
+  // 永远是绿的 —— 因为它比对的画面里压根没有 F3。
+  const dbg = await page.evaluate(`
+    ${ensureHook}
+    const m = window.__mc;
+    m.setCanvasSize(640, 360);
+    m.freeze(false);
+    await m.setTime(6000);
+    await m.command('weather clear');
+    await m.waitForIdle();
+    // 钉死机位：F3 上有坐标，相机差几厘米整行文字就全不一样
+    m.setCamera(${SPAWN.x}, ${SPAWN.y}, ${SPAWN.z}, 0, 0, 70);
+    await m.waitForIdle();
+    m.freeze(true);
+
+    const before = m.uiQuads();
+    // pinned：把帧率、堆内存、服务端刻数换成固定值。
+    // 那几个数天生每次都不同，不钉住的话这张黄金图永远对不上 ——
+    // 而那不是 bug。内容与格式由 tests/client/debug-overlay.test.ts 逐行验
+    m.setDebugOverlay(true, true);
+    const hash = await m.screenshotHash();
+    const png = await m.screenshot();
+    const withDebug = m.uiQuads();
+    m.setDebugOverlay(false);
+    const after = await m.screenshotHash();
+    m.freeze(false);
+    return { before, withDebug, hash, after, png };
+  `);
+
+  // 开了要多出几百个矩形（十几行文字，每个亮点一个矩形）
+  if (dbg.withDebug <= dbg.before + 100) {
+    failures.push(`F3 开了却几乎没多画东西：${dbg.before} -> ${dbg.withDebug} 个矩形`);
+  } else if (dbg.hash === dbg.after) {
+    failures.push('F3 开与关的画面一样 —— 说明它根本没画进 canvas');
+  } else {
+    log(`F3：矩形 ${dbg.before} -> ${dbg.withDebug}，关掉后画面变回去`);
+  }
+  saveShot('f3', dbg.png);
+  actual['f3'] = dbg.hash;
+  if (!UPDATE && golden['f3'] !== undefined && golden['f3'] !== dbg.hash) {
+    failures.push(`f3 截图哈希不匹配: 期望 ${golden['f3']}，实得 ${dbg.hash}`);
+  } else {
+    log(`f3: ${dbg.hash}${golden['f3'] === undefined ? ' (无黄金值)' : ' ok'}`);
+  }
+
+
 }

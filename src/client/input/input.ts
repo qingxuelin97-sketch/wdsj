@@ -22,6 +22,8 @@ export interface InputSnapshot {
   readonly inventory: boolean;
   /** 关闭当前界面（Esc） */
   readonly escape: boolean;
+  /** 切换调试叠层（F3） */
+  readonly debug: boolean;
   /** 按下的数字键 1..9，没按返回 −1 */
   readonly hotbarKey: number;
   /** 左键：挖掘 */
@@ -60,7 +62,8 @@ export class Input {
     const onKeyDown = (e: KeyboardEvent): void => {
       this.down.add(e.code);
       // 空格会滚动页面，Tab 会切焦点，都要拦
-      if (e.code === 'Space' || e.code === 'Tab') e.preventDefault();
+      // Space 会滚页，Tab 会切焦点，F3 在部分浏览器里是页内查找 —— 全都要拦
+      if (e.code === 'Space' || e.code === 'Tab' || e.code === 'F3') e.preventDefault();
     };
     const onKeyUp = (e: KeyboardEvent): void => {
       this.down.delete(e.code);
@@ -165,6 +168,7 @@ export class Input {
       sneak: has('ShiftLeft') || has('ShiftRight'),
       inventory: has('KeyE'),
       escape: has('Escape'),
+      debug: has('F3'),
       hotbarKey: this.hotbarKey(has),
       attack: this.buttons.has(0) || this.injected.has('Mouse0'),
       use: this.buttons.has(2) || this.injected.has('Mouse2'),

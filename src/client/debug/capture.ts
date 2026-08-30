@@ -8,7 +8,7 @@
  * 这一整个模块存在的理由是同一件事：**截图回归要成立，取样必须可复现**。
  * 三条规则各自堵住一种不可复现：
  *
- *   pinFrame()      堵住"时间在动"—— 冻结时钟并把 renderTick 归零
+ *   pinFrame()      堵住"时间在动"—— 冻结时钟、把 renderTick 归零、连 fps 一起冻
  *   hashImageData() 堵住"GPU 有浮点噪声"—— 降到 64×64 灰度再量化到 32 级
  *   screenshotHash()堵住"异步的活还没干完"—— 连续两帧相同才采信
  *
@@ -23,7 +23,7 @@ import { nextFrame } from '../frame-scheduler.ts';
  * 拿到整个宿主反而让人以为它可以顺手改世界。
  */
 export interface CaptureHost {
-  readonly clock: { frozen: boolean; renderTick: number };
+  readonly clock: { frozen: boolean; renderTick: number; statsFrozen: boolean };
   readonly canvas: HTMLCanvasElement;
   renderOnce(): void;
   pumpWorld(): void;
@@ -87,11 +87,16 @@ export function createCapture(host: CaptureHost): Capture {
     pinFrame(): () => void {
       const wasFrozen = host.clock.frozen;
       const wasTick = host.clock.renderTick;
+      const wasStats = host.clock.statsFrozen;
       host.clock.frozen = true;
       host.clock.renderTick = 0;
+      // 连 fps 一起冻。F3 把帧率画在屏幕上，而它每帧都在变 ——
+      // 不冻的话"连续两帧一样"永远不成立
+      host.clock.statsFrozen = true;
       return () => {
         host.clock.frozen = wasFrozen;
         host.clock.renderTick = wasTick;
+        host.clock.statsFrozen = wasStats;
       };
     },
 

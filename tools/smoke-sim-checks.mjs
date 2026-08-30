@@ -44,6 +44,7 @@ export async function runSimChecks(ctx) {
       const put = await m.command('setblock ' + (x + 4) + ' ' + (y + 6) + ' ' + z + ' water');
       const readBack = await m.command('getblock ' + (x + 4) + ' ' + (y + 6) + ' ' + z);
       await m.setTime(6000);
+      await m.command('weather clear');
       // 朝向要按本工程的约定算：yaw 0 面向 +Z，前向量是 (−sin yaw, ·, cos yaw)。
       // 结构在相机的 +x +z 方向，所以 yaw ≈ −π/4
       m.setCamera(x - 7, y + 7, z - 9, -0.785, 0.3, 70);
@@ -99,6 +100,7 @@ export async function runSimChecks(ctx) {
       }
       // 正午 + 贴近平视：这张图要能看清每只的轮廓，才当得起"模型截图匹配"
       await m.setTime(6000);
+      await m.command('weather clear');
       m.setCamera(x + 8.5, y + 3.2, z - 11, 0, 0.13, 60);
       m.freeze(false);
       await m.waitForIdle();

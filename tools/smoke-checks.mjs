@@ -182,16 +182,26 @@ export async function runSceneChecks(ctx) {
     if (sel === null) return { sel: null };
     const beforeName = (await m.command('getblock ' + sel.x + ' ' + sel.y + ' ' + sel.z)).text;
 
-    // 按住左键，边挖边记裂纹级别
+    // 按住左键，边挖边记裂纹级别。
+    //
+    // 采样与"挖穿了没有"的查询**必须解耦**。原来两件事在同一个循环里，
+    // 而查询是一次服务端往返（好几帧）—— 于是采样频率由网络延迟决定，
+    // 而不是由帧率决定：快的时候记到 10 级，慢的时候只记到 3 级，
+    // 同一份代码时绿时红。而报出来的是"10 级叠加没生效"，
+    // 听起来像裂纹功能坏了。
+    //
+    // 现在每帧采一次进度（纯本地，很便宜），每 10 帧才去问一次服务端。
     const stages = new Set();
     m._injectMouse(0, true);
     const digStart = Date.now();
-    while (Date.now() - digStart < 6000) {
+    for (let i = 0; Date.now() - digStart < 6000; i++) {
       await new Promise(r => requestAnimationFrame(r));
       const p = m.digProgress();
       if (p > 0) stages.add(Math.min(9, Math.floor(p * 10)));
-      const now = (await m.command('getblock ' + sel.x + ' ' + sel.y + ' ' + sel.z)).text;
-      if (now !== beforeName) break;
+      if (i % 10 === 9) {
+        const now = (await m.command('getblock ' + sel.x + ' ' + sel.y + ' ' + sel.z)).text;
+        if (now !== beforeName) break;
+      }
     }
     m._injectMouse(0, false);
     // 破坏的那一刻应该炸出碎屑。要立刻看，粒子一秒左右就没了
@@ -210,7 +220,9 @@ export async function runSceneChecks(ctx) {
     failures.push('低头看脚下时应该选中一个方块，实得 null');
   } else if (dig.afterName === dig.beforeName) {
     failures.push(`按住左键 4 秒没挖动 ${dig.beforeName}（${dig.sel.x},${dig.sel.y},${dig.sel.z}）`);
-  } else if (dig.stages.length < 4) {
+  } else if (dig.stages.length < 8) {
+    // 门槛拉到 8：每帧采样的话 10 级基本都能采到，采不到 8 级说明
+    // 要么裂纹级数算错了，要么采样又被什么东西拖慢了
     failures.push(`裂纹只出现了 ${dig.stages.length} 级（${dig.stages}），10 级叠加没生效`);
   } else if (dig.particles <= 0) {
     failures.push('破坏方块后没有碎屑粒子');
@@ -231,6 +243,7 @@ export async function runSceneChecks(ctx) {
     m.setCanvasSize(640, 480);
     m.freeze(false);
     await m.setTime(6000);
+    await m.command('weather clear');
     await m.waitForIdle();
     m.attachPlayer(${spawnPos.x}, ${spawnPos.y} + 1, ${spawnPos.z});
     for (let i = 0; i < 200 && !m.playerState().onGround; i++) {
@@ -315,12 +328,20 @@ export async function runSceneChecks(ctx) {
     m.setCanvasSize(640, 360);
     m.freeze(false);
     await m.setTime(18000);
+    await m.command('weather clear');
     await m.waitForIdle();
-    const s0 = m.stats();
-    // 萤石放在出生点旁边的地面上
-    const gx = Math.round(s0.cameraX) + 2;
-    const gz = Math.round(s0.cameraZ) + 2;
-    const gy = Math.round(s0.cameraY) - 1;
+    // 萤石放在**出生点**旁边的地面上。
+    //
+    // 坐标必须取自 SPAWN，不能取自 m.stats() 的当前相机 ——
+    // 这一项跑在一长串检查之后，相机停在哪完全取决于上一项干了什么。
+    // 原来写的是当前相机，于是黄金值其实是"上一项恰好把相机留在那儿"
+    // 烘出来的：加了 F3 检查（它把相机移回出生点）之后立刻就对不上了，
+    // 而报出来的是"萤石夜景变了"，看着像光照坏了。
+    //
+    // 这个文件开头就写着"需要稳定参照系的检查用 SPAWN，不要用当前相机位置"。
+    const gx = Math.round(${SPAWN.x}) + 2;
+    const gz = Math.round(${SPAWN.z}) + 2;
+    const gy = Math.round(${SPAWN.y}) - 1;
     await m.setBlock(gx, gy, gz, 'glowstone');
 
     // 相机摆到斜后方，算出真正对准萤石的 yaw/pitch。
@@ -397,12 +418,15 @@ export async function runSceneChecks(ctx) {
     await m.setTime(18000);
     await m.command('weather clear');
     await m.waitForIdle();
-    const s0 = m.stats();
     // 搭在**离出生点 200 格**的地方。就地搭的话这片平台、这些火把、
     // 尤其是会流的岩浆会留在世界里，后面每一张黄金图都被它改掉 ——
     // 第一版就是这样，连累了网格收敛与萤石夜景两项检查。
-    const bx = Math.round(s0.cameraX) + 200;
-    const bz = Math.round(s0.cameraZ) + 200;
+    //
+    // 基准同样取 SPAWN 而不是当前相机：取相机的话，这片平台盖在哪
+    // 取决于上一项检查把相机留在了哪，黄金值就绑死在检查的**顺序**上。
+    // 插一项新检查进去就会让这张图无端变掉。
+    const bx = Math.round(${SPAWN.x}) + 200;
+    const bz = Math.round(${SPAWN.z}) + 200;
     const by = 80;
 
     // **先把相机搬过去，等区块加载完，再动手建。**

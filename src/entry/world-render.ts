@@ -28,6 +28,7 @@ import type { WeatherRenderer } from '../client/render/weather-renderer.ts';
 import { skyColor, sunBrightness } from '../core/world/day-night.ts';
 import { SECTION_SIZE } from '../core/constants.ts';
 import type { ChunkStore } from '../core/world/block-view.ts';
+import { drawDebugOverlay, type DebugInfo } from '../client/ui/debug-overlay.ts';
 
 /** 闪电闪白多少帧。6 帧 ≈ 100ms，再长就成了"天亮了" */
 const LIGHTNING_FLASH_FRAMES = 6;
@@ -69,6 +70,8 @@ export interface FrameDeps {
   readonly lightningFlashTick: number;
   /** 客户端的世界镜像。雨要按列查群系与地面高度 */
   readonly store: ChunkStore;
+  /** F3 的内容。null = 不画 */
+  readonly debug: DebugInfo | null;
 }
 
 export function drawWorldFrame(d: FrameDeps): void {
@@ -166,7 +169,16 @@ export function drawWorldFrame(d: FrameDeps): void {
     brightness: Math.max(0.25, sunBrightness(d.timeOfDay, d.rain, d.thunder)),
   });
 
-  // 界面画在最后，且用**虚拟像素**坐标系（见 d.ui-d.renderer.ts）
+  // 界面画在最后，且用**虚拟像素**坐标系（见 client/ui/ui-renderer.ts）
   d.ui.draw(d.uiRenderer, d.uiCtx);
   d.uiRenderer.flush(d.texture);
+
+  // F3 **单独一批**。
+  //
+  // 一屏 F3 有六七百个矩形，而 UiRenderer 的缓冲上限是 1024 —— 和物品栏
+  // 挤在同一批里会溢出，表现是界面画一半没了，而且只在开着背包按 F3 时出现。
+  if (d.debug !== null) {
+    drawDebugOverlay(d.uiRenderer, d.debug);
+    d.uiRenderer.flush(d.texture);
+  }
 }

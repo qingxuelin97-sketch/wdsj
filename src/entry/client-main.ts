@@ -48,6 +48,7 @@ import { Frustum } from '../core/math/frustum.ts';
 import { ClientSession } from './client-session.ts';
 import { installPacketHandlers } from './net-handlers.ts';
 import { FrameInput } from './frame-input.ts';
+import { collectDebugInfo } from '../client/ui/debug-info.ts';
 import {
   C_Handshake, C_PlayerMove, C_PlayerAction, 
   C_SetViewDistance, C_AttackEntity, C_Respawn,
@@ -57,7 +58,6 @@ import {
 import { SECTION_SIZE, DEFAULT_RENDER_DISTANCE, TPS, MS_PER_TICK } from '../core/constants.ts';
 
 const canvas = document.getElementById('gl') as HTMLCanvasElement | null;
-const hud = document.getElementById('hud');
 const hint = document.getElementById('hint');
 if (canvas === null) throw new Error('找不到 #gl canvas');
 
@@ -328,6 +328,14 @@ function renderOnce(): void {
     sky, skyLayers, worldAge: session.worldAge, renderTick: clock.renderTick,
     rain: weather.rain, thunder: weather.thunder,
     weatherRenderer, lightningFlashTick, store: world.store,
+    debug: showDebug ? collectDebugInfo({
+      clock, camera, world, registry, renderer, particles, entities, mobs,
+      timeOfDay: session.timeOfDay, worldAge: session.worldAge,
+      rain: weather.rain, thunder: weather.thunder,
+      serverChunks: serverStats.loadedChunks, pendingChunks: serverStats.pendingChunks,
+      meshInFlight: meshPool.pendingJobs,
+      serverTick: serverStats.tick, serverTickMs: serverStats.tickMs,
+    }, pinDebug) : null,
   });
 }
 
@@ -392,6 +400,10 @@ installTestHook({
   audioStats: () => ({ ready: audio.ready, plays: audio.playCount }),
   startAudio: () => audio.resume(),
   particleCount: () => particles.count,
+  setDebugOverlay: (on: boolean, pinned = false) => {
+    showDebug = on;
+    pinDebug = pinned;
+  },
   /**
    * 确定性地推进粒子系统若干刻。
    *
@@ -445,7 +457,18 @@ installTestHook({
 // 主循环
 // ---------------------------------------------------------------------------
 let firstFrameDone = false;
-let hudAccum = 0;
+
+/**
+ * F3 开着没有。
+ *
+ * 默认**关**：它每帧要画六七百个矩形，而且会出现在每一张截图里 ——
+ * 黄金图比对的是像素，多一行 fps 就全不匹配。
+ * URL 带 ?debug=1 可以默认打开，给人看的时候方便。
+ */
+let showDebug = params.get('debug') === '1';
+/** 把 F3 上的遥测数字换成固定值，供截图回归。见 debug-info.ts 的 PINNED */
+let pinDebug = false;
+let prevDebugKey = false;
 
 /** 界面输入的边沿触发状态，见 entry/frame-input.ts */
 const frameInput = new FrameInput({
@@ -466,6 +489,10 @@ function frame(nowMs: number): void {
     return;
   }
   frameInput.handleUi(snap);
+
+  // F3 要边沿触发，否则按住会每帧翻一次，看起来是在闪
+  if (snap.debug && !prevDebugKey) showDebug = !showDebug;
+  prevDebugKey = snap.debug;
 
   if (!clock.frozen && session.spawned && !ui.open) {
     if (player.mode === 'detached') camera.applyFreeFlight(snap, clock.dt, 12);
@@ -530,17 +557,6 @@ function frame(nowMs: number): void {
     console.log('[boot] 第一帧完成');
   }
 
-  hudAccum += clock.dt;
-  if (hud !== null && hudAccum > 0.1) {
-    hudAccum = 0;
-    const p = camera.position;
-    hud.textContent =
-      `fps ${clock.fps.toFixed(0)} (${clock.frameMs.toFixed(1)}ms)  服务端 ${serverStats.tick}t ${serverStats.tickMs.toFixed(1)}ms\n` +
-      `xyz ${p[0]!.toFixed(1)} ${p[1]!.toFixed(1)} ${p[2]!.toFixed(1)}  世界时间 ${session.worldAge % 24000}\n` +
-      `区块 ${world.chunkCount}/${serverStats.loadedChunks}  待网格 ${world.dirtyCount}  在飞 ${meshPool.pendingJobs}  待推 ${serverStats.pendingChunks}\n` +
-      `段 ${renderer.sectionsDrawn}/${renderer.sectionCount}  draws ${renderer.drawCalls}\n` +
-      `面 ${renderer.quadsDrawn}  显存 ${(renderer.totalBytes / 1048576).toFixed(1)} MB`;
-  }
   if (hint !== null) hint.classList.toggle('hidden', input.pointerLocked);
 
   scheduleFrame(frame);

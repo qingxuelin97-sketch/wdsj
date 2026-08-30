@@ -110,6 +110,8 @@ export interface HostBridge {
   /** 当前存活的粒子数 */
   particleCount(): number;
   stepParticles(ticks: number, burst?: readonly [number, number, number, number]): void;
+  /** 开关 F3 调试叠层。pinned 会把帧率/内存这类遥测换成固定值，供截图回归 */
+  setDebugOverlay(on: boolean, pinned?: boolean): void;
   /** 上一帧 UI 画了多少矩形 */
   uiQuads(): number;
   /** 当前是否开着某个容器界面 */
@@ -440,6 +442,9 @@ export function installTestHook(host: HostBridge): void {
     particleCount: (): number => host.particleCount(),
     stepParticles: (ticks: number, burst?: readonly [number, number, number, number]): void => {
       host.stepParticles(ticks, burst);
+    },
+    setDebugOverlay: (on: boolean, pinned = false): void => {
+      host.setDebugOverlay(on, pinned);
     },
     uiQuads: (): number => host.uiQuads(),
     uiOpen: (): boolean => host.uiOpen(),
