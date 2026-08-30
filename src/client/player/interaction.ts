@@ -60,7 +60,6 @@ export class Interaction {
   /** 上一帧右键是否按下，用于只在按下那一刻放一次 */
   private usePressed = false;
   /** 粒子按 20 Hz 推进，与物理同频 */
-  private particleAccum = 0;
 
   constructor(deps: InteractionDeps) {
     this.d = deps;
@@ -75,11 +74,12 @@ export class Interaction {
   update(input: InteractionInput, dtMs: number): void {
     this.updateSelection();
     this.updateDigging(input, dtMs);
-    this.particleAccum += dtMs;
-    while (this.particleAccum >= MS_PER_TICK) {
-      this.d.particles.update();
-      this.particleAccum -= MS_PER_TICK;
-    }
+    // 粒子的推进**不在这里**。
+    //
+    // 它原来挂在这个函数里，而这个函数只在"没开界面、没在打生物"时才被调用 ——
+    // 于是打开背包的一瞬间，空中所有碎屑会僵在原地。以前只有挖方块的碎屑，
+    // 那半秒钟没人看得出来；有了火把冒烟、岩浆冒泡这类**一直在冒**的粒子之后
+    // 就很明显了。搬到主循环里那个固定 20Hz 的推进块，和掉落物、生物一起走。
   }
 
   /** 每帧重算准星指着哪一格 */

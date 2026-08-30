@@ -18,7 +18,7 @@ import { xpToNextLevel } from '../player/experience.ts';
 import { tossFromPlayer, spawnXpOrbs } from './item-manager.ts';
 import { syncInventory } from '../player/inventory-actions.ts';
 import { setBodyBox, makeBox } from '../../core/physics/block-collision.ts';
-import { S_EntityEvent, S_PlayerHealth, S_PlayerPosLook } from '../../core/net/packets.ts';
+import { S_EntityEvent, S_Explosion, S_PlayerHealth, S_PlayerPosLook } from '../../core/net/packets.ts';
 import { EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, MAX_HEALTH, INVULNERABLE_TICKS, EXHAUSTION } from '../../core/constants.ts';
 
 /** 箭命中判定复用的盒子。每刻可能有几十支箭，别每支都新建 */
@@ -131,7 +131,7 @@ export function explodeAt(core: ServerCore, x: number, y: number, z: number, pow
   }
   for (const player of core.eachPlayer()) {
     if (!player.isSubscribed(Math.floor(x) >> 4, Math.floor(z) >> 4)) continue;
-    player.channel.send(S_EntityEvent, { entityId: sourceId < 0 ? 0 : sourceId, event: 2 });
+    player.channel.send(S_Explosion, { x, y, z, power });
   }
 }
 

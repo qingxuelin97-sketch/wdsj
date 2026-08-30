@@ -26,7 +26,7 @@ const PORT = 8097;
 const OUT_DIR = path.join(ROOT, 'tests/out');
 const HEADLESS = !process.argv.includes('--head');
 const SEED = 20261118; // 1.0.0 的发布日
-const URL = `http://127.0.0.1:${PORT}/?test=firstnight&seed=${SEED}&radius=3&persist=0&randomTicks=0`;
+const URL = `http://127.0.0.1:${PORT}/?test=firstnight&seed=${SEED}&radius=3&persist=0&randomTicks=0&particles=0`;
 
 const failures = [];
 const log = (m) => console.log(`[第一夜] ${m}`);

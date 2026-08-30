@@ -18,6 +18,7 @@
  * }} ctx
  */
 import { runSimChecks } from './smoke-sim-checks.mjs';
+import { runVisualChecks } from './smoke-visual-checks.mjs';
 
 export async function runSceneChecks(ctx) {
   const { page, ensureHook, spawnPos, log, failures, actual, golden, saveShot } = ctx;
@@ -301,131 +302,7 @@ export async function runSceneChecks(ctx) {
     } else log(`${key}: ${hash} ok`);
   }
 
-  // --- 方块陈列阵：一张截图覆盖所有形状 ---
-  //
-  // M7 的模型系统一加就是十几种非立方体形状。逐个写截图用例不现实，
-  // 而形状错了（半砖上下颠倒、楼梯朝向反了、栅栏没连上）在阵列图里
-  // 是一眼可见的。所以摆成一片，一张图全覆盖。
-  const gallery = await page.evaluate(`
-    ${ensureHook}
-    const m = window.__mc;
-    m.setCanvasSize(720, 405);
-    m.freeze(false);
-    await m.setTime(6000);
-    await m.waitForIdle();
-    const s0 = m.stats();
-    const gx = Math.round(s0.cameraX) - 8;
-    const gy = 100;
-    const gz = Math.round(s0.cameraZ) - 8;
-    const placed = Number((await m.command('gallery ' + gx + ' ' + gy + ' ' + gz)).text);
-    // 斜上方俯视整片阵列。yaw/pitch 由"看向阵列中心"算出来，
-    // 手写角度的话阵列稍微一挪就跑出画面 —— 上一版就是这么拍到山坡的
-    const rows = Math.ceil(placed / 10);
-    const tx = gx + 9;
-    const ty = gy + 1;
-    const tz = gz + rows;
-    const cx = tx - 9, cy2 = ty + 8, cz = tz - 13;
-    const dx = tx - cx, dy = ty - cy2, dz = tz - cz;
-    const len = Math.hypot(dx, dy, dz);
-    m.setCamera(cx, cy2, cz, Math.atan2(-dx, dz), -Math.asin(dy / len), 70);
-    await m.waitForIdle();
-    m.freeze(true);
-    const hash = await m.screenshotHash();
-    const png = await m.screenshot();
-    m.freeze(false);
-    return { hash, png, placed };
-  `);
-  log(`陈列阵摆了 ${gallery.placed} 个方块`);
-
-  // --- 形状近景：非立方体方块排成一行，正对着拍 ---
-  const shapes = await page.evaluate(`
-    ${ensureHook}
-    const m = window.__mc;
-    m.setCanvasSize(800, 500);
-    m.freeze(false);
-    await m.setTime(6000);
-    const s0 = m.stats();
-    // 摆到远离陈列阵的地方，两者别挤进同一张画面
-    const rx = Math.round(s0.cameraX) + 40;
-    const ry = 110;
-    const rz = Math.round(s0.cameraZ);
-    const placed = Number((await m.command('shapes ' + rx + ' ' + ry + ' ' + rz)).text);
-    // 正对这片网格，稍微俯视，能同时看到顶面和侧面
-    const rows = Math.ceil(placed / 7);
-    const tx = rx + 6, ty = ry, tz = rz + rows;
-    const cx = tx, cy2 = ty + 5, cz = tz - 10;
-    const dx = tx - cx, dy = ty - cy2, dz = tz - cz;
-    const len = Math.hypot(dx, dy, dz);
-    m.setCamera(cx, cy2, cz, Math.atan2(-dx, dz), -Math.asin(dy / len), 62);
-    await m.waitForIdle();
-    m.freeze(true);
-    const hash = await m.screenshotHash();
-    const png = await m.screenshot();
-    m.freeze(false);
-    return { hash, png, placed };
-  `);
-  log(`形状行摆了 ${shapes.placed} 个`);
-  actual['shapes'] = shapes.hash;
-  saveShot('shapes', shapes.png);
-  if (UPDATE) {
-    log(`shapes: ${shapes.hash} (已记录)`);
-  } else if (golden['shapes'] !== undefined && golden['shapes'] !== shapes.hash) {
-    failures.push(`shapes 截图哈希不匹配: 期望 ${golden['shapes']}，实得 ${shapes.hash}（看 tests/out/shapes.png）`);
-  } else {
-    log(`shapes: ${shapes.hash} ok`);
-  }
-  if (gallery.placed < 60) {
-    failures.push(`陈列阵只摆了 ${gallery.placed} 个方块，应该有六十多个`);
-  }
-  actual['gallery'] = gallery.hash;
-  saveShot('gallery', gallery.png);
-  if (UPDATE) {
-    log(`gallery: ${gallery.hash} (已记录)`);
-  } else if (golden['gallery'] === undefined) {
-    log(`gallery: ${gallery.hash} (无黄金值)`);
-  } else if (golden['gallery'] !== gallery.hash) {
-    failures.push(`gallery 截图哈希不匹配: 期望 ${golden['gallery']}，实得 ${gallery.hash}（看 tests/out/gallery.png）`);
-  } else {
-    log(`gallery: ${gallery.hash} ok`);
-  }
-
-  // --- 网格必须是"已收敛"的：强制整场重做，画面不能变 ---
-  //
-  // 这一条抓的是"过期网格"：某个段在邻居还不存在（或已经卸载）时算过一次，
-  // 之后再没被重做过。它不会报错、不会掉帧，只是画面上多一片墙或少一片墙，
-  // 而且只在特定的加载顺序下出现。
-  // 实测这条断言一上来就抓到了两个：区块到达时不重做**斜角**邻居，
-  // 以及区块卸载时完全不重做邻居（视距边缘会看穿世界）。
-  const converged = await page.evaluate(`
-    ${ensureHook}
-    const m = window.__mc;
-    m.setCanvasSize(640, 360);
-    m.freeze(false);
-    await m.setTime(6000);
-    await m.waitForIdle();
-    // 等碎屑落完。前面的挖掘用例炸出来的粒子还活着的话，
-    // 两次截图之间它们会自己消失，看上去就像"网格过期了"
-    for (let i = 0; i < 200 && m.particleCount() > 0; i++) {
-      await new Promise(r => requestAnimationFrame(r));
-    }
-    m.freeze(true);
-    const before = await m.screenshotHash();
-    m.freeze(false);
-    m._remeshAll();
-    await m.waitForIdle();
-    m.freeze(true);
-    const after = await m.screenshotHash();
-    m.freeze(false);
-    return { before, after };
-  `);
-  if (converged.before !== converged.after) {
-    failures.push(
-      `强制重做网格后画面变了：${converged.before} -> ${converged.after}` +
-      ' —— 说明有段的网格是过期的（邻居到达或卸载后没被重做）',
-    );
-  } else {
-    log(`网格已收敛：重做前后同为 ${converged.before}`);
-  }
+  await runVisualChecks(ctx);
 
   // --- 方块光场景：夜里放一块萤石 ---
   //
@@ -502,5 +379,100 @@ export async function runSceneChecks(ctx) {
   }
 
   // --- 世界模拟层的检查（流体、生物）搬到了 smoke-sim-checks.mjs ---
+  // --- 粒子：火把冒烟、岩浆冒泡 ---
+  //
+  // 这一项验的是**环境粒子**那条路 —— 没有任何"事件"触发它们，
+  // 它们只是世界一直在那儿冒。做法是每刻在相机周围随机采样几百格，
+  // 采到火把就冒烟、采到露天岩浆就冒泡（见 client/particle/emitters.ts）。
+  //
+  // 用 stepParticles 而不是"跑一会儿"：粒子由主循环按真实耗时推进，
+  // 跑了多少刻取决于机器多快，两次截出来的烟根本不在一个地方。
+  // 那个钩子把随机源复位再跑固定刻数，走的是和正常路径**同一份**
+  // 发射器与物理，所以验的是真东西。
+  const parts = await page.evaluate(`
+    ${ensureHook}
+    const m = window.__mc;
+    m.setCanvasSize(640, 360);
+    m.freeze(false);
+    await m.setTime(18000);
+    await m.command('weather clear');
+    await m.waitForIdle();
+    const s0 = m.stats();
+    // 搭在**离出生点 200 格**的地方。就地搭的话这片平台、这些火把、
+    // 尤其是会流的岩浆会留在世界里，后面每一张黄金图都被它改掉 ——
+    // 第一版就是这样，连累了网格收敛与萤石夜景两项检查。
+    const bx = Math.round(s0.cameraX) + 200;
+    const bz = Math.round(s0.cameraZ) + 200;
+    const by = 80;
+
+    // **先把相机搬过去，等区块加载完，再动手建。**
+    // 200 格外的区块根本没加载，setBlock 会直接返回 false ——
+    // 而那表现为"一根火把都没插上"，看着像放置坏了
+    m.setCamera(bx, by + 2.2, bz - 8, 0, 0.12, 70);
+    await m.waitForIdle();
+
+    // 一片平台，插一排火把
+    await m.command('fillbox ' + (bx-5) + ' ' + (by-1) + ' ' + (bz-5) + ' '
+      + (bx+5) + ' ' + (by-1) + ' ' + (bz+5) + ' stone');
+    await m.command('fillbox ' + (bx-5) + ' ' + by + ' ' + (bz-5) + ' '
+      + (bx+5) + ' ' + (by+5) + ' ' + (bz+5) + ' air');
+    let torches = 0;
+    for (let dx = -4; dx <= 4; dx += 2) {
+      for (let dz = -2; dz <= 4; dz += 2) {
+        if (await m.setBlock(bx + dx, by, bz + dz, 'torch')) torches++;
+      }
+    }
+    // 岩浆坐在一个四面封死、只露顶的坑里 —— 露天才冒泡，封死才不会流出去
+    await m.setBlock(bx, by - 1, bz - 4, 'lava');
+    await m.waitForIdle();
+
+    // 凑近看。远景里 12 粒烟只有几个像素，截图当"证据"是空的 ——
+    // 断言说粒子存在，图上却什么也看不见，那和没验证一样
+    m.setCamera(bx - 1.2, by + 1.4, bz - 3.2, 0.35, 0.05, 55);
+    await m.waitForIdle();
+    m.freeze(true);
+
+    // 跑够刻数让烟飘起来。
+    //
+    // 采样是**稀疏**的（每刻在 32³ 的盒子里随机挑 420 格），单根火把大约
+    // 十几刻才轮到一次 —— MC 也是这么稀疏的，那正是烟一缕一缕而不是
+    // 一根柱子的原因。所以要么跑久一点，要么多插几根火把，这里两样都做了。
+    // 环境粒子 + 一次爆炸。前者数值上验稀疏采样那条路，
+    // 后者在图上留下看得见的一团烟
+    m.stepParticles(150, [bx, by + 1.2, bz - 1, 3]);
+    const count = m.particleCount();
+    m.stepParticles(150);
+    const ambientOnly = m.particleCount();
+    m.stepParticles(150, [bx, by + 1.2, bz - 1, 3]);
+    const hash = await m.screenshotHash();
+    const png = await m.screenshot();
+
+    // 再跑一次同样的刻数，应当得到**一模一样**的画面 ——
+    // 这是"粒子可复现"的直接证据，不是间接推断
+    m.stepParticles(150, [bx, by + 1.2, bz - 1, 3]);
+    const hash2 = await m.screenshotHash();
+
+    m.freeze(false);
+    return { count, ambientOnly, hash, hash2, png, torches };
+  `);
+
+  if (parts.ambientOnly < 5) {
+    failures.push(
+      `环境粒子太少：${parts.torches} 根火把跑了 150 刻只有 ${parts.ambientOnly} 粒`,
+    );
+  } else if (parts.hash !== parts.hash2) {
+    failures.push(`粒子不可复现：同样跑 40 刻，两次得到 ${parts.hash} 与 ${parts.hash2}`);
+  } else {
+    log(`粒子：环境 ${parts.ambientOnly} 粒（${parts.torches} 根火把）`
+      + ` + 爆炸后共 ${parts.count} 粒，重跑同刻数哈希一致`);
+  }
+  saveShot('particles', parts.png);
+  actual['particles'] = parts.hash;
+  if (!UPDATE && golden['particles'] !== undefined && golden['particles'] !== parts.hash) {
+    failures.push(`particles 截图哈希不匹配: 期望 ${golden['particles']}，实得 ${parts.hash}`);
+  } else {
+    log(`particles: ${parts.hash}${golden['particles'] === undefined ? ' (无黄金值)' : ' ok'}`);
+  }
+
   await runSimChecks(ctx);
 }

@@ -211,6 +211,22 @@ export const S_Weather = S2C.add(
   ]),
 );
 
+/**
+ * 爆炸发生在哪、多大。
+ *
+ * 位置必须带上。原来复用的是 S_EntityEvent(event=2)，它只有 entityId ——
+ * 客户端只能知道"炸了"，不知道炸在哪，于是声音没有方位、粒子无处可放。
+ * 而 TNT 炸的时候那个源实体已经不存在了，连个能查坐标的东西都没有。
+ */
+export const S_Explosion = S2C.add(
+  definePacket(0x9a, 'S_Explosion', [
+    ['x', 'f32'],
+    ['y', 'f32'],
+    ['z', 'f32'],
+    ['power', 'f32'],
+  ]),
+);
+
 /** 闪电劈在哪。客户端据此放一道光和一声雷 */
 export const S_Lightning = S2C.add(
   definePacket(0x99, 'S_Lightning', [

@@ -7,6 +7,7 @@
  */
 import { TilePainter, rgb, mulberry32, fnv1a, type Rgb } from './texgen.ts';
 import { SKY_RECIPES } from './tile-recipes-sky.ts';
+import { PARTICLE_RECIPES } from './tile-recipes-particles.ts';
 
 type Recipe = (p: TilePainter) => void;
 
@@ -508,6 +509,7 @@ export const RECIPES: Record<string, Recipe> = {
   // 每级各画各的会让裂纹在挖掘过程中不停跳动，非常廉价。
   ...destroyStages(),
   ...SKY_RECIPES,
+  ...PARTICLE_RECIPES,
 };
 
 /** 生成 destroy_stage_0..9。它们共用一套从中心生长的裂纹骨架 */

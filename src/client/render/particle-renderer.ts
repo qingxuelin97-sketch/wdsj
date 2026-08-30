@@ -11,13 +11,20 @@
  */
 import { Shader } from '../gl/shader.ts';
 import { GRAVITY, DRAG_VERTICAL } from '../../core/constants.ts';
+import type { ParticleDef } from '../../content/particles.ts';
 
 /** 同时存在的粒子上限。超了就覆盖最老的，绝不增长数组 */
 const MAX_PARTICLES = 512;
 /** 每个方块碎多少片 */
 const PER_BLOCK = 24;
-/** 每个粒子的浮点数：位置 3 + uv 2 + 层 1 + 尺寸 1 + 亮度 1 + 群系染色 3 */
-const FLOATS_PER_VERTEX = 11;
+/**
+ * 每个粒子的浮点数：位置 3 + uv 2 + 层 1 + 尺寸 1 + 亮度 1 + 染色 3
+ * + uv 缩放 1 + 不透明度 1 = 14。
+ *
+ * uv 缩放不能写死：方块碎屑取的是方块贴图里的**一小块**（1/4 格，
+ * 这样碎屑才有细节而不是一团糊），而专用的粒子贴图要整张用。
+ */
+const FLOATS_PER_VERTEX = 14;
 
 const VERT = `#version 300 es
 precision highp float;
@@ -28,6 +35,8 @@ layout(location = 3) in float aSize;
 layout(location = 4) in float aShade;
 layout(location = 5) in vec2 aCorner;
 layout(location = 6) in vec3 aTint;
+layout(location = 7) in float aUvScale;
+layout(location = 8) in float aAlpha;
 
 uniform mat4 uViewProj;
 uniform vec3 uRight;
@@ -37,15 +46,18 @@ out vec2 vUv;
 flat out float vLayer;
 out float vShade;
 out vec3 vTint;
+out float vAlpha;
 
 void main() {
   // 朝向相机的方片：用相机的右向量与上向量展开，永远正对镜头
   vec3 world = aCenter + uRight * (aCorner.x * aSize) + uUp * (aCorner.y * aSize);
-  // 贴图只取方块贴图里的一小块（1/4 格），碎屑才有细节而不是一团糊
-  vUv = aUv + (aCorner + 0.5) * 0.25;
+  // 碎屑只取方块贴图里的一小块（aUvScale = 0.25），才有细节而不是一团糊；
+  // 专用粒子贴图整张用（aUvScale = 1）
+  vUv = aUv + (aCorner + 0.5) * aUvScale;
   vLayer = aLayer;
   vShade = aShade;
   vTint = aTint;
+  vAlpha = aAlpha;
   gl_Position = uViewProj * vec4(world, 1.0);
 }`;
 
@@ -56,15 +68,19 @@ in vec2 vUv;
 flat in float vLayer;
 in float vShade;
 in vec3 vTint;
+in float vAlpha;
 uniform sampler2DArray uAtlas;
 out vec4 fragColor;
 void main() {
-  vec4 tex = texture(uAtlas, vec3(vUv, vLayer));
-  if (tex.a < 0.5) discard;
+  // textureLod 0：粒子方片很小，贴图本身也只有 16×16，让 GPU 去选 mip
+  // 只会把烟的孔洞、气泡的环全都平均没了
+  vec4 tex = textureLod(uAtlas, vec3(vUv, vLayer), 0.0);
+  float a = tex.a * vAlpha;
+  if (a < 0.02) discard;
   // 草和树叶的贴图是灰度的，颜色全靠群系染色乘上去。
   // 碎屑不乘的话挖草会掉白色的渣 —— 玩家不会意识到自己在读这个信息，
   // 但缺了就是不对。
-  fragColor = vec4(tex.rgb * vTint * vShade, 1.0);
+  fragColor = vec4(tex.rgb * vTint * vShade, a);
 }`;
 
 interface Particle {
@@ -77,6 +93,15 @@ interface Particle {
   size: number;
   shade: number;
   tr: number; tg: number; tb: number;
+  /** 每刻的竖直加速度。正数下落，负数上升（烟、气泡） */
+  gravity: number;
+  /** 每刻速度乘的阻尼 */
+  drag: number;
+  uvScale: number;
+  /** 剩多少刻开始淡出。0 = 不淡出 */
+  fadeTicks: number;
+  /** 出生时的寿命，用来算淡出比例 */
+  maxLife: number;
 }
 
 export class ParticleRenderer {
@@ -121,6 +146,8 @@ export class ParticleRenderer {
     attrib(3, 1, 24);  // size
     attrib(4, 1, 28);  // shade
     attrib(6, 3, 32);  // tint
+    attrib(7, 1, 44);  // uvScale
+    attrib(8, 1, 48);  // alpha
     gl.bindVertexArray(null);
   }
 
@@ -151,6 +178,52 @@ export class ParticleRenderer {
     }
   }
 
+  /**
+   * 按种类发一批粒子。
+   *
+   * @param spread 出生位置在这个半径内随机散开（格）
+   * @param layer  贴图层号。渲染器不认识贴图名，那是内容层的事
+   */
+  emit(
+    d: ParticleDef, layer: number,
+    x: number, y: number, z: number,
+    count: number, rand: () => number,
+    spread = 0.25,
+  ): void {
+    for (let i = 0; i < count; i++) {
+      const life = Math.max(2, Math.round(d.life * (1 + (rand() - 0.5) * 2 * d.lifeVar)));
+      this.push({
+        x: x + (rand() - 0.5) * 2 * spread,
+        y: y + (rand() - 0.5) * 2 * spread,
+        z: z + (rand() - 0.5) * 2 * spread,
+        vx: (rand() - 0.5) * 2 * d.speed,
+        vy: (rand() - 0.5) * 2 * d.speed,
+        vz: (rand() - 0.5) * 2 * d.speed,
+        life,
+        maxLife: life,
+        u: 0, v: 0,
+        layer,
+        size: d.size * (1 + (rand() - 0.5) * 2 * d.sizeVar),
+        shade: 1,
+        tr: d.tint[0], tg: d.tint[1], tb: d.tint[2],
+        gravity: d.gravity,
+        drag: d.drag,
+        uvScale: 1,
+        fadeTicks: d.fadeTicks,
+      });
+    }
+  }
+
+  /** 塞一个粒子进池子。满了顶掉最老的，绝不让数组无限长 */
+  private push(p: Particle): void {
+    if (this.particles.length >= MAX_PARTICLES) {
+      this.particles[this.cursor % MAX_PARTICLES] = p;
+      this.cursor++;
+    } else {
+      this.particles.push(p);
+    }
+  }
+
   private makeOne(
     x: number, y: number, z: number,
     layer: number, rand: () => number,
@@ -169,6 +242,9 @@ export class ParticleRenderer {
       size: 0.09 + rand() * 0.05,
       shade: 0.7 + rand() * 0.3,
       tr: tint[0], tg: tint[1], tb: tint[2],
+      // 碎屑沿用原来的物理：重力 0.4 倍、水平阻尼 0.86
+      gravity: GRAVITY * 0.4, drag: 0.86,
+      uvScale: 0.25, fadeTicks: 0, maxLife: 1,
     };
   }
 
@@ -179,9 +255,9 @@ export class ParticleRenderer {
       p.x += p.vx;
       p.y += p.vy;
       p.z += p.vz;
-      p.vy = (p.vy - GRAVITY * 0.4) * DRAG_VERTICAL;
-      p.vx *= 0.86;
-      p.vz *= 0.86;
+      p.vy = (p.vy - p.gravity) * DRAG_VERTICAL;
+      p.vx *= p.drag;
+      p.vz *= p.drag;
       p.life--;
       if (p.life <= 0) {
         // 与末尾交换再弹出：不用 splice，避免每帧搬动整个数组
@@ -212,6 +288,11 @@ export class ParticleRenderer {
       this.instanceData[o + 8] = p.tr;
       this.instanceData[o + 9] = p.tg;
       this.instanceData[o + 10] = p.tb;
+      this.instanceData[o + 11] = p.uvScale;
+      this.instanceData[o + 12] = p.fadeTicks > 0
+        ? Math.min(1, p.life / p.fadeTicks)
+        : 1;
+      this.instanceData[o + 13] = 0; // 预留
       o += FLOATS_PER_VERTEX;
     }
 
@@ -237,7 +318,17 @@ export class ParticleRenderer {
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.instanceData, 0, this.particles.length * FLOATS_PER_VERTEX);
+
+    // 混合开着才有淡出。碎屑原来是纯 alpha 测试（要么在要么不在），
+    // 而烟必须能淡掉 —— 一团烟"啪"地整个消失比不画还难看
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    // 不写深度：粒子之间互相不该遮挡（它们是半透明的，
+    // 写了就会因为绘制顺序留下方块状的缺口），但仍然要被地形挡住
+    gl.depthMask(false);
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.particles.length);
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
     gl.bindVertexArray(null);
   }
 }

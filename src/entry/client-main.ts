@@ -29,6 +29,8 @@ import { tintColorArray } from '../client/render/block-textures.ts';
 import { buildRenderResources } from '../client/render/resources.ts';
 import { SkyRenderer } from '../client/render/sky-renderer.ts';
 import { WeatherRenderer } from '../client/render/weather-renderer.ts';
+import { ParticleEmitters } from '../client/particle/emitters.ts';
+import { PARTICLE_TEXTURE_NAMES } from '../content/particles.ts';
 import { SKY_TILE_NAMES } from '../client/render/tile-recipes-sky.ts';
 import { ChunkRenderer } from '../client/render/chunk-renderer.ts';
 import { OverlayRenderer } from '../client/render/overlay-renderer.ts';
@@ -39,16 +41,15 @@ import { UiRenderer } from '../client/ui/ui-renderer.ts';
 import { UiController, decodeSlots } from '../client/ui/ui-controller.ts';
 import { createItemRegistry } from '../content/items.ts';
 import { LocalPlayer } from '../client/player/local-player.ts';
-import { MeshWorkerPool, recommendedMeshWorkers } from '../client/mesh/mesh-worker-pool.ts';
-import { ClientWorld, type SectionCoord } from '../client/world/client-world.ts';
+import { ClientMeshing } from './client-meshing.ts';
+import { ClientWorld } from '../client/world/client-world.ts';
 import { createBlockRegistry } from '../content/blocks.ts';
-import { extractPaddedNeighborhood } from '../core/world/chunk-codec.ts';
 import { Frustum } from '../core/math/frustum.ts';
-import { startServerHost } from './server-host.ts';
+import { ClientSession } from './client-session.ts';
 import { installPacketHandlers } from './net-handlers.ts';
 import { FrameInput } from './frame-input.ts';
 import {
-  C_Handshake, C_Command, C_PlayerMove, C_PlayerAction, 
+  C_Handshake, C_PlayerMove, C_PlayerAction, 
   C_SetViewDistance, C_AttackEntity, C_Respawn,
   PROTOCOL_VERSION, PlayerActionKind, 
   
@@ -74,7 +75,7 @@ const itemRegistry = createItemRegistry();
 const { atlas, faceLayer, mesherTables, texture } = buildRenderResources(
   gl, tables, caps, anisoExt,
   // 经验球的图标既不属于方块也不属于物品，要显式塞进图集
-  [...itemRegistry.all().map((d) => d.texture), 'xp_orb', ...SKY_TILE_NAMES],
+  [...itemRegistry.all().map((d) => d.texture), 'xp_orb', ...SKY_TILE_NAMES, ...PARTICLE_TEXTURE_NAMES],
 );
 recordLog(`方块 ${registry.size} 种 · 物品 ${itemRegistry.size} 件 · 贴图 ${atlas.layers} 张`);
 
@@ -140,12 +141,30 @@ let entityPartialTick = 0;
 const audio = new AudioEngine();
 input.onUserGesture(() => audio.resume());
 /** 粒子与音效用的随机源。固定种子，同一次运行里可复现 */
-let soundSeed = 0x1234567;
+const RAND_SEED0 = 0x1234567;
+let soundSeed = RAND_SEED0;
 const rand = (): number => {
   soundSeed = (Math.imul(soundSeed, 1664525) + 1013904223) >>> 0;
   return soundSeed / 0x100000000;
 };
 const player = new LocalPlayer(0.5, 70, 0.5);
+
+/**
+ * 粒子发射器。用同一个 rand —— 粒子必须**可复现**：
+ * freeze() 之后连拍两张，粒子的位置要一样，否则截图回归天天飘。
+ */
+/**
+ * 环境粒子的开关。默认开，截图回归关。
+ * 和 persist / mobs / randomTicks 是同一类东西：它们都让世界自己变。
+ */
+const ambientParticles = params.get('particles') !== '0';
+
+const emitters = new ParticleEmitters({
+  particles,
+  store: world.store,
+  layerOf: (texture) => atlas.index.get(texture) ?? 0,
+  rand,
+});
 
 // ---------------------------------------------------------------------------
 // 服务端：跑在自己的 Worker 里
@@ -155,67 +174,21 @@ const player = new LocalPlayer(0.5, 70, 0.5);
 // 这里唯一变的是 Transport 实现，ServerCore 及其以下的代码一行没动 —— 这正是
 // 当初把传输抽象成接口的目的。接线细节见 entry/server-host.ts。
 // ---------------------------------------------------------------------------
-const host = startServerHost({
-  seed,
-  // 截图回归必须关掉存档：存了的话"同一个种子跑两次"会得到不同的世界 ——
-  // 第二次读的是第一次留下的状态，包括玩家走过的位置与挖掉的方块
-  persist: params.get('persist') !== '0',
-  // 同理：野生的怪会走进画面，让同一个机位每次截出来都不一样
-  spawnMobs: params.get('mobs') !== '0',
-  // 随机刻也一样，而且更隐蔽：草会蔓延、树苗会长大，两百个区块里
-  // 总有东西在变，客户端的网格化队列因此永远清不空
-  randomTicks: params.get('randomTicks') !== '0',
-  recordError,
-  recordLog,
-});
-const net = host.net;
+const session = new ClientSession({ seed, params, recordError, recordLog });
+const net = session.net;
+const sendCommand = (text: string): Promise<{ ok: boolean; text: string }> => session.command(text);
+const serverStats = session.stats;
+const weather = session.weather;
 
-/** 页面关闭时叫停心跳线程 —— 它睡在 futex 上，不主动叫醒就会一直跑 */
-self.addEventListener('pagehide', () => {
-  host.shutdown();
-});
-
-/**
- * 关页面前存一次盘。
- *
- * 用 visibilitychange 而不是 beforeunload：手机浏览器与某些桌面场景根本
- * 不触发 beforeunload，而 visibilitychange 是唯一可靠的"页面要没了"信号。
- * 存盘本身是异步的、可能来不及跑完 —— 所以它只是自动存盘之外的一层保险，
- * 真正的保障是每 30 秒一次的自动存盘。
- */
-self.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden' && host.persist) void host.requestSave();
-});
-let spawned = false;
-let serverTick = 0;
-/** 未回执的指令，按 requestId 索引 */
-const commandWaiters = new Map<number, (r: { ok: boolean; text: string }) => void>();
-let nextCommandId = 1;
-
-/** 发一条指令给服务端，等回执。超时会 reject，避免测试永远挂着 */
-function sendCommand(text: string): Promise<{ ok: boolean; text: string }> {
-  const requestId = nextCommandId++;
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      commandWaiters.delete(requestId);
-      reject(new Error(`指令超时: ${text}`));
-    }, 8000);
-    commandWaiters.set(requestId, (r) => {
-      clearTimeout(timer);
-      resolve(r);
-    });
-    net.send(C_Command, { requestId, text });
-  });
-}
-/** 服务端权威的当日时间，0..23999。渲染只读它，绝不自己推进 */
-let timeOfDay = 0;
-/** 服务端最近一次上报的状态。主线程读不到 worker 内部，只能靠它 */
-const serverStats = { tick: 0, pendingChunks: 0, loadedChunks: 0, tickMs: 0 };
-
-/** 服务端权威的天气，0..1。渲染只读它，绝不自己推进 */
-const weather = { rain: 0, thunder: 0 };
 /** 最近一次闪电落在哪一个渲染刻。-1 表示没劈过 */
 let lightningFlashTick = -1;
+
+/** 世界里某处相对相机的左右声道位置，-1..1 */
+const panTo = (x: number, z: number): number => {
+  const dx = x - camera.position[0]!;
+  const dz = z - camera.position[2]!;
+  return Math.max(-1, Math.min(1, dx / Math.max(8, Math.abs(dz) + Math.abs(dx))));
+};
 
 /**
  * 天空。日月星云都在这里，画在世界之前。
@@ -245,11 +218,11 @@ const interaction = new Interaction({
 
 installPacketHandlers(net, {
   world, entities, mobs, ui, renderer, interaction,
+  onExplosion: (x, y, z, power) => {
+    emitters.explosion(x, y, z, power);
+    audio.play(MobSound.EXPLODE, panTo(x, z), 1);
+  },
   onEntityEvent: (entityId, event) => {
-    if (event === 2) {
-      audio.play(MobSound.EXPLODE, 0, 1);
-      return;
-    }
     const m = mobs.get(entityId);
     if (m === undefined) return;
     // 受伤与死亡共用两条参数，音高按体型缩放 —— 大家伙声音更低
@@ -269,11 +242,11 @@ installPacketHandlers(net, {
     // 把相机拽回身体所在的位置（世界原点上空），表现为一出生就掉进虚空
     player.teleport(x, y, z);
     camera.setPosition(x, y + player.eyeHeight, z);
-    spawned = true;
+    session.spawned = true;
   },
   onTime: (age, tod) => {
-    serverTick = age;
-    timeOfDay = tod;
+    session.worldAge = age;
+    session.timeOfDay = tod;
   },
   onWeather: (rain, thunder) => {
     weather.rain = rain;
@@ -283,12 +256,9 @@ installPacketHandlers(net, {
     // 闪电本身是一瞬间的事：记下时刻，渲染那边照着它闪几帧白光。
     // 用 renderTick 而不是挂钟 —— freeze() 之后闪电也该停在那一帧上
     lightningFlashTick = clock.renderTick;
-    // 声音按水平方位左右分声道。雷声本身用爆炸那条参数 —— 低通 500Hz
-    // 的长噪声加一段下滑的音调，正是雷的形状
-    const dx = x - camera.position[0]!;
-    const dz = z - camera.position[2]!;
-    const pan = Math.max(-1, Math.min(1, dx / Math.max(8, Math.abs(dz) + Math.abs(dx))));
-    audio.play(MobSound.EXPLODE, pan, 0.55);
+    // 雷声用爆炸那条参数 —— 低通 500Hz 的长噪声加一段下滑的音调，
+    // 正是雷的形状
+    audio.play(MobSound.EXPLODE, panTo(x, z), 0.55);
     void y;
   },
   onServerStats: (tick, pending, loaded, tickMs) => {
@@ -297,12 +267,7 @@ installPacketHandlers(net, {
     serverStats.loadedChunks = loaded;
     serverStats.tickMs = tickMs;
   },
-  onCommandResult: (requestId, ok, text) => {
-    const pending = commandWaiters.get(requestId);
-    if (pending === undefined) return;
-    commandWaiters.delete(requestId);
-    pending({ ok, text });
-  },
+  onCommandResult: (requestId, ok, text) => session.onCommandResult(requestId, ok, text),
   decodeSlots,
   releasePointer: () => document.exitPointerLock(),
   recordError,
@@ -315,29 +280,21 @@ net.flush();
 // ---------------------------------------------------------------------------
 // 网格化
 // ---------------------------------------------------------------------------
-const dirtyBatch: SectionCoord[] = [];
-/**
- * 每帧最多**派发**几个网格化任务。
- * 派发本身很便宜（一次 5832 项的复制 + postMessage），真正的计算在 worker 里，
- * 所以这个数可以比同步版本大得多。
- */
-const MESH_DISPATCH_PER_FRAME = 6;
-/** 在飞任务的上限，避免玩家快速移动时把队列堆到几千 */
-const MAX_IN_FLIGHT = 48;
-
-const meshPool = new MeshWorkerPool(mesherTables, {
-  scriptUrl: new URL('./mesh-worker.ts', import.meta.url).href,
-  workers: Number(params.get('meshWorkers') ?? recommendedMeshWorkers()),
+const meshing = new ClientMeshing({
+  world, camera, renderer, tables: mesherTables,
+  workerScriptUrl: new URL('./mesh-worker.ts', import.meta.url).href,
+  workerCount: params.get('meshWorkers') === null
+    ? undefined : Number(params.get('meshWorkers')),
+  log: (m) => console.log(m),
 });
-console.log(`[mesh] ${meshPool.workerCount} 个网格 worker`);
+const meshPool = meshing.pool;
 
 let sizeLocked = false;
-let meshedTotal = 0;
 let moveSeq = 0;
 
 /** 把当前相机位置作为玩家位置报给服务端 */
 function sendPlayerPosition(sneak = false, sprint = false): void {
-  if (!spawned) return;
+  if (!session.spawned) return;
   const p = camera.position;
   net.send(C_PlayerMove, {
     seq: ++moveSeq, x: p[0]!, y: p[1]! - 1.62, z: p[2]!,
@@ -355,45 +312,7 @@ function sendPlayerPosition(sneak = false, sprint = false): void {
  */
 function pumpWorld(): void {
   sendPlayerPosition();
-  meshDirtySections();
-}
-
-/** 网格化结果回来：先验 rev，过期的直接丢 */
-meshPool.setResultHandler((result) => {
-  const currentRev = world.revOf(result.cx, result.cy, result.cz);
-  if (result.rev < currentRev) {
-    // 玩家快速挖放时同一段会连续产生任务，回来的顺序不保证 —— 旧结果必须丢弃，
-    // 否则会把过期的网格盖到新状态上（docs/RULES.md 第 11 条）
-    meshPool.noteDiscarded();
-    return;
-  }
-  if (result.layers.length > 0) renderer.upload(result);
-  else renderer.remove(result.cx, result.cy, result.cz);
-  meshedTotal++;
-});
-
-/** 把脏的子区块派发给 worker 池 */
-function meshDirtySections(): void {
-  if (meshPool.pendingJobs >= MAX_IN_FLIGHT) return;
-  const budget = Math.min(MESH_DISPATCH_PER_FRAME, MAX_IN_FLIGHT - meshPool.pendingJobs);
-  const p = camera.position;
-  world.takeDirty(budget, p[0]!, p[1]!, p[2]!, dirtyBatch);
-  for (const { cx, cy, cz } of dirtyBatch) {
-    if (!world.hasContent(cx, cy, cz)) {
-      renderer.remove(cx, cy, cz);
-      continue;
-    }
-    const buffers = meshPool.acquireBuffers();
-    extractPaddedNeighborhood(
-      (x, y, z) => world.store.getState(x, y, z),
-      (x, y, z) => (world.store.getSkyLight(x, y, z) << 4) | world.store.getBlockLight(x, y, z),
-      (x, z) => world.store.getBiome(x, z),
-      cx, cy, cz,
-      buffers.blocks, buffers.light, buffers.biomes,
-    );
-    // 缓冲的所有权转移给 worker，之后不能再碰
-    meshPool.submit(cx, cy, cz, world.revOf(cx, cy, cz), buffers);
-  }
+  meshing.dispatch();
 }
 
 /**
@@ -403,10 +322,10 @@ function meshDirtySections(): void {
 function renderOnce(): void {
   drawWorldFrame({
     gl, canvas: canvas!, camera, frustum, shader, renderer, tintColors,
-    texture, renderDistance, timeOfDay,
+    texture, renderDistance, timeOfDay: session.timeOfDay,
     entityView, itemEntityRenderer, mobRenderer, particles, interaction,
     overlay, ui, uiRenderer, uiCtx, entityPartialTick,
-    sky, skyLayers, worldAge: serverTick, renderTick: clock.renderTick,
+    sky, skyLayers, worldAge: session.worldAge, renderTick: clock.renderTick,
     rain: weather.rain, thunder: weather.thunder,
     weatherRenderer, lightningFlashTick, store: world.store,
   });
@@ -414,8 +333,8 @@ function renderOnce(): void {
 
 installTestHook({
   clock, camera, input, canvas, renderOnce,
-  saveWorld: () => host.requestSave('save'),
-  wipeSave: () => host.requestSave('wipe'),
+  saveWorld: () => session.requestSave('save'),
+  wipeSave: () => session.requestSave('wipe'),
   itemEntities: () => [...entities.values()].map((e) => ({
     id: e.entityId, x: e.x, y: e.y, z: e.z, item: e.itemId, count: e.count,
   })),
@@ -448,8 +367,8 @@ installTestHook({
   }),
   pumpWorld,
   command: sendCommand,
-  sharedStats: host.sharedStats,
-  timeOfDay: () => timeOfDay,
+  sharedStats: () => session.sharedStats(),
+  timeOfDay: () => session.timeOfDay,
   remeshCount: () => world.remeshCount,
   mirrorInfo: (x: number, y: number, z: number) => ({
     light: `${world.store.getSkyLight(x, y, z)}/${world.store.getBlockLight(x, y, z)}`,
@@ -473,6 +392,40 @@ installTestHook({
   audioStats: () => ({ ready: audio.ready, plays: audio.playCount }),
   startAudio: () => audio.resume(),
   particleCount: () => particles.count,
+  /**
+   * 确定性地推进粒子系统若干刻。
+   *
+   * 截图回归需要一片**可复现**的粒子。正常路径下粒子由主循环按真实耗时
+   * 推进，跑了多少刻取决于机器多快 —— 同一个场景两次截出来的烟不在一个地方。
+   *
+   * 这个钩子把随机源复位再跑固定刻数，走的是**和正常路径同一份**发射器
+   * 与物理，所以它验的是真东西，不是一个专门给测试看的假象。
+   */
+  stepParticles: (
+    ticks: number,
+    burst?: readonly [number, number, number, number],
+    burstTicks = 6,
+  ): void => {
+    particles.clear();
+    soundSeed = RAND_SEED0;
+    const ambientStep = (): void => {
+      emitters.tickAmbient(camera.position[0]!, camera.position[1]!, camera.position[2]!);
+      particles.update();
+    };
+    for (let i = 0; i < ticks; i++) ambientStep();
+    // 爆炸放在**最后**才发，然后只再跑几刻。
+    //
+    // 一开始就发是没用的：爆炸粒子只活二十来刻，等 150 刻的环境积累跑完，
+    // 它们早没了 —— 表现是"加了爆炸粒子数一点没变"。
+    //
+    // 为什么要有它：环境粒子那条路是**稀疏**的（每刻在 32³ 里挑 420 格，
+    // 一根火把十几刻才轮到一次），数值上验得了、截图上几乎看不见。
+    // 爆炸是事件那条路，一次三十几粒挤在一起，才是能用眼睛验收的证据。
+    if (burst !== undefined) {
+      emitters.explosion(burst[0], burst[1], burst[2], burst[3]);
+      for (let i = 0; i < burstTicks; i++) ambientStep();
+    }
+  },
   uiQuads: () => uiRenderer.lastQuads,
   uiOpen: () => ui.open,
   pixelAt: (x: number, y: number) => {
@@ -514,7 +467,7 @@ function frame(nowMs: number): void {
   }
   frameInput.handleUi(snap);
 
-  if (!clock.frozen && spawned && !ui.open) {
+  if (!clock.frozen && session.spawned && !ui.open) {
     if (player.mode === 'detached') camera.applyFreeFlight(snap, clock.dt, 12);
     player.update(camera, snap, world.store, tables, clock.dt * 1000);
 
@@ -547,6 +500,17 @@ function frame(nowMs: number): void {
     while (entityAccumMs >= MS_PER_TICK && steps < 5) {
       entities.tick();
       mobs.tick();
+      particles.update();
+      // 环境粒子：火把冒烟、岩浆冒泡、火苗。每刻在相机周围随机采样几百格，
+      // 采到什么就冒什么 —— 见 client/particle/emitters.ts
+      //
+      // 可以关掉，理由和 randomTicks 完全一样：它让画面**永远不静止**。
+      // 地下十几格外的一洼岩浆就足以让每一帧都不同，而截图回归要的是
+      // 逐像素可比。关掉之后 __mc.stepParticles 仍然能确定性地驱动
+      // 同一份发射器，所以粒子本身照样被验证到。
+      if (ambientParticles) {
+        emitters.tickAmbient(camera.position[0]!, camera.position[1]!, camera.position[2]!);
+      }
       entityAccumMs -= MS_PER_TICK;
       steps++;
     }
@@ -557,7 +521,7 @@ function frame(nowMs: number): void {
   // 服务端在自己的 Worker 里跑，主线程只需按帧把玩家位置报上去
   sendPlayerPosition(snap.sneak, snap.sprint);
 
-  meshDirtySections();
+  meshing.dispatch();
   renderOnce();
 
   if (!firstFrameDone) {
@@ -572,7 +536,7 @@ function frame(nowMs: number): void {
     const p = camera.position;
     hud.textContent =
       `fps ${clock.fps.toFixed(0)} (${clock.frameMs.toFixed(1)}ms)  服务端 ${serverStats.tick}t ${serverStats.tickMs.toFixed(1)}ms\n` +
-      `xyz ${p[0]!.toFixed(1)} ${p[1]!.toFixed(1)} ${p[2]!.toFixed(1)}  世界时间 ${serverTick % 24000}\n` +
+      `xyz ${p[0]!.toFixed(1)} ${p[1]!.toFixed(1)} ${p[2]!.toFixed(1)}  世界时间 ${session.worldAge % 24000}\n` +
       `区块 ${world.chunkCount}/${serverStats.loadedChunks}  待网格 ${world.dirtyCount}  在飞 ${meshPool.pendingJobs}  待推 ${serverStats.pendingChunks}\n` +
       `段 ${renderer.sectionsDrawn}/${renderer.sectionCount}  draws ${renderer.drawCalls}\n` +
       `面 ${renderer.quadsDrawn}  显存 ${(renderer.totalBytes / 1048576).toFixed(1)} MB`;

@@ -109,6 +109,7 @@ export interface HostBridge {
   startAudio(): void;
   /** 当前存活的粒子数 */
   particleCount(): number;
+  stepParticles(ticks: number, burst?: readonly [number, number, number, number]): void;
   /** 上一帧 UI 画了多少矩形 */
   uiQuads(): number;
   /** 当前是否开着某个容器界面 */
@@ -437,6 +438,9 @@ export function installTestHook(host: HostBridge): void {
     audioStats: (): { ready: boolean; plays: number } => host.audioStats(),
     startAudio: (): void => host.startAudio(),
     particleCount: (): number => host.particleCount(),
+    stepParticles: (ticks: number, burst?: readonly [number, number, number, number]): void => {
+      host.stepParticles(ticks, burst);
+    },
     uiQuads: (): number => host.uiQuads(),
     uiOpen: (): boolean => host.uiOpen(),
     _pixelAt: (x: number, y: number): number[] => host.pixelAt(x, y),

@@ -30,7 +30,7 @@ const HEADLESS = !process.argv.includes('--head');
  * 等不到安定。而且世界会在存盘与重读之间自己变，光照比对也就没意义了。
  */
 const SEED = 20260829;
-const URL_BASE = `http://127.0.0.1:${PORT}/?test=persist&seed=${SEED}&radius=2&randomTicks=0`;
+const URL_BASE = `http://127.0.0.1:${PORT}/?test=persist&seed=${SEED}&radius=2&randomTicks=0&particles=0`;
 
 const failures = [];
 function log(msg) {

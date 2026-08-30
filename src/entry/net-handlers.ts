@@ -38,6 +38,8 @@ export interface PacketContext {
   onWeather(rain: number, thunder: number): void;
   /** 闪电劈在某处 */
   onLightning(x: number, y: number, z: number): void;
+  /** 爆炸发生在某处 */
+  onExplosion(x: number, y: number, z: number, power: number): void;
   /** 服务端状态上报 */
   onServerStats(tick: number, pending: number, loaded: number, tickMs: number): void;
   /** 指令回执 */
@@ -96,6 +98,12 @@ export function installPacketHandlers(net: PacketChannel, ctx: PacketContext): v
       case 'S_Weather':
         // 服务端发的是 0..100 的整数，这里还原成 0..1
         ctx.onWeather((value['rain'] as number) / 100, (value['thunder'] as number) / 100);
+        return;
+      case 'S_Explosion':
+        ctx.onExplosion(
+          value['x'] as number, value['y'] as number,
+          value['z'] as number, value['power'] as number,
+        );
         return;
       case 'S_Lightning':
         ctx.onLightning(value['x'] as number, value['y'] as number, value['z'] as number);
