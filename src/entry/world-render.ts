@@ -23,6 +23,7 @@ import type { UiController } from '../client/ui/ui-controller.ts';
 import type { DrawContext } from '../client/ui/inventory-screen.ts';
 import type { Interaction } from '../client/player/interaction.ts';
 import type { EntityView } from './entity-view.ts';
+import type { SkyRenderer } from '../client/render/sky-renderer.ts';
 import { skyColor, sunBrightness } from '../core/world/day-night.ts';
 import { SECTION_SIZE } from '../core/constants.ts';
 
@@ -47,6 +48,13 @@ export interface FrameDeps {
   readonly uiRenderer: UiRenderer;
   readonly uiCtx: DrawContext;
   readonly entityPartialTick: number;
+  readonly sky: SkyRenderer;
+  readonly skyLayers: { sun: number; clouds: number; moons: readonly number[] };
+  /** 服务端权威的世界年龄。月相按天走，要用它而不是当日时间 */
+  readonly worldAge: number;
+  /** 渲染刻。云的漂移由它驱动，freeze() 之后要停住 */
+  readonly renderTick: number;
+  readonly rain: number;
 }
 
 export function drawWorldFrame(d: FrameDeps): void {
@@ -66,6 +74,24 @@ export function drawWorldFrame(d: FrameDeps): void {
 
   d.camera.update(w / Math.max(1, h));
   d.frustum.update(d.camera.viewProjection);
+
+  // 天空排在世界之前、且不写深度。地形随后覆盖它，天空自然只出现在
+  // 没有方块的地方 —— 不需要任何"哪里是天"的判断
+  d.sky.render({
+    viewProj: d.camera.viewProjection,
+    cameraX: d.camera.position[0]!,
+    cameraY: d.camera.position[1]!,
+    cameraZ: d.camera.position[2]!,
+    timeOfDay: d.timeOfDay,
+    worldAge: d.worldAge,
+    renderTick: d.renderTick,
+    rain: d.rain,
+    texture: d.texture,
+    sunLayer: d.skyLayers.sun,
+    moonLayers: d.skyLayers.moons,
+    cloudLayer: d.skyLayers.clouds,
+    renderDistance: d.renderDistance,
+  });
 
   d.shader.use();
   d.shader.setMat4('uViewProj', d.camera.viewProjection);

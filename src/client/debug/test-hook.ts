@@ -18,6 +18,7 @@ import type { Clock } from '../clock.ts';
 import type { Camera } from '../camera.ts';
 import type { Input } from '../input/input.ts';
 import { nextFrame } from '../frame-scheduler.ts';
+import { createCapture } from './capture.ts';
 
 export interface McStats {
   fps: number;
@@ -150,36 +151,8 @@ export function recordLog(msg: string): void {
   if (consoleLog.length > 500) consoleLog.shift();
 }
 
-/** FNV-1a over 灰度降采样，用于截图回归 */
-function hashImageData(data: Uint8ClampedArray, w: number, h: number, target = 64): string {
-  let hash = 0x811c9dc5;
-  for (let ty = 0; ty < target; ty++) {
-    for (let tx = 0; tx < target; tx++) {
-      // 盒式降采样，把 GPU 的浮点抖动平均掉
-      const x0 = Math.floor((tx * w) / target);
-      const x1 = Math.max(x0 + 1, Math.floor(((tx + 1) * w) / target));
-      const y0 = Math.floor((ty * h) / target);
-      const y1 = Math.max(y0 + 1, Math.floor(((ty + 1) * h) / target));
-      let sum = 0;
-      let n = 0;
-      for (let y = y0; y < y1; y++) {
-        for (let x = x0; x < x1; x++) {
-          const i = (y * w + x) * 4;
-          // Rec. 601 灰度
-          sum += 0.299 * data[i]! + 0.587 * data[i + 1]! + 0.114 * data[i + 2]!;
-          n++;
-        }
-      }
-      // 量化到 32 级，进一步吸收噪声
-      const gray = n > 0 ? Math.round(sum / n / 8) : 0;
-      hash ^= gray;
-      hash = Math.imul(hash, 0x01000193);
-    }
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
-}
-
 export function installTestHook(host: HostBridge): void {
+  const capture = createCapture(host);
   let readyResolve: () => void = () => {};
   const ready = new Promise<void>((r) => {
     readyResolve = r;
@@ -517,45 +490,14 @@ export function installTestHook(host: HostBridge): void {
     },
 
     // --- 验证 ---
-    async screenshot(): Promise<string> {
-      // preserveDrawingBuffer 为 false，所以必须在同一个 rAF 里画完立刻读
-      await nextFrame();
-      host.renderOnce();
-      return host.canvas.toDataURL('image/png');
-    },
-    /** 渲染一帧并取哈希（不做稳定性判断，内部用） */
-    async _hashOnce(): Promise<string> {
-      await nextFrame();
-      host.renderOnce();
-      const w = host.canvas.width;
-      const h = host.canvas.height;
-      // 通过一个 2D canvas 取像素；直接 readPixels 也行，但那样要处理上下翻转
-      const tmp = new OffscreenCanvas(w, h);
-      const ctx = tmp.getContext('2d');
-      if (ctx === null) return 'nocontext';
-      ctx.drawImage(host.canvas, 0, 0);
-      const img = ctx.getImageData(0, 0, w, h);
-      return hashImageData(img.data, w, h);
-    },
+    //
+    // 取样端在 debug/capture.ts。它要解决的是"怎么从一个会动的游戏里取到一张
+    // **可复现**的画面"，和这里其余部分（怎么驱动游戏做一件事）是两件事。
+    _pinFrame: (): (() => void) => capture.pinFrame(),
+    screenshot: (): Promise<string> => capture.screenshot(),
+    _hashOnce: (): Promise<string> => capture.hashOnce(),
+    screenshotHash: (maxTries?: number): Promise<string> => capture.screenshotHash(maxTries),
 
-    /**
-     * 截图哈希 —— 要求画面**已经稳定**：连续两帧哈希相同才采信。
-     *
-     * waitForIdle 之后偶尔还会有一两个网格结果姗姗来迟（worker 的消息要过一轮
-     * 事件循环才到），落在两次截图之间就会让哈希变一下。断言"连续两帧一样"
-     * 把这件事变成显式的等待，而不是碰运气 ——
-     * 否则表现出来就是同一份代码十次里失败一次，最难查的那种假失败。
-     */
-    async screenshotHash(maxTries = 12): Promise<string> {
-      let prev = await api._hashOnce();
-      for (let i = 0; i < maxTries; i++) {
-        host.pumpWorld();
-        const next = await api._hashOnce();
-        if (next === prev) return next;
-        prev = next;
-      }
-      throw new Error(`screenshotHash: 画面 ${maxTries} 帧内始终没稳定下来`);
-    },
     stats(): McStats {
       const d = host.drawStats();
       const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;

@@ -242,6 +242,23 @@ export async function runSceneChecks(ctx) {
     await m.command('give iron_ingot 7');
     await m.command('give apple 3');
     for (let i = 0; i < 10; i++) await new Promise(r => requestAnimationFrame(r));
+
+    // 截图前把相机**钉到一个整数位置**上。
+    //
+    // 这一段是让玩家自己落到地面上的，落点每次会差几厘米：dt 用的是真实
+    // 耗时，落地要几帧取决于机器当时多快；服务端的位置校正也会顺手推一下。
+    // 在天上还没有云的时候这无所谓 —— 差几厘米，64x64 灰度图上一个像素都不变。
+    // 有了云之后就不行了：云的 uv 直接取自相机的世界坐标，几厘米的平移
+    // 会让整片天空的渐变整体挪一点，哈希每次都不同。
+    //
+    // 这里要验的是**界面**，不是玩家落在哪，所以直接钉死。
+    const st = m.playerState();
+    m.tp(Math.round(st.x), Math.round(st.y * 4) / 4, Math.round(st.z), 0, 0);
+    // 把前面几项检查留在世界里的掉落物清掉。
+    // 它们会浮动，而浮动相位跟真实耗时走 —— 留一颗在画面里，
+    // 这张图的哈希就每次都不一样（挖方块那项检查掉的那块土就是这么来的）
+    await m.command('killall items');
+    for (let i = 0; i < 5; i++) await new Promise(r => requestAnimationFrame(r));
     const hotbarShot = await m.screenshot();
     const hotbarHash = await m.screenshotHash();
 

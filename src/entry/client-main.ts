@@ -27,6 +27,8 @@ import { XP_ORB_ITEM_ID } from '../core/item/item-def.ts';
 import { BLOCK_VERT_SRC, BLOCK_FRAG_SRC } from '../client/render/block-shader.ts';
 import { tintColorArray } from '../client/render/block-textures.ts';
 import { buildRenderResources } from '../client/render/resources.ts';
+import { SkyRenderer } from '../client/render/sky-renderer.ts';
+import { SKY_TILE_NAMES } from '../client/render/tile-recipes-sky.ts';
 import { ChunkRenderer } from '../client/render/chunk-renderer.ts';
 import { OverlayRenderer } from '../client/render/overlay-renderer.ts';
 import { ParticleRenderer } from '../client/render/particle-renderer.ts';
@@ -71,7 +73,7 @@ const itemRegistry = createItemRegistry();
 const { atlas, faceLayer, mesherTables, texture } = buildRenderResources(
   gl, tables, caps, anisoExt,
   // 经验球的图标既不属于方块也不属于物品，要显式塞进图集
-  [...itemRegistry.all().map((d) => d.texture), 'xp_orb'],
+  [...itemRegistry.all().map((d) => d.texture), 'xp_orb', ...SKY_TILE_NAMES],
 );
 recordLog(`方块 ${registry.size} 种 · 物品 ${itemRegistry.size} 件 · 贴图 ${atlas.layers} 张`);
 
@@ -208,6 +210,22 @@ function sendCommand(text: string): Promise<{ ok: boolean; text: string }> {
 let timeOfDay = 0;
 /** 服务端最近一次上报的状态。主线程读不到 worker 内部，只能靠它 */
 const serverStats = { tick: 0, pendingChunks: 0, loadedChunks: 0, tickMs: 0 };
+
+/** 服务端权威的天气，0..1。渲染只读它，绝不自己推进 */
+const weather = { rain: 0, thunder: 0 };
+
+/**
+ * 天空。日月星云都在这里，画在世界之前。
+ *
+ * 图集层号在这里查好再传进去：渲染器不该知道贴图是怎么命名的，
+ * 那是内容层的事 —— 它只要一个层号。
+ */
+const sky = new SkyRenderer(gl);
+const skyLayers = {
+  sun: atlas.index.get('sun') ?? 0,
+  clouds: atlas.index.get('clouds') ?? 0,
+  moons: Array.from({ length: 8 }, (_, i) => atlas.index.get(`moon_phase_${i}`) ?? 0),
+};
 
 const interaction = new Interaction({
   camera, world, tables, audio, particles,
@@ -366,6 +384,7 @@ function renderOnce(): void {
     texture, renderDistance, timeOfDay,
     entityView, itemEntityRenderer, mobRenderer, particles, interaction,
     overlay, ui, uiRenderer, uiCtx, entityPartialTick,
+    sky, skyLayers, worldAge: serverTick, renderTick: clock.renderTick, rain: weather.rain,
   });
 }
 

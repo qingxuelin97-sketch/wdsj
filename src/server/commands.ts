@@ -177,8 +177,26 @@ value: Record<string, unknown>,
         return;
       }
       case 'killall': {
+        // `killall`        清掉生物 + 掉落物 + 箭
+        // `killall <种类>` 只清那一种生物
+        // `killall items`  只清掉落物
+        //
+        // 掉落物一定要能清：它们会**上下浮动**，而位置是按 20 Hz 的
+        // 累加器插值出来的，累加器吃的是真实耗时。于是一颗遗留在画面里的
+        // 掉落物就足以让那一张截图的哈希每次都不一样 —— 表现是某个检查
+        // 无缘无故地闪，而它自己什么都没做错，是上一个检查挖方块留下的。
         const [, kind] = parts;
+        if (kind === 'items') {
+          const n = core.world.items.size;
+          core.world.items.clear();
+          reply(true, String(n));
+          return;
+        }
         const n = core.mobs.removeAll(kind === undefined ? undefined : String(kind));
+        if (kind === undefined) {
+          core.world.items.clear();
+          core.arrows.clear();
+        }
         reply(true, String(n));
         return;
       }
