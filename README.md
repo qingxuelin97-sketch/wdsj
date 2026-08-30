@@ -5,6 +5,9 @@
 TypeScript + 原生 WebGL2 + Web Workers，**零 npm 依赖**。
 所有美术与音频资源均为程序化生成的原创内容，不含任何 Mojang 素材。
 
+> **接手这个项目？先读 [docs/HANDOFF.md](docs/HANDOFF.md)** —— 现在做到哪了、
+> 代码为什么长这样、下一步该干什么，以及唯一一个已知未解决的问题。
+
 ## 快速开始
 
 ```bash
@@ -14,12 +17,17 @@ node --test                        # 只跑单元测试
 node tools/smoke.mjs --head        # 有头模式跑冒烟测试，方便肉眼看
 node tools/persist-check.mjs       # 闸门③：真浏览器建结构 -> 存盘 -> 重开 -> 全还原
 node tools/first-night-check.mjs   # 闸门①：打木 -> 合成 -> 掩体 -> 熬过有怪的一夜
+node tools/mine-check.mjs          # 闸门②：下矿 -> 火把照明 -> 挖到钻石 -> 活着回来
 UPDATE_GOLDEN=1 node tools/smoke.mjs   # 重新生成截图黄金哈希
 ```
 
 常用 URL 参数：`?seed=1234` 换种子，`?rd=8` 改视距，`?persist=0` 关存档、
-`?mobs=0` 关自然刷怪（截图回归两个都要关：存档会让"同一个种子跑两次"
-读到上一次的世界，野生的怪则会走进画面）。
+`?mobs=0` 关自然刷怪、`?randomTicks=0` 关随机刻、`?particles=0` 关环境粒子、
+`?debug=1` 默认打开 F3。
+
+**截图回归前四个都要关**，它们是同一类东西 —— 都会让世界自己变，
+于是画面永远不静止：存档让"同一个种子跑两次"读到上一次的世界，
+野生的怪会走进画面，随机刻让草一直在蔓延，环境粒子让火把一直在冒烟。
 
 开发期**没有构建步骤**：`dev-server.mjs` 用 Node 内置的 `module.stripTypeScriptTypes`
 现场剥离 TS 类型直接喂给浏览器。剥离是保留空白的，行列号与源码逐字符对齐，
