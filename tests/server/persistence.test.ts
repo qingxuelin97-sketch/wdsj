@@ -24,6 +24,8 @@ import { encodeChunkNbt } from '../../src/server/save/chunk-nbt.ts';
 import { nbt, encodeNbt, TagType } from '../../src/core/nbt/nbt.ts';
 import { stacksToNbt } from '../../src/server/world/block-entity.ts';
 import { spawnItem } from '../../src/server/entity/item-manager.ts';
+import { showWindow } from '../../src/server/player/inventory-actions.ts';
+import { WindowKind } from '../../src/core/net/packets.ts';
 import { LoopbackTransport, PacketChannel } from '../../src/core/net/transport.ts';
 import { S2C, C_Handshake, C_SetViewDistance, PROTOCOL_VERSION } from '../../src/core/net/packets.ts';
 import { packState, stateId } from '../../src/core/world/chunk.ts';
@@ -702,4 +704,80 @@ test('从存档读回来的生物要带着它所在的维度', async () => {
     loaded.dimension, Dimension.NETHER,
     '读回来变成主世界的怪了 —— 它顶着下界的坐标在主世界游荡，谁也看不见，但照样吃 CPU',
   );
+});
+
+test('断线重连接着上次玩，不会回滚到开服那一刻', async () => {
+  const storage = new MemoryStorage();
+  const core = new ServerCore({ seed: 321n, registry });
+  const save = new WorldSave(storage);
+  const controller = new SaveController(core, save);
+  await controller.loadLevel();
+
+  const connect = (name: string): { player: ServerPlayer; transport: LoopbackTransport } => {
+    const [clientSide, serverSide] = LoopbackTransport.createPair();
+    clientSide.synchronous = true;
+    serverSide.synchronous = true;
+    core.addClient(serverSide);
+    const ch = new PacketChannel(clientSide, S2C);
+    ch.onPacket(() => {});
+    ch.send(C_Handshake, { protocolVersion: PROTOCOL_VERSION, playerName: name });
+    ch.send(C_SetViewDistance, { distance: 2 });
+    ch.flush();
+    const p = [...core.eachPlayer()].find((x) => x.name === name)!;
+    controller.restorePlayer(p);
+    return { player: p, transport: serverSide };
+  };
+
+  const first = connect('阿强');
+  await tickAsync(core, 20);
+  // 挖了一上午
+  first.player.inventory.slots[12] = makeStack(items.idOf(Items.DIAMOND), 33);
+  first.player.x = 250.5;
+  first.player.xp.level = 27;
+
+  // 断线
+  core.removePlayer(first.player);
+
+  // 同一次运行里重连
+  const again = connect('阿强');
+  assert.equal(
+    again.player.inventory.slots[12]!.count, 33,
+    '重连之后那 33 颗钻石没了 —— 被回滚到开服那一刻的快照了',
+  );
+  assert.ok(Math.abs(again.player.x - 250.5) < 1e-9, '位置也要接上');
+  assert.equal(again.player.xp.level, 27, '等级也要接上');
+});
+
+test('断线时鼠标上抓着的东西不会凭空消失', async () => {
+  const storage = new MemoryStorage();
+  const core = new ServerCore({ seed: 322n, registry });
+  const controller = new SaveController(core, new WorldSave(storage));
+  await controller.loadLevel();
+
+  const [clientSide, serverSide] = LoopbackTransport.createPair();
+  clientSide.synchronous = true;
+  serverSide.synchronous = true;
+  core.addClient(serverSide);
+  const ch = new PacketChannel(clientSide, S2C);
+  ch.onPacket(() => {});
+  ch.send(C_Handshake, { protocolVersion: PROTOCOL_VERSION, playerName: '手滑的人' });
+  ch.send(C_SetViewDistance, { distance: 2 });
+  ch.flush();
+  const player = [...core.eachPlayer()][0]!;
+  await tickAsync(core, 20);
+
+  // 打开自己的物品栏，把一组钻石抓在手上
+  player.inventory.slots[10] = makeStack(items.idOf(Items.DIAMOND), 40);
+  showWindow(core, player, WindowKind.INVENTORY);
+  player.openWindow!.click(
+    // 物品栏窗口里 10 号背包格对应哪个窗口槽位，直接扫一遍找
+    player.openWindow!.snapshot().findIndex((s) => s.id === items.idOf(Items.DIAMOND)),
+    0, false,
+  );
+  assert.equal(player.inventory.cursor.count, 40, '应该抓在手上了');
+
+  core.removePlayer(player);
+  const inPack = player.inventory.slots.some((s) => s.id === items.idOf(Items.DIAMOND) && s.count === 40);
+  const onGround = [...core.world.items.values()].some((e) => e.stack.count === 40);
+  assert.ok(inPack || onGround, '抓在手上的那 40 颗钻石既没回背包也没掉在地上 —— 凭空没了');
 });

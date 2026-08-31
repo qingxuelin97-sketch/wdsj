@@ -17,6 +17,7 @@ import { saveAllChunks } from '../world/world-persistence.ts';
 import { PERSISTENT_SLOTS } from '../player/player-inventory.ts';
 import { copyStack } from '../../core/item/item-def.ts';
 import { syncInventory } from '../player/inventory-actions.ts';
+import { tossFromPlayer } from '../entity/item-manager.ts';
 import { TPS, MAX_HEALTH } from '../../core/constants.ts';
 
 /** 默认多久自动存一次：30 秒。MC 是 45 秒 */
@@ -80,6 +81,44 @@ export class SaveController {
       w.save = this.saveFor(w.dimension);
       prev?.(w);
     };
+
+    // 玩家一走就把他的进度落下来。
+    //
+    // 少了这一步有两个后果，都很难查：**同一次运行里断线重连**会把人
+    // 回滚到开服那一刻的快照（pendingPlayers 从来不更新），而下一次
+    // 自动存盘会把回滚后的状态写死；就算不重连，两次自动存盘之间的
+    // 三十秒进度也是白干的
+    const prevLeave = core.onPlayerLeave;
+    core.onPlayerLeave = (p) => {
+      this.stashPlayer(p);
+      prevLeave?.(p);
+    };
+  }
+
+  /**
+   * 把一个正要离开的玩家的状态记下来（内存 + 盘）。
+   *
+   * 内存那一份（pendingPlayers）是重连时**同步**读得到的那一份，
+   * 所以必须当场更新；写盘是异步的，赶不上也没关系 —— 下一次
+   * 自动存盘会兜住。
+   */
+  private stashPlayer(player: ServerPlayer): void {
+    // 先关窗口。鼠标上抓着的那一堆和合成格里的东西都在窗口里，
+    // 不关的话它们既不在背包里也不在世界上 —— 抓着一组钻石断线就没了
+    // 变量名不能叫 window —— lint-layers 会当成 DOM 全局拦下来，
+    // 而那条规矩本身是对的：服务端一个 DOM 名字都不该出现
+    const open = player.openWindow;
+    if (open !== null) {
+      const dropped = open.close();
+      player.openWindow = null;
+      player.openBlockEntity = null;
+      for (const d of dropped) tossFromPlayer(this.core, player, d);
+    }
+    const data = snapshotPlayer(player);
+    this.pendingPlayers.set(player.name, data);
+    // 写盘失败不该把断线处理带崩 —— 内存那一份已经对了，
+    // 下一次自动存盘还会再写一遍
+    void this.save.writePlayer(player.name, data).catch(() => { /* 下次再说 */ });
   }
 
   /** 某个维度的存档，没有就现建 */

@@ -341,7 +341,17 @@ export class ServerCore {
     return player;
   }
 
+  /**
+   * 玩家离开时的回调，在他还没被移出玩家表之前调用。
+   *
+   * 宿主（save-controller）用它把这个人的进度落下来。没有它的话，
+   * 断线重连会把玩家回滚到**开服那一刻**的存档快照 —— 而且下一次
+   * 自动存盘会把回滚后的状态写死在盘上。
+   */
+  onPlayerLeave: ((player: ServerPlayer) => void) | null = null;
+
   removePlayer(player: ServerPlayer): void {
+    this.onPlayerLeave?.(player);
     this.players.delete(player.entityId);
     // 认识他的人要收到销毁包。不发的话，别人屏幕上会留下一具
     // 站着不动的躯壳，而且永远不会消失
