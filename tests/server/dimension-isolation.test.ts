@@ -185,3 +185,28 @@ test('生物落脚点判定读的是它要刷进去的那个维度', () => {
     '主世界那边是实心的，该站不住',
   );
 });
+
+test('主世界下雨时，下界/末地的玩家收到的是"没下雨"', () => {
+  const { core, over, hell } = twoWorldsRig();
+
+  // 记下每个人收到的最后一份天气
+  const seen = new Map<number, { rain: number; thunder: number }>();
+  for (const p of [over, hell]) {
+    const orig = p.channel.send.bind(p.channel);
+    p.channel.send = ((packet: { name?: string }, value: Record<string, number>) => {
+      if (packet.name === 'S_Weather') seen.set(p.entityId, { rain: value['rain']!, thunder: value['thunder']! });
+      return orig(packet as never, value as never);
+    }) as typeof p.channel.send;
+  }
+
+  // 让主世界下起大雨
+  core.world.weather.raining = true;
+  core.world.weather.snapStrength();
+  for (let i = 0; i < 4; i++) core.tick();
+
+  const o = seen.get(over.entityId);
+  const h = seen.get(hell.entityId);
+  assert.ok(o !== undefined && h !== undefined, '两个人都该收到过天气包');
+  assert.ok(o.rain > 0, '主世界的人该看到在下雨');
+  assert.equal(h.rain, 0, '下界不下雨（MC 1.0 就是这样）—— 收到 rain > 0 说明广播没分维度');
+});
