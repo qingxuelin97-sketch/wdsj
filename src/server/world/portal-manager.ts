@@ -117,20 +117,28 @@ export function tickPortal(core: ServerCore, player: ServerPlayer): void {
   }
   player.portalTicks++;
   if (player.portalTicks < PORTAL_DWELL_TICKS) return;
-  player.portalTicks = 0;
   const to = player.dimension === Dimension.NETHER ? Dimension.OVERWORLD : Dimension.NETHER;
-  travelThroughPortal(core, player, to);
+  // 目标那边的存档还没读进来就先不送 —— 计数器停在门槛上，下一刻再试。
+  // 玩家看到的是在门里多站了几刻（MC 也会这样），而不是到了对面
+  // 发现上次盖的门没了
+  if (!travelThroughPortal(core, player, to)) return;
+  player.portalTicks = 0;
 }
 
 /**
  * 真正把玩家送过去：算落点、找门或造门、换维度。
+ *
+ * @returns 送过去了没有。false = 目标维度的存档还在读，这一刻先别送
  */
 export function travelThroughPortal(
   core: ServerCore, player: ServerPlayer, to: DimensionId,
-): void {
+): boolean {
   const from = player.dimension;
   const target = convertCoords(from, to, player.x, player.z);
   const dest = core.worldOf(to);
+  // 存档没到货就退出去等。下面那句 forceArea 会在存档到货**之前**
+  // 把地形生成出来，而那是不可逆的 —— 之后 region 读回来也装不进去了
+  if (!dest.areaReadyForForce(target.x, target.z, 1)) return false;
   // 落点周围的区块必须**先生成**，否则搜索会在一片未加载的空气里
   // 找不到任何东西，然后在虚空里造一座门
   forceArea(dest, target.x, target.z, 1);
@@ -138,6 +146,7 @@ export function travelThroughPortal(
   const existing = findExistingPortal(core, dest, target.x, player.y, target.z);
   const spot = existing ?? createPortal(core, dest, target.x, player.y, target.z);
   placeInDimension(core, player, to, spot);
+  return true;
 }
 
 /** 把一片区块强行同步生成出来 */

@@ -180,13 +180,23 @@ async function main() {
 
   const core = new ServerCore({ seed: SEED, registry: createBlockRegistry() });
 
+  // 存档。走 SaveController 而不是直接给 core.world.save 赋值 ——
+  // 后者只读不写（谁也不会去调 flush），而且下界与末地永远拿不到存档
+  let controller = null;
   if (SAVE_DIR !== '') {
     const { FsStorage } = await import(pathToFileURL(path.join(ROOT, 'src/platform/storage-fs.ts')));
     const { WorldSave } = await import(pathToFileURL(path.join(ROOT, 'src/server/save/world-save.ts')));
+    const { SaveController } = await import(pathToFileURL(path.join(ROOT, 'src/server/save/save-controller.ts')));
     const dir = path.resolve(SAVE_DIR);
     fs.mkdirSync(dir, { recursive: true });
-    core.world.save = new WorldSave(new FsStorage(dir));
-    console.log(`[mp] 存档目录 ${dir}`);
+    const storage = new FsStorage(dir);
+    controller = new SaveController(core, new WorldSave(storage), storage);
+    // **必须在任何客户端连进来之前读完。** 玩家登录会强制生成出生区块，
+    // 那条路径是同步的等不了异步的 region —— 晚一步，出生点附近存过的
+    // 东西就会被新地形永久顶掉
+    const had = await controller.loadLevel();
+    core.onPlayerReady = (player) => { controller.restorePlayer(player); };
+    console.log(`[mp] 存档目录 ${dir}${had ? '（读到已有世界）' : '（新世界）'}`);
   }
 
   const strip = await import('node:module');
@@ -225,6 +235,7 @@ async function main() {
     console.log(`[mp] 玩家 ${player.entityId} 连上了，在线 ${[...core.eachPlayer()].length}`);
   });
 
+  // 起服务之前存档必须已经读完了 —— loadLevel 在上面 await 过
   server.listen(PORT, () => {
     console.log(`[mp] http://127.0.0.1:${PORT}/  种子 ${SEED}`);
     console.log(`[mp] 浏览器开两个标签页：http://127.0.0.1:${PORT}/?server=ws://127.0.0.1:${PORT}/ws`);
@@ -241,7 +252,33 @@ async function main() {
     // 落后一个 tick 以上就报一次。多人服务端最要紧的健康指标就是它
     if (drift > MS_PER_TICK) console.log(`[mp] 落后 ${drift}ms（tick ${core.lastTickMs}ms）`);
     last = t0;
+    // 自动存盘。saveNow 自己扛着"上一次还没写完"的情况，这里不用加锁
+    if (controller !== null && controller.isAutosaveDue()) {
+      void controller.saveNow().then(
+        (r) => { if (r.chunks > 0) console.log(`[mp] 自动存盘 ${r.chunks} 区块 / ${r.regions} region`); },
+        (e) => console.error('[mp] 存盘失败:', e),
+      );
+    }
   }, MS_PER_TICK);
+
+  // Ctrl-C 时先存再退。不存的话最多丢 30 秒 —— 而那 30 秒里
+  // 玩家很可能刚盖完想看一眼的东西
+  let closing = false;
+  const shutdown = async () => {
+    if (closing) return;
+    closing = true;
+    if (controller !== null) {
+      try {
+        const r = await controller.saveNow();
+        console.log(`[mp] 退出前存盘 ${r.chunks} 区块 / ${r.regions} region`);
+      } catch (e) {
+        console.error('[mp] 退出前存盘失败:', e);
+      }
+    }
+    process.exit(0);
+  };
+  process.on('SIGINT', () => { void shutdown(); });
+  process.on('SIGTERM', () => { void shutdown(); });
   void TPS;
 }
 

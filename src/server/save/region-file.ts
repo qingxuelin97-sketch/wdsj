@@ -25,8 +25,16 @@ export function regionX(cx: number): number {
 export function regionZ(cz: number): number {
   return cz >> 5;
 }
-export function regionKeyOf(cx: number, cz: number): string {
-  return `region/r.${regionX(cx)}.${regionZ(cz)}`;
+/**
+ * 区块 -> 存储键。**维度必须进键里。**
+ *
+ * 目录名照抄 MC：主世界直接是 region/，下界是 DIM-1/region/，末地是 DIM1/region/。
+ * 少了这一层的话，下界的 (0,0) 和主世界的 (0,0) 会写到同一个键上 ——
+ * 表现是"在出生点盖了房子，去下界转一圈回来，房子变成了地狱岩"。
+ */
+export function regionKeyOf(cx: number, cz: number, dimension = 0): string {
+  const dir = dimension === 0 ? '' : `DIM${dimension}/`;
+  return `${dir}region/r.${regionX(cx)}.${regionZ(cz)}`;
 }
 /** 区块在 region 内的槽位。负数坐标也要落在 0..1023，所以用掩码而不是取模 */
 function slotOf(cx: number, cz: number): number {

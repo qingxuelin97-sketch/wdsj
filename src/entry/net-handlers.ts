@@ -31,7 +31,7 @@ export interface PacketContext {
   readonly renderer: ChunkRenderer;
   readonly interaction: Interaction;
   /** 把玩家与相机放到出生点 */
-  onLogin(x: number, y: number, z: number): void;
+  onLogin(x: number, y: number, z: number, dimension: number): void;
   /**
    * 服务端把玩家挪走了（重生、传送、和解纠正）。
    *
@@ -83,7 +83,10 @@ export function installPacketHandlers(net: PacketChannel, ctx: PacketContext): v
         const sz = value['spawnZ'] as number;
         // 相机和**身体**都要放到出生点。只挪相机的话，物理下一帧就会
         // 把相机拽回身体所在的位置（世界原点上空），表现为一出生就掉进虚空
-        ctx.onLogin(sx, sy, sz);
+        // 维度一起带上：存档里玩家可能就在下界或末地。少了它的话，
+        // 人在下界而天上挂着太阳，雾也是主世界的蓝 ——
+        // 直到走进一次传送门才会对
+        ctx.onLogin(sx, sy, sz, value['dimension'] as number);
         console.log(`[net] 登录成功，出生点 ${sx.toFixed(1)} ${sy.toFixed(1)} ${sz.toFixed(1)}`);
         return;
       }

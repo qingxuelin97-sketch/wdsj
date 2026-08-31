@@ -27,6 +27,8 @@ import { S2C, C_Handshake, C_SetViewDistance, PROTOCOL_VERSION } from '../../src
 import { packState, stateId } from '../../src/core/world/chunk.ts';
 import { makeStack, copyStack, isEmpty } from '../../src/core/item/item-def.ts';
 import { Enchantment } from '../../src/core/item/enchantment.ts';
+import { Dimension, convertCoords } from '../../src/core/world/dimension.ts';
+import { travelThroughPortal } from '../../src/server/world/portal-manager.ts';
 import { AWKWARD_POTION } from '../../src/core/craft/brewing.ts';
 import { EnchantingEntity, BrewingEntity } from '../../src/server/world/block-entity-craft.ts';
 import { FurnaceEntity, ChestEntity } from '../../src/server/world/block-entity.ts';
@@ -396,4 +398,122 @@ test('附魔与附魔台/酿造台跟着存档一起来回', async () => {
   assert.equal(stand2.slots[1]!.id, POTION);
   assert.ok(isEmpty(stand2.slots[2]!), '空着的瓶位读回来还得是空的');
   assert.equal(stand2.slots[3]!.id, items.idOf(Items.NETHER_WART), '材料格要还原');
+});
+
+test('三个维度各存各的：下界不会把主世界的区块顶掉', async () => {
+  const storage = new MemoryStorage();
+  const a = await makeRig(storage);
+  await tickAsync(a.core, 20);
+
+  // 两边都挑**同一个区块坐标**下手。这是整条测试的要害：
+  // region 的键里不带维度的话，两边会写到同一个文件上
+  const cx = 0;
+  const cz = 0;
+  const OBSIDIAN = registry.idOf(Blocks.OBSIDIAN);
+  const GOLD = registry.idOf(Blocks.GOLD_BLOCK);
+
+  assert.ok(a.core.world.forceChunk(cx, cz) !== null);
+  a.core.world.setBlock(3, 70, 5, packState(OBSIDIAN));
+
+  // 下界：worldOf 现建一个，存档要在这一刻被 SaveController 挂上去
+  const netherA = a.core.worldOf(Dimension.NETHER);
+  assert.ok(netherA.save !== null, '新维度的世界必须自带存档，否则它写的东西一个字都留不下');
+  assert.ok(netherA.forceChunk(cx, cz) !== null);
+  netherA.setBlock(3, 40, 5, packState(GOLD));
+
+  const report = await a.controller.saveNow();
+  assert.ok(report.chunks > 0);
+
+  // --- 重开 ---
+  const b = await makeRig(storage);
+  assert.ok(b.core.world.forceChunk(cx, cz) !== null);
+  assert.equal(
+    stateId(b.core.world.getBlock(3, 70, 5)), OBSIDIAN,
+    '主世界那格没了 —— 多半是被下界同坐标的区块覆盖掉了',
+  );
+
+  // 下界的 region 是异步到货的。游戏里这一步由传送门那边的
+  // areaReadyForForce 挡着（没到货就先不送人），这里照做一遍：
+  // 直接 forceChunk 会在货到之前把地形生成出来，永久顶掉存过的内容
+  const netherB = b.core.worldOf(Dimension.NETHER);
+  for (let i = 0; i < 50 && !netherB.areaReadyForForce(3, 5, 1); i++) await Promise.resolve();
+  assert.ok(netherB.areaReadyForForce(3, 5, 1), '下界的 region 应该已经到货');
+  assert.ok(netherB.forceChunk(cx, cz) !== null);
+  assert.equal(netherB.forcedOverPendingSave, 0, '不该有区块抢在存档到货前被生成');
+  assert.equal(
+    stateId(netherB.getBlock(3, 40, 5)), GOLD,
+    '下界盖的东西没还原 —— 下界的区块根本没被存下来',
+  );
+  // 反过来也要成立：主世界那格不该在下界冒出来
+  assert.notEqual(stateId(netherB.getBlock(3, 70, 5)), OBSIDIAN, '两个维度串了');
+});
+
+test('在下界存盘，读档还在下界', async () => {
+  const storage = new MemoryStorage();
+  const a = await makeRig(storage);
+  await tickAsync(a.core, 20);
+
+  const nether = a.core.worldOf(Dimension.NETHER);
+  nether.forceChunk(0, 0);
+  a.player.dimension = Dimension.NETHER;
+  a.player.x = 6.5;
+  a.player.y = 40;
+  a.player.z = 6.5;
+  await a.controller.saveNow();
+
+  const b = await makeRig(storage);
+  assert.ok(b.controller.restorePlayer(b.player));
+  assert.equal(
+    b.player.dimension, Dimension.NETHER,
+    '读档把玩家丢回了主世界 —— 按下界坐标落进主世界，八成是卡在石头里',
+  );
+  assert.ok(Math.abs(b.player.y - 40) < 1e-9, '坐标要还原');
+  // 那个维度的世界也得跟着建出来，否则玩家所在的世界是空的
+  assert.ok([...b.core.loadedWorlds()].some((w) => w.dimension === Dimension.NETHER),
+    '玩家在下界，下界的世界就得存在');
+});
+
+test('传送门在目标维度的存档到货前不送人 —— 送了就会顶掉存过的区块', async () => {
+  const storage = new MemoryStorage();
+  const a = await makeRig(storage);
+  await tickAsync(a.core, 20);
+
+  // 先在下界盖点东西存下来
+  const nether = a.core.worldOf(Dimension.NETHER);
+  const target = convertCoords(Dimension.OVERWORLD, Dimension.NETHER, a.player.x, a.player.z);
+  const cx = target.x >> 4;
+  const cz = target.z >> 4;
+  for (let dz = -1; dz <= 1; dz++) {
+    for (let dx = -1; dx <= 1; dx++) nether.forceChunk(cx + dx, cz + dz);
+  }
+  const GOLD = registry.idOf(Blocks.GOLD_BLOCK);
+  nether.setBlock(target.x, 45, target.z, packState(GOLD));
+  await a.controller.saveNow();
+
+  // --- 重开，立刻走传送门 ---
+  const b = await makeRig(storage);
+  b.player.x = a.player.x;
+  b.player.z = a.player.z;
+  const netherB = b.core.worldOf(Dimension.NETHER);
+
+  // 第一次一定送不过去：region 还在读
+  assert.equal(
+    travelThroughPortal(b.core, b.player, Dimension.NETHER), false,
+    '存档还没到货就把人送过去了 —— 落点那几个区块会被当场生成并永久顶掉存档',
+  );
+  assert.equal(b.player.dimension, Dimension.OVERWORLD, '没送成就该还在原地');
+
+  // 等货到，再试一次
+  let ok = false;
+  for (let i = 0; i < 50 && !ok; i++) {
+    await Promise.resolve();
+    ok = travelThroughPortal(b.core, b.player, Dimension.NETHER);
+  }
+  assert.ok(ok, 'region 到货之后应该送得过去');
+  assert.equal(b.player.dimension, Dimension.NETHER);
+  assert.equal(netherB.forcedOverPendingSave, 0, '一个区块都不该抢在存档前生成');
+  assert.equal(
+    stateId(netherB.getBlock(target.x, 45, target.z)), GOLD,
+    '上次在下界盖的东西必须还在',
+  );
 });

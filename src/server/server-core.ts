@@ -417,7 +417,9 @@ export class ServerCore {
 
     player.channel.send(S_Login, {
       entityId: player.entityId,
-      dimension: 0,
+      // onPlayerReady 可能把玩家放回了下界/末地（存档里就在那儿），
+      // 这里写死 0 的话客户端会拿主世界的天空和雾去画下界
+      dimension: player.dimension,
       gameMode: 1,
       seed: this.world.seed,
       spawnX: player.x,

@@ -11,6 +11,8 @@
 import type { ServerCore } from '../server-core.ts';
 import type { ServerPlayer } from '../player/server-player.ts';
 import { WorldSave, type PlayerSaveData } from './world-save.ts';
+import type { SaveStorage } from '../../platform/storage.ts';
+import { isDimension } from '../../core/world/dimension.ts';
 import { saveAllChunks } from '../world/world-persistence.ts';
 import { PERSISTENT_SLOTS } from '../player/player-inventory.ts';
 import { copyStack } from '../../core/item/item-def.ts';
@@ -42,15 +44,51 @@ export class SaveController {
   private saving = false;
   autosaveInterval = AUTOSAVE_INTERVAL_TICKS;
 
-  constructor(core: ServerCore, save: WorldSave) {
+  /**
+   * 每个维度一份 WorldSave，共用同一个 storage。
+   *
+   * 不能三个维度共用一份：region 的键里带着维度前缀，而内存里的 region
+   * 缓存是按键索引的 —— 共用一份只是把三份缓存挤在一个 Map 里，
+   * 除了让 flush 变慢没有任何好处，还会让"这份存档管哪个维度"变得不明确。
+   */
+  private readonly dimSaves = new Map<number, WorldSave>();
+  private readonly storage: SaveStorage;
+
+  constructor(core: ServerCore, save: WorldSave, storage?: SaveStorage) {
     this.core = core;
     this.save = save;
     core.world.save = save;
+    this.dimSaves.set(core.world.dimension, save);
+    // storage 缺省时从主世界那份借 —— 它自己就拿着一个
+    this.storage = storage ?? save.storageRef;
+
+    // 下界与末地是玩家跳进传送门的那一刻才存在的，那时候 SaveController
+    // 早就构造完了。所以存档要在世界诞生的回调里补挂，而不是在这里遍历。
+    //
+    // 挂晚一刻的代价是实打实的：世界一旦先跑起来，生成器会把区块填好，
+    // 之后到货的存档再也盖不回去（ServerWorld.forcedOverPendingSave 记的就是这个）
+    const prev = core.onWorldCreated;
+    core.onWorldCreated = (w) => {
+      w.save = this.saveFor(w.dimension);
+      prev?.(w);
+    };
+  }
+
+  /** 某个维度的存档，没有就现建 */
+  private saveFor(dimension: number): WorldSave {
+    const existing = this.dimSaves.get(dimension);
+    if (existing !== undefined) return existing;
+    const s = new WorldSave(this.storage, dimension);
+    this.dimSaves.set(dimension, s);
+    return s;
   }
 
   /** 把存档整个删掉 */
   async wipe(): Promise<boolean> {
+    // 主世界那份的 wipe 会把整个 storage 清空（它是按前缀 '' 列的），
+    // 所以其余维度只需要把内存里的 region 缓存丢掉，别再把它们写回去
     await this.save.wipe();
+    for (const [dim, s] of this.dimSaves) if (dim !== this.core.world.dimension) s.forget();
     return true;
   }
 
@@ -69,7 +107,11 @@ export class SaveController {
     if (this.saving) return { chunks: 0, regions: 0 };
     this.saving = true;
     try {
-      const chunks = saveAllChunks(this.core.world);
+      // 所有**已经存在**的维度都要存。只存主世界的话，玩家在下界盖的东西
+      // 会在下一次读档时被地形生成顶掉 —— 而且悄无声息，因为地形本身
+      // 是按同一个种子重新长出来的，看着"还在那儿"，只是房子没了
+      let chunks = 0;
+      for (const w of this.core.loadedWorlds()) chunks += saveAllChunks(w);
       for (const player of this.core.eachPlayer()) {
         await this.save.writePlayer(snapshotPlayer(player));
         break; // 单人：只有一个玩家。多人存档在 M17
@@ -86,7 +128,8 @@ export class SaveController {
         rainTime: this.core.world.weather.rainTime,
         thunderTime: this.core.world.weather.thunderTime,
       });
-      const regions = await this.save.flush();
+      let regions = 0;
+      for (const s of this.dimSaves.values()) regions += await s.flush();
       this.lastSaveTick = this.core.tickNumber;
       return { chunks, regions };
     } finally {
@@ -154,6 +197,15 @@ export class SaveController {
   restorePlayer(player: ServerPlayer): boolean {
     const data = this.pendingPlayer;
     if (data === null) return false;
+    // 维度要**先于**坐标设好：worldOf 会把那个维度的世界建出来（连同存档），
+    // 而下面的 resetSubscriptions 是按玩家所在的世界算的。
+    //
+    // isDimension 这一道不是形式主义：读的是盘上的字节，
+    // 一个改坏的 Dimension 会让 worldOf 拿到 undefined 的定义并当场炸掉登录
+    if (isDimension(data.dimension)) {
+      player.dimension = data.dimension;
+      if (data.dimension !== this.core.world.dimension) this.core.worldOf(data.dimension);
+    }
     player.x = data.x;
     player.y = data.y;
     player.z = data.z;
@@ -182,6 +234,7 @@ export class SaveController {
 function snapshotPlayer(player: ServerPlayer): PlayerSaveData {
   return {
     x: player.x, y: player.y, z: player.z,
+    dimension: player.dimension,
     yaw: player.yaw, pitch: player.pitch,
     selectedHotbar: player.inventory.selectedHotbar,
     slots: player.inventory.slots,

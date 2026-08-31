@@ -145,8 +145,11 @@ export function tickEndPortal(core: ServerCore, player: ServerPlayer): void {
 }
 
 /** 送进末地。落点固定在原点上方，与 MC 一致 */
-export function enterTheEnd(core: ServerCore, player: ServerPlayer): void {
+export function enterTheEnd(core: ServerCore, player: ServerPlayer): boolean {
   const end = core.worldOf(Dimension.END);
+  // 与下界同理：存档没读进来就先别送，下一刻再来。
+  // 强行 force 出来的末地会把上次打龙时炸出来的地形永久顶掉
+  if (!end.areaReadyForForce(0, 0, 1)) return false;
   // 2×2 个区块，不是一个。平台跨 x=-2..2 / z=-2..2，
   // 而原点那一格在区块 (0,0) 的角上 —— 只 force (0,0) 的话
   // 平台有一半落在没加载的区块里，setBlock 静默失败，
@@ -170,6 +173,7 @@ export function enterTheEnd(core: ServerCore, player: ServerPlayer): void {
   // 人到了才摆龙和水晶。提前摆的话，一个从没去过末地的世界
   // 也会有一条龙在那里绕圈，白烧 CPU 且把区块一直钉在内存里
   beginDragonFight(core);
+  return true;
 }
 
 /** 从末地回主世界的出生点 */

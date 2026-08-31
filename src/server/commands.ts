@@ -85,12 +85,21 @@ value: Record<string, unknown>,
           return;
         }
         if (to === Dimension.END) {
-          enterTheEnd(core, player);
+          // 存档还在读就如实说，别假装送到了 —— 自动化验收会照着回复往下走
+          if (!enterTheEnd(core, player)) {
+            reply(false, '存档还在读，再试一次');
+            return;
+          }
           reply(true, 'end');
           return;
         }
         const dest = core.worldOf(to);
         const target = convertCoords(player.dimension, to, player.x, player.z);
+        // 同理：抢在存档到货前 force 出来的地形会把存过的内容永久顶掉
+        if (!dest.areaReadyForForce(target.x, target.z, 0)) {
+          reply(false, '存档还在读，再试一次');
+          return;
+        }
         dest.forceChunk(target.x >> 4, target.z >> 4);
         const y = dest.groundHeightAt(target.x, target.z);
         placeInDimension(core, player, to, { x: target.x, y, z: target.z, axis: 'x' });

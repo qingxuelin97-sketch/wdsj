@@ -248,11 +248,14 @@ installPacketHandlers(net, {
     // 刚死的那一刻解除指针锁，让玩家能点重生
     if (ui.dead && !wasDead) document.exitPointerLock();
   },
-  onLogin: (x, y, z) => {
+  onLogin: (x, y, z, dim) => {
     // 相机和**身体**都要放到出生点。只挪相机的话，物理下一帧就会
     // 把相机拽回身体所在的位置（世界原点上空），表现为一出生就掉进虚空
     player.teleport(x, y, z);
     camera.setPosition(x, y + player.eyeHeight, z);
+    // 朝向不动 —— 这里跟 onChangeDimension 不一样：换维度是被门丢过去的，
+    // 而登录只是接着上次玩
+    session.dimension = dim;
     session.spawned = true;
   },
   onTeleport: (x, y, z, yaw, pitch) => {

@@ -231,6 +231,32 @@ export class ServerWorld {
     return chunk;
   }
 
+  /**
+   * 这一片区块现在 forceChunk 得起吗 —— 存档到货了，或者压根没有存档。
+   *
+   * 传送门这类"必须当场把目标区块变出来"的路径要先问一句。没到货就
+   * **别传送**，等下一刻再问：forceChunk 在存档到货前生成的区块会把
+   * 存过的内容永久顶掉（见下面那段注释），而玩家看到的就是
+   * "第二次进下界，上次盖的门和房子都没了"。
+   *
+   * 顺手把缺的 region 下单，所以连着问几刻就会等到。
+   */
+  areaReadyForForce(x: number, z: number, radius: number): boolean {
+    if (this.save === null) return true;
+    const cx = x >> 4;
+    const cz = z >> 4;
+    let ready = true;
+    for (let dz = -radius; dz <= radius; dz++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        if (this.store.getChunk(cx + dx, cz + dz) !== null) continue;
+        if (this.save.isRegionReady(cx + dx, cz + dz)) continue;
+        this.save.requestRegion(cx + dx, cz + dz);
+        ready = false;
+      }
+    }
+    return ready;
+  }
+
   /** 无视配额强制生成，用于出生点这类必须立刻就绪的场合 */
   forceChunk(cx: number, cz: number): Chunk {
     const existing = this.store.getChunk(cx, cz);

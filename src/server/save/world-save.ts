@@ -46,6 +46,13 @@ export interface LevelData {
 /** player.dat 里的东西 */
 export interface PlayerSaveData {
   x: number; y: number; z: number;
+  /**
+   * 玩家在哪个维度。
+   *
+   * 不存的话，在下界存盘再读档会把玩家按下界坐标丢进主世界 ——
+   * 那个位置八成在石头里，一进游戏就窒息。
+   */
+  dimension: number;
   yaw: number; pitch: number;
   selectedHotbar: number;
   slots: ItemStack[];
@@ -66,16 +73,25 @@ export class WorldSave {
   private readonly loading = new Set<string>();
   /** 读盘失败的 region：当作空的，不要每 tick 重试 */
   private readonly failed = new Set<string>();
+  /**
+   * 这份存档管哪个维度的区块。
+   *
+   * 一个维度一个 WorldSave 实例，**共用同一个 storage** —— 区分只体现在
+   * region 的键前缀上（见 regionKeyOf）。level.dat 与 player.dat 是全世界
+   * 唯一的，只由主世界那一份负责读写（save-controller 保证了这一点）。
+   */
+  private readonly dimension: number;
 
-  constructor(storage: SaveStorage) {
+  constructor(storage: SaveStorage, dimension = 0) {
     this.storage = storage;
+    this.dimension = dimension;
   }
 
   // --- region 生命周期 ---
 
   /** 某个区块所属的 region 已经在内存里了吗 */
   isRegionReady(cx: number, cz: number): boolean {
-    const key = regionKeyOf(cx, cz);
+    const key = regionKeyOf(cx, cz, this.dimension);
     return this.regions.has(key) || this.failed.has(key);
   }
 
@@ -84,7 +100,7 @@ export class WorldSave {
    * 不返回 Promise —— 调用方在 tick 里，不该 await 任何东西。
    */
   requestRegion(cx: number, cz: number): void {
-    const key = regionKeyOf(cx, cz);
+    const key = regionKeyOf(cx, cz, this.dimension);
     if (this.regions.has(key) || this.loading.has(key) || this.failed.has(key)) return;
     this.loading.add(key);
     void this.storage.read(key).then(
@@ -111,7 +127,7 @@ export class WorldSave {
    */
   async loadRegion(cx: number, cz: number): Promise<void> {
     if (this.isRegionReady(cx, cz)) return;
-    const key = regionKeyOf(cx, cz);
+    const key = regionKeyOf(cx, cz, this.dimension);
     try {
       const bytes = await this.storage.read(key);
       if (!this.regions.has(key)) {
@@ -126,7 +142,7 @@ export class WorldSave {
 
   /** 内存里那份 region，没有就现建一个（写入路径用） */
   private regionFor(cx: number, cz: number): RegionFile {
-    const key = regionKeyOf(cx, cz);
+    const key = regionKeyOf(cx, cz, this.dimension);
     let region = this.regions.get(key);
     if (region === undefined) {
       region = new RegionFile();
@@ -142,7 +158,7 @@ export class WorldSave {
    * 调用方必须先确认 isRegionReady。
    */
   readChunk(cx: number, cz: number, worldAge: number, allocEntityId: () => number): ChunkLoadResult | null {
-    const region = this.regions.get(regionKeyOf(cx, cz));
+    const region = this.regions.get(regionKeyOf(cx, cz, this.dimension));
     if (region === undefined) return null;
     const bytes = region.get(cx, cz);
     if (bytes === null) return null;
@@ -174,9 +190,19 @@ export class WorldSave {
    */
   async wipe(): Promise<void> {
     for (const key of await this.storage.list('')) await this.storage.remove(key);
+    this.forget();
+  }
+
+  /** 只丢掉内存里的 region 缓存，不动盘。给"别的维度共用同一个 storage"用 */
+  forget(): void {
     this.regions.clear();
     this.loading.clear();
     this.failed.clear();
+  }
+
+  /** 底层存储。同一个存档的其余维度要用同一个 */
+  get storageRef(): SaveStorage {
+    return this.storage;
   }
 
   /** 内存里的 region 数与其中的区块数，排查与测试用 */
@@ -262,6 +288,8 @@ export class WorldSave {
       nbtToStacks(getList(root, 'Inventory'), slots);
       return {
         x: num(pos, 0), y: num(pos, 1), z: num(pos, 2),
+        // 老存档没有 Dimension，默认主世界 —— 与升级前的行为一致
+        dimension: getInt(root, 'Dimension', 0),
         yaw: num(rot, 0), pitch: num(rot, 1),
         selectedHotbar: getInt(root, 'SelectedItemSlot'),
         slots,
@@ -284,6 +312,8 @@ export class WorldSave {
       Pos: nbt.list(TagType.DOUBLE, [nbt.double(p.x), nbt.double(p.y), nbt.double(p.z)]),
       Rotation: nbt.list(TagType.DOUBLE, [nbt.double(p.yaw), nbt.double(p.pitch)]),
       SelectedItemSlot: nbt.int(p.selectedHotbar),
+      // 字段名照抄 MC 的 player.dat
+      Dimension: nbt.int(p.dimension),
       Inventory: stacksToNbt(p.slots),
       // 字段名照抄 MC 的 player.dat（Health / foodLevel / foodSaturationLevel）
       Health: nbt.short(Math.round(p.health)),
