@@ -16,12 +16,16 @@ import { isEmpty, cloneStack, clearStack } from '../../core/item/item-def.ts';
 import { Dimension } from '../../core/world/dimension.ts';
 import { MobType } from '../../content/mobs.ts';
 import { applyArmor, DamageKind } from '../player/player-vitals.ts';
+import {
+  rollOf, meleeBonusAgainst, knockbackLevels, fireAspectSeconds, afterProtection, damageItem,
+  lootingLevelOf,
+} from '../player/enchant-apply.ts';
 import { xpToNextLevel } from '../player/experience.ts';
 import { tossFromPlayer, spawnXpOrbs } from './item-manager.ts';
 import { syncInventory } from '../player/inventory-actions.ts';
 import { setBodyBox, makeBox } from '../../core/physics/block-collision.ts';
 import { S_EntityEvent, S_Explosion, S_PlayerHealth, S_PlayerPosLook, S_ChangeDimension } from '../../core/net/packets.ts';
-import { EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, MAX_HEALTH, INVULNERABLE_TICKS, EXHAUSTION } from '../../core/constants.ts';
+import { EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, MAX_HEALTH, INVULNERABLE_TICKS, EXHAUSTION, TPS } from '../../core/constants.ts';
 
 /** 箭命中判定复用的盒子。每刻可能有几十支箭，别每支都新建 */
 const arrowScratch = makeBox();
@@ -101,15 +105,36 @@ export function onAttackEntity(core: ServerCore, player: ServerPlayer, value: Re
   }
 
   const held = player.inventory.held;
-  const damage = isEmpty(held) ? 1 : (core.items.get(held.id)?.attackDamage ?? 1);
+  const world = core.worldOf(player.dimension);
+  const roll = rollOf(world);
+  const base = isEmpty(held) ? 1 : (core.items.get(held.id)?.attackDamage ?? 1);
+  // 附魔加成在最后一步才取整，与 MC 一致：锋利 V 是 +6.25，
+  // 先取整成 +6 的话五级和四级（+5.0）之间就只差 1 而不是 1.25
+  const damage = Math.floor(base + meleeBonusAgainst(held, mob));
+  // 抢夺等级要在**打之前**记下来：mob.hurt 可能当场把它打死并走掉落，
+  // 而掉落那边已经不知道是谁打的了
+  mob.lootingLevel = lootingLevelOf(held);
   if (!mob.hurt(damage)) return;
+
+  // 火焰附加：点燃它。MC 的 setFire 单位是秒
+  const burn = fireAspectSeconds(held);
+  if (burn > 0) mob.fireTicks = Math.max(mob.fireTicks, burn * TPS);
+
+  // 武器掉耐久。空手不掉，方块也不掉 —— maxDurability 为 0 的东西
+  // damageItem 会直接返回
+  if (!isEmpty(held)) {
+    const def = core.items.get(held.id);
+    if (def !== undefined && damageItem(held, def.maxDurability, roll)) syncInventory(core, player);
+  }
 
   // 末影水晶被打死就炸。爆炸是它唯一的存在感 ——
   // 悄无声息地消失的话，玩家不会把"拆水晶"和"龙不再回血"联系起来
   if (mob.def.type === MobType.ENDER_CRYSTAL && !mob.alive) {
     core.explode(mob.x, mob.y + 1, mob.z, 6, mob.entityId, core.worldOf(player.dimension));
   }
-  mob.knockback(dx, dz);
+  // 击退：每级多推一段。MC 的 Knockback 是"额外的击退强度"，
+  // 不是把基础击退乘几倍
+  mob.knockback(dx, dz, knockbackLevels(held));
   // 打了它就会还手；被动生物则会逃跑，那由 PanicGoal 负责
   if (mob.def.attackDamage > 0) mob.targetId = player.entityId;
   for (const p of core.eachPlayer()) {
@@ -201,7 +226,12 @@ export function damagePlayer(
   if (kind === DamageKind.PHYSICAL && v.invulnerable > 0) return;
 
   const armor = armorPointsOf(core, player);
-  const dealt = applyArmor(amount, armor, kind);
+  // 顺序照抄 MC：**先护甲点数，再保护系附魔**。
+  // 反过来的话满钻甲 + 保护 IV 会算出接近零的伤害
+  const pieces = [0, 1, 2, 3].map((i) => player.inventory.armorAt(i));
+  const dealt = Math.max(1, Math.floor(
+    afterProtection(applyArmor(amount, armor, kind), pieces, kind),
+  ));
   v.health = Math.max(0, v.health - dealt);
   if (kind === DamageKind.PHYSICAL) v.invulnerable = INVULNERABLE_TICKS;
   // 受伤会消耗体力 —— 挨打之后更容易饿，这是 MC 的设计

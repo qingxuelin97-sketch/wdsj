@@ -35,6 +35,17 @@ export interface HeldTool {
   tier: ToolTier;
   /** 挖掘速度倍率：木 2 / 石 4 / 铁 6 / 钻 8 / 金 12 */
   speed: number;
+  /**
+   * 效率附魔的**加法**加成（level² + 1），没附魔是 0。
+   *
+   * 放在这里而不是在 breakProgressPerTick 里现算，是为了让 core/block
+   * 不必认识 ItemStack 与附魔表 —— 这一层只知道"这把工具有多快"。
+   * 由构造 HeldTool 的地方（server 的 toolOf、客户端的手持预测）填。
+   *
+   * **只在工具对口时生效**，与原版的 `f > 1` 同一条规则：
+   * 拿镐挖泥土不会因为附了效率就变快。
+   */
+  efficiencyBonus?: number;
 }
 
 /** 工具对不对得上这个方块 */
@@ -64,7 +75,8 @@ export function canHarvest(tables: BreakingTables, blockId: number, tool: HeldTo
 /** 手上工具对这个方块的速度倍率。不对口一律 1 */
 export function toolSpeedAgainst(tables: BreakingTables, blockId: number, tool: HeldTool | null): number {
   if (tool === null) return 1;
-  return isCorrectTool(tables, blockId, tool) ? tool.speed : 1;
+  if (!isCorrectTool(tables, blockId, tool)) return 1;
+  return tool.speed + (tool.efficiencyBonus ?? 0);
 }
 
 /**

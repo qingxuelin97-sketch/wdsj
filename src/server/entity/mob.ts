@@ -58,6 +58,17 @@ export class Mob {
   hurtTime = 0;
   /** 剩余着火刻数 */
   fireTicks = 0;
+  /**
+   * 打死它的那一击手上武器的抢夺等级。0 = 没有，或者不是被玩家打死的。
+   *
+   * 记在生物身上而不是在掉落时现查：掉落发生在 dropLoot 里，那时候
+   * 早就不知道是谁打的了；而玩家完全可能在打完最后一下之后立刻换手 ——
+   * 现查的话玩家能"打完换上抢夺剑再等它死"，那是个白嫖的漏洞。
+   *
+   * **不存盘**：区块卸载时这只怪没被打死（dropLoot 会因为 health > 0
+   * 直接返回），所以它的值到那时已经没有意义了
+   */
+  lootingLevel = 0;
   /** 死了之后的计时；≥0 表示正在播死亡动画 */
   deathTicks = -1;
   /** 已经可以从世界里移除 */
@@ -182,11 +193,20 @@ export class Mob {
   }
 
   /** 被打飞：MC 的击退是固定 0.4 水平 + 0.4 竖直 */
-  knockback(dx: number, dz: number): void {
+  /**
+   * 被推开。
+   *
+   * @param extraLevels 击退附魔的等级。MC 的 Knockback 是**额外**的强度
+   *   （每级再推 0.5 格的水平速度），不是把基础击退乘几倍 ——
+   *   写成乘法的话击退 II 能把怪打飞出视野，那是现代版加了击退抗性
+   *   之后才成立的手感
+   */
+  knockback(dx: number, dz: number, extraLevels = 0): void {
     const len = Math.hypot(dx, dz);
     if (len < 1e-6) return;
-    this.body.vx += (dx / len) * 0.4;
-    this.body.vz += (dz / len) * 0.4;
+    const strength = 0.4 + extraLevels * 0.5;
+    this.body.vx += (dx / len) * strength;
+    this.body.vz += (dz / len) * strength;
     this.body.vy = 0.4;
     this.body.onGround = false;
   }

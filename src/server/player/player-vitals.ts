@@ -14,6 +14,7 @@
 import type { ServerPlayer } from './server-player.ts';
 import type { ServerWorld } from '../world/server-world.ts';
 import { stateId } from '../../core/world/chunk.ts';
+import { consumesAir } from '../../core/item/enchant-effects.ts';
 import {
   MAX_HEALTH, MAX_HUNGER, EXHAUSTION_PER_UNIT, EXHAUSTION,
   REGEN_MIN_HUNGER, REGEN_INTERVAL, AIR_SUPPLY_TICKS,
@@ -189,7 +190,9 @@ export function tickVitals(player: ServerPlayer, v: PlayerVitals, ctx: VitalsCon
   // --- 溺水：头在水里就憋气，憋完开始掉血 ---
   const headInWater = (tables.isWater[headId] ?? 0) !== 0;
   if (headInWater) {
-    v.air--;
+    // 水下呼吸：摇中就这一刻不扣氧气。逐刻判定而不是"把总时长乘以倍数"，
+    // 与原版一致 —— 结果的期望是 ×(等级+1)，呼吸 III 大约 60 秒
+    if (consumesAir(player.inventory.armorAt(0), (n: number) => world.random.nextInt(n))) v.air--;
     if (v.air < 0) {
       v.air = 0;
       if (v.due('drown', DAMAGE_DROWN.interval)) {

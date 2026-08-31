@@ -8,6 +8,7 @@
  */
 import type { ServerCore } from '../server-core.ts';
 import { Dimension, isDimension } from '../../core/world/dimension.ts';
+import { extraLootFor } from '../player/enchant-apply.ts';
 import type { ServerPlayer } from '../player/server-player.ts';
 import { Mob } from './mob.ts';
 import { installGoals } from './mob-factory.ts';
@@ -210,7 +211,10 @@ export class MobManager {
     const burned = mob.fireTicks > 0;
     for (const entry of mob.def.loot) {
       if (entry.chance < 1 && rng.nextDouble() > entry.chance) continue;
-      const count = entry.min + rng.nextInt(entry.max - entry.min + 1);
+      // 抢夺：每一条各摇一次额外件数。逐条摇是原版的做法 ——
+      // 摇一次给所有条目共用的话，抢夺会变成"要么全爆要么全不爆"
+      const bonus = extraLootFor(mob.lootingLevel, (n) => rng.nextInt(n));
+      const count = entry.min + rng.nextInt(entry.max - entry.min + 1) + bonus;
       if (count <= 0) continue;
       const name = burned && entry.cooked !== undefined ? entry.cooked : entry.item;
       const id = this.core.items.idOf(name);

@@ -11,6 +11,7 @@
 import type { ServerCore } from '../server-core.ts';
 import type { ServerPlayer } from './server-player.ts';
 import { canHarvest, type HeldTool } from '../../core/block/breaking.ts';
+import { miningSpeedBonus, hasSilkTouch, fortuneMultiplier } from '../../core/item/enchant-effects.ts';
 import { isEmpty, cloneStack, copyStack, makeStack, type ItemStack } from '../../core/item/item-def.ts';
 import { Window, ARMOR_SLOTS, MAIN_SLOTS, HOTBAR_SLOTS } from './player-inventory.ts';
 import { S_WindowItems, S_OpenWindow, WindowKind } from '../../core/net/packets.ts';
@@ -47,21 +48,52 @@ const DROP_OVERRIDE: Record<number, number> = {
  */
 export function dropOf(core: ServerCore, blockId: number, player: ServerPlayer): ItemStack | null {
   const held = player.inventory.held;
+  const world = core.worldOf(player.dimension);
   const tool = toolOf(core, held);
-  if (!canHarvest(core.world.tables, blockId, tool)) return null;
-  const def = core.world.tables.defs[blockId];
+  if (!canHarvest(world.tables, blockId, tool)) return null;
+  const def = world.tables.defs[blockId];
   if (def == null) return null;
   // 石头掉圆石、草方块掉泥土 —— 少数几个"掉的不是自己"的方块
   const alt = DROP_OVERRIDE[blockId];
-  return makeStack(alt ?? blockId, 1);
+
+  // 精准采集：掉方块自己，把上面那张替换表整个绕过去。
+  // 这才是它的全部意义 —— 圆石谁都挖得到，玩家要的是**石头本身**
+  if (alt !== undefined && hasSilkTouch(held)) return makeStack(blockId, 1);
+
+  // 时运：只对"掉的不是自己"的那几种矿生效。
+  // 对石头/草方块这类也翻倍的话，一镐下去能出四块圆石 —— 原版没有这回事
+  const isOre = alt !== undefined && ORE_BLOCKS.has(blockId);
+  const count = isOre
+    ? fortuneMultiplier(held, (bound) => world.random.nextInt(bound))
+    : 1;
+  return makeStack(alt ?? blockId, count);
 }
+
+/**
+ * 吃时运的矿。
+ *
+ * 单列一张表而不是"凡是 DROP_OVERRIDE 里的都算"：石头、草方块、菌丝
+ * 也在那张表里，而它们在 1.0 里不吃时运。
+ * 铁矿与金矿不在这里 —— 它们掉的是方块自己（要熔炼），时运对那些无效。
+ */
+const ORE_BLOCKS = new Set<number>([
+  16,  // 煤矿
+  21,  // 青金石矿
+  56,  // 钻石矿
+  73,  // 红石矿
+]);
 
 /** 手上那件物品当工具用时的参数。空手或非工具返回 null */
 export function toolOf(core: ServerCore, stack: ItemStack): HeldTool | null {
   if (isEmpty(stack)) return null;
   const def = core.items.get(stack.id);
   if (def === undefined || def.toolKind === null) return null;
-  return { kind: def.toolKind, tier: def.toolTier, speed: def.toolSpeed };
+  // 效率附魔按"对口才算"传进去，具体判断在 toolSpeedAgainst 里 ——
+  // 它才知道这把工具对不对得上要挖的那个方块
+  return {
+    kind: def.toolKind, tier: def.toolTier, speed: def.toolSpeed,
+    efficiencyBonus: miningSpeedBonus(stack, true),
+  };
 }
 
 /** 塞进背包，返回塞不下的数量 */

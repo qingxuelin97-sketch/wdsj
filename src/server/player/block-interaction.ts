@@ -16,6 +16,7 @@ import { AIR_STATE, packState, stateId } from '../../core/world/chunk.ts';
 import { breakProgressPerTick } from '../../core/block/breaking.ts';
 import { isEmpty, ITEM_ID_BASE } from '../../core/item/item-def.ts';
 import { dropOf, toolOf, showWindow, syncInventory } from './inventory-actions.ts';
+import { damageItem, rollOf } from './enchant-apply.ts';
 import { spawnBlockDrop, scatterContents } from '../entity/item-manager.ts';
 import { ChestEntity, FurnaceEntity } from '../world/block-entity.ts';
 import { PLAYER_WIDTH, PLAYER_HEIGHT, WORLD_HEIGHT, REACH_SURVIVAL, EXHAUSTION } from '../../core/constants.ts';
@@ -115,12 +116,7 @@ function useSpecialItem(
   const hoeDef = core.items.get(itemId);
   if (hoeDef !== undefined && hoeDef.toolKind === ToolKind.HOE) {
     if (tillSoil(world, bx, by, bz)) {
-      held.damage++;
-      const max = hoeDef.maxDurability;
-      if (max > 0 && held.damage >= max) {
-        held.id = 0;
-        held.count = 0;
-      }
+      damageItem(held, hoeDef.maxDurability, rollOf(world));
       syncInventory(core, player);
     }
     return true;
@@ -187,25 +183,21 @@ function useSpecialItem(
     // 于是"点火成功"之后门就再也认不出来了 —— 症状是
     // 黑曜石框里烧着一团火，怎么也不变紫
     const lit = ignitePortal(core, world, px, py, pz);
+    const flintMax = items.get(itemId)?.maxDurability ?? 64;
     if (lit.lit) {
-      held.damage++;
+      damageItem(held, flintMax, rollOf(world));
       syncInventory(core, player);
       return true;
     }
     if (igniteAt(world, px, py, pz)) {
-      held.damage++;
-      const max = items.get(itemId)?.maxDurability ?? 64;
-      if (held.damage >= max) {
-        held.id = 0;
-        held.count = 0;
-      }
+      damageItem(held, flintMax, rollOf(world));
       syncInventory(core, player);
       return true;
     }
     // 点 TNT 也算用途
     if (stateId(world.getBlock(bx, by, bz)) === core.registry.idOf('tnt')) {
       primeTnt(world, bx, by, bz);
-      held.damage++;
+      damageItem(held, items.get(itemId)?.maxDurability ?? 64, rollOf(world));
       syncInventory(core, player);
       return true;
     }
@@ -310,6 +302,17 @@ export function advanceDigging(core: ServerCore, player: ServerPlayer): void {
   }
 
   if (drop !== null) spawnBlockDrop(core, world, x, y, z, drop);
+
+  // 工具掉一点耐久。**挖硬度为 0 的东西不掉** —— 火把、花、草这类
+  // MC 也不算一次使用，否则在草地上走一趟就能把一把镐挥掉。
+  // 耐久附魔在 damageItem 里生效
+  const held = player.inventory.held;
+  const heldDef = isEmpty(held) ? undefined : core.items.get(held.id);
+  if (heldDef !== undefined && heldDef.maxDurability > 0 && (world.tables.hardness[id] ?? 0) > 0) {
+    damageItem(held, heldDef.maxDurability, rollOf(world));
+    syncInventory(core, player);
+  }
+
   // 挖一格消耗 0.025 体力。数字很小，但一场挖矿下来是实打实的饭量
   player.vitals.addExhaustion(EXHAUSTION.breakBlock);
 }
