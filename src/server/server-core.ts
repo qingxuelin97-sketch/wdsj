@@ -40,7 +40,7 @@ import { runServerTick } from './server-tick.ts';
 import { onPlayerAction, onUseBlock } from './player/block-interaction.ts';
 import {
   onAttackEntity, shootArrow, explodeAt, damagePlayer,
-  armorPointsOf, respawnPlayer,
+  armorPointsOf, respawnPlayer, sendVitals,
 } from './entity/combat.ts';
 import { DamageKind, fallDamage, type VitalsContext } from './player/player-vitals.ts';
 import { FurnaceEntity, type BlockEntity } from './world/block-entity.ts';
@@ -253,6 +253,7 @@ export class ServerCore {
     world: null as unknown as ServerWorld,
     armorPoints: (p) => armorPointsOf(this, p),
     hurt: (p, amount, kind) => { damagePlayer(this, p, amount, p.x, p.z, kind); },
+    sync: (p) => { sendVitals(p); },
   };
 
   /**

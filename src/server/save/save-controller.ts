@@ -294,6 +294,9 @@ export class SaveController {
     player.xp.level = data.xpLevel;
     player.xp.progress = data.xpProgress;
     player.xp.total = data.xpTotal;
+    // 药水效果接着走剩下的时间。restore 会把不认识的 id 丢掉，
+    // 免得一条谁也不处理的效果永远挂在人身上
+    player.effects.restore(data.effects);
     // 订阅集是按坐标算的，位置换了就得重算，否则会先推一批出生点附近的区块
     player.resetSubscriptions();
     syncInventory(this.core, player);
@@ -327,5 +330,6 @@ function snapshotPlayer(player: ServerPlayer): PlayerSaveData {
     xpLevel: player.xp.level,
     xpProgress: player.xp.progress,
     xpTotal: player.xp.total,
+    effects: player.effects.snapshot(),
   };
 }

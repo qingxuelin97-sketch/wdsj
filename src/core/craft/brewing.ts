@@ -107,22 +107,56 @@ export const MODIFIERS = {
 } as const;
 
 /**
- * 发酵蛛眼的反转表。
+ * 发酵蛛眼的腐化规则。
  *
- * 这是酿造里最"讲道理"的一步：把一个效果变成它的反面。
- * 治疗↔伤害、迅捷↔缓慢、力量↔虚弱、再生↔毒。
- * 没有反面的（抗火）会变成缓慢 —— MC 的兜底也是这个。
+ * **它不是"取反"，而是一条位运算。** 1.0 的 `PotionHelper` 给发酵蛛眼配的串是
+ * `-0+3-4+13`：清掉 damage 的 bit0、置上 bit3、清掉 bit4（粗制标记）、
+ * 置上 bit13（"这是一瓶真药水"）。落到低 4 位的效果 id 上就是这一个式子。
+ *
+ * **这条我采信的是这个位运算式，理由是它一次推出了全部有据可查的官方组合**：
+ * 水瓶→虚弱、迅捷→缓慢、抗火→缓慢、治疗→伤害、剧毒→伤害、力量→虚弱、
+ * 夜视→隐身。手写的"互换表"推不出"抗火→缓慢"这种不对称的条目，
+ * 也推不出"缓慢再腐化还是缓慢"这种不动点 —— 那两类恰恰是它对不对的试金石。
+ */
+export function corruptEffect(effect: number): EffectId {
+  return ((((effect & ~0x01) | 0x08)) & PotionFlags.EFFECT_MASK) as EffectId;
+}
+
+/**
+ * 上面那个式子对 1.0 有定义的每一种效果算出来的结果，摊开写一遍。
+ *
+ * 摊开是为了能一眼核对，而不是为了省一次计算 —— `corruptEffect` 才是真相，
+ * 测试会逐条比对两者。
+ *
+ * 原来这里写的是一张**对称的互换表**（治疗↔伤害、迅捷↔缓慢、再生↔剧毒……），
+ * 那是照直觉编的，有四条与 1.0 不符：
+ *
+ *   - 剧毒 + 发酵蛛眼给的是**伤害**，不是再生 —— 出再生的话，玩家用一只蜘蛛眼
+ *     加一份发酵蛛眼就能刷出再生药水，而 1.0 里再生只能靠恶魂之泪，
+ *     等于凭空多了一条绕过下界的经济
+ *   - 缓慢 / 伤害 / 虚弱 + 发酵蛛眼在 1.0 里**原地不动**（酿造台根本不开工），
+ *     互换表却会把它们变回迅捷 / 治疗 / 力量 —— 一份发酵蛛眼就能反悔，
+ *     "腐化是单向的"这个代价整个消失了
+ *   - 再生 + 发酵蛛眼给的是虚弱，不是剧毒
  */
 export const CORRUPTION: Readonly<Record<number, EffectId>> = {
-  [Effect.HEALING]: Effect.HARMING,
-  [Effect.HARMING]: Effect.HEALING,
+  // 水瓶与粗制的药水（都还没有效果）→ 虚弱。1.0 里唯一不需要下界疣的一条路
+  [Effect.NONE]: Effect.WEAKNESS,
+  [Effect.REGENERATION]: Effect.WEAKNESS,
   [Effect.SPEED]: Effect.SLOWNESS,
-  [Effect.SLOWNESS]: Effect.SPEED,
-  [Effect.STRENGTH]: Effect.WEAKNESS,
-  [Effect.WEAKNESS]: Effect.STRENGTH,
-  [Effect.REGENERATION]: Effect.POISON,
-  [Effect.POISON]: Effect.REGENERATION,
+  [Effect.FIRE_RESISTANCE]: Effect.SLOWNESS,
+  [Effect.POISON]: Effect.HARMING,
+  [Effect.HEALING]: Effect.HARMING,
   [Effect.NIGHT_VISION]: Effect.INVISIBILITY,
+  [Effect.STRENGTH]: Effect.WEAKNESS,
+  [Effect.WATER_BREATHING]: Effect.HARMING,
+  // 下面四条是**不动点**：已经腐化过的东西再腐化一次还是它自己。
+  // brew() 会原样返回，酿造台看到"结果和原来一模一样"就不开工（1.0 的
+  // TileEntityBrewingStand.canBrew 里那句 `j != k`），材料不会被白吃掉
+  [Effect.WEAKNESS]: Effect.WEAKNESS,
+  [Effect.SLOWNESS]: Effect.SLOWNESS,
+  [Effect.HARMING]: Effect.HARMING,
+  [Effect.INVISIBILITY]: Effect.INVISIBILITY,
 };
 
 /** 从 damage 值里解出一瓶药水是什么 */
@@ -178,6 +212,22 @@ export function brew(potionDamage: number, ingredient: string): number | null {
     });
   }
 
+  // 发酵蛛眼要挡在"必须已经是一瓶有效果的药水"这道闸门**前面**。
+  //
+  // 水瓶 / 粗制的药水 + 发酵蛛眼 = 虚弱药水，这是 1.0 里**唯一不需要下界疣**的
+  // 一条路（配方串里那个 `+3` 对水瓶的 0 也照样成立），也是绝大多数玩家
+  // 酿出来的第一瓶药。挡在闸门后面的话，没去过下界的玩家在酿造台上
+  // 怎么试都是空的 —— 而游戏不会给任何提示，只是不开工
+  if (ingredient === MODIFIERS.FERMENTED_SPIDER_EYE) {
+    const corrupted = CORRUPTION[p.effect] ?? corruptEffect(p.effect);
+    // 增强与延长**保留**：1.0 的配方串只动 bit0 / 3 / 4 / 13，碰不到
+    // bit5（增强）与 bit6（延长）。所以治疗 II 腐化成的是伤害 II，
+    // 延长的迅捷腐化成的是延长的缓慢 —— 缓慢 4:00 就是这么来的。
+    // 反过来，如果在这里把两个标志清掉，"伤害 II + 发酵蛛眼"会
+    // 悄悄降级成伤害 I，还白吃一份材料：玩家看到的是药水变弱了
+    return writePotion({ ...p, effect: corrupted, awkward: false });
+  }
+
   // 以下辅料都要求已经是一瓶有效果的药水
   if (p.effect === Effect.NONE) return null;
 
@@ -192,14 +242,6 @@ export function brew(potionDamage: number, ingredient: string): number | null {
       // 瞬间生效的药水（治疗/伤害）没有时长可延长
       if (EFFECTS[p.effect]?.durationTicks === 0) return null;
       return writePotion({ ...p, extended: true, upgraded: false });
-    case MODIFIERS.FERMENTED_SPIDER_EYE: {
-      const corrupted = CORRUPTION[p.effect] ?? Effect.SLOWNESS;
-      // 反转会**清掉**增强与延长，与 MC 一致 —— 否则可以拿
-      // "延长的迅捷"一步换出"延长的缓慢"，那太便宜了
-      return writePotion({
-        effect: corrupted, upgraded: false, extended: false, splash: p.splash, awkward: false,
-      });
-    }
     case MODIFIERS.GUNPOWDER:
       if (p.splash) return null;
       return writePotion({ ...p, splash: true });

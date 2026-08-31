@@ -20,7 +20,7 @@ import {
 } from '../../src/core/craft/enchanting.ts';
 import {
   Effect, EFFECTS, brew, readPotion, writePotion, potionPotency,
-  BASE_INGREDIENTS, MODIFIERS, CORRUPTION,
+  BASE_INGREDIENTS, MODIFIERS, CORRUPTION, corruptEffect,
   WATER_BOTTLE, AWKWARD_POTION, PotionFlags,
 } from '../../src/core/craft/brewing.ts';
 
@@ -262,21 +262,76 @@ test('瞬间药水不能延长', () => {
   assert.notEqual(brew(healing, MODIFIERS.GLOWSTONE_DUST), null);
 });
 
-test('发酵蛛眼反转效果，并清掉增强与延长', () => {
+test('发酵蛛眼腐化效果，且保留增强与延长', () => {
   const speed = brew(AWKWARD_POTION, 'sugar')!;
-  const fast = brew(speed, MODIFIERS.GLOWSTONE_DUST)!;
-  const slow = brew(fast, MODIFIERS.FERMENTED_SPIDER_EYE)!;
-  const p = readPotion(slow);
-  assert.equal(p.effect, Effect.SLOWNESS);
-  assert.equal(p.upgraded, false, '反转之后还留着增强 —— 那太便宜了');
-  assert.equal(p.extended, false);
+  const slow = brew(speed, MODIFIERS.FERMENTED_SPIDER_EYE)!;
+  assert.equal(readPotion(slow).effect, Effect.SLOWNESS);
+
+  // 1.0 的配方串 `-0+3-4+13` 碰不到 bit5（增强）与 bit6（延长）：
+  // 延长的迅捷腐化出来的是**延长的**缓慢，缓慢 4:00 就是这么来的
+  const longSpeed = brew(speed, MODIFIERS.REDSTONE)!;
+  const longSlow = readPotion(brew(longSpeed, MODIFIERS.FERMENTED_SPIDER_EYE)!);
+  assert.equal(longSlow.effect, Effect.SLOWNESS);
+  assert.equal(longSlow.extended, true, '延长被腐化吃掉了 —— 那样缓慢 4:00 就做不出来');
+
+  // 治疗 II -> 伤害 II，PvP 里那瓶投掷伤害 II 的来源
+  const healing = brew(AWKWARD_POTION, 'glistering_melon')!;
+  const healing2 = brew(healing, MODIFIERS.GLOWSTONE_DUST)!;
+  const harming2 = readPotion(brew(healing2, MODIFIERS.FERMENTED_SPIDER_EYE)!);
+  assert.equal(harming2.effect, Effect.HARMING);
+  assert.equal(harming2.upgraded, true, '增强被腐化吃掉了 —— 伤害 II 会悄悄降级成伤害 I');
 });
 
-test('反转表是对合的（转两次回到原点）', () => {
-  for (const [from, to] of Object.entries(CORRUPTION)) {
-    const back = CORRUPTION[to];
-    if (back === undefined) continue;
-    assert.equal(back, Number(from), `${from} -> ${to} -> ${back}，转两次没回来`);
+test('腐化表逐条对上 1.0 的位运算 (e & ~1) | 8', () => {
+  // 表是摊开写的，corruptEffect 才是真相。两者必须逐条一致，否则
+  // 以后有人只改一处，另一处会静静地留着旧值
+  for (const effect of Object.values(Effect)) {
+    assert.equal(
+      CORRUPTION[effect], corruptEffect(effect),
+      `腐化表里 ${effect} 这一条与位运算式对不上`,
+    );
+  }
+});
+
+test('腐化是单向的：剧毒出伤害不出再生，缓慢/伤害/虚弱原地不动', () => {
+  // 报上来的那一条：剧毒 + 发酵蛛眼在 1.0 是**伤害**。
+  // 出再生的话，一只蜘蛛眼加一份发酵蛛眼就能刷再生药水 ——
+  // 而 1.0 里再生只能靠恶魂之泪，等于凭空多一条绕过下界的路
+  const poison = brew(AWKWARD_POTION, 'spider_eye')!;
+  assert.equal(readPotion(brew(poison, MODIFIERS.FERMENTED_SPIDER_EYE)!).effect, Effect.HARMING);
+
+  // 抗火没有"反面"，1.0 给的是缓慢
+  const fireRes = brew(AWKWARD_POTION, 'magma_cream')!;
+  assert.equal(readPotion(brew(fireRes, MODIFIERS.FERMENTED_SPIDER_EYE)!).effect, Effect.SLOWNESS);
+  // 力量 -> 虚弱；再生 -> 虚弱（不是剧毒）
+  const strength = brew(AWKWARD_POTION, 'blaze_powder')!;
+  assert.equal(readPotion(brew(strength, MODIFIERS.FERMENTED_SPIDER_EYE)!).effect, Effect.WEAKNESS);
+  const regen = brew(AWKWARD_POTION, 'ghast_tear')!;
+  assert.equal(readPotion(brew(regen, MODIFIERS.FERMENTED_SPIDER_EYE)!).effect, Effect.WEAKNESS);
+
+  // 不动点：腐化过的东西再腐化一次，damage 一位都不变。
+  // 酿造台靠"结果和原来一样"来决定不开工，所以这里必须是**全等**，
+  // 只比 effect 相等是不够的 —— 标志位被清掉照样会白吃一份材料
+  for (const done of [
+    brew(poison, MODIFIERS.FERMENTED_SPIDER_EYE)!,
+    brew(strength, MODIFIERS.FERMENTED_SPIDER_EYE)!,
+    brew(fireRes, MODIFIERS.FERMENTED_SPIDER_EYE)!,
+  ]) {
+    assert.equal(
+      brew(done, MODIFIERS.FERMENTED_SPIDER_EYE), done,
+      '腐化过的药水又被改了一次 —— 那份发酵蛛眼是白吃的',
+    );
+  }
+});
+
+test('水瓶 / 粗制的药水 + 发酵蛛眼 = 虚弱：1.0 里唯一不用下界疣的一条路', () => {
+  for (const from of [WATER_BOTTLE, AWKWARD_POTION]) {
+    const weak = brew(from, MODIFIERS.FERMENTED_SPIDER_EYE);
+    assert.notEqual(weak, null, `${from} + 发酵蛛眼酿不出东西 —— 没去过下界就一瓶药都没有了`);
+    const p = readPotion(weak!);
+    assert.equal(p.effect, Effect.WEAKNESS);
+    // 粗制标记必须清掉，否则这瓶虚弱还能再被主料改一次
+    assert.equal(p.awkward, false, '腐化之后还留着粗制标记');
   }
 });
 
@@ -288,9 +343,11 @@ test('火药变投掷型，且只能变一次', () => {
   assert.equal(brew(splash, MODIFIERS.GUNPOWDER), null);
 });
 
-test('水瓶加辅料什么都酿不出来', () => {
+test('水瓶加辅料什么都酿不出来 —— 发酵蛛眼除外', () => {
   for (const m of Object.values(MODIFIERS)) {
-    if (m === MODIFIERS.NETHER_WART) continue;
+    // 下界疣把水瓶变成粗制的药水；发酵蛛眼把它变成虚弱药水（上一条测的）。
+    // 剩下的萤石 / 红石 / 火药对水瓶一律无效
+    if (m === MODIFIERS.NETHER_WART || m === MODIFIERS.FERMENTED_SPIDER_EYE) continue;
     assert.equal(brew(WATER_BOTTLE, m), null, `水瓶 + ${m} 居然成了`);
   }
 });

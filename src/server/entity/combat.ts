@@ -20,6 +20,7 @@ import {
   rollOf, meleeBonusAgainst, knockbackLevels, fireAspectSeconds, afterProtection, damageItem,
   lootingLevelOf,
 } from '../player/enchant-apply.ts';
+import { meleePotionBonus } from '../player/player-effects.ts';
 import { xpToNextLevel } from '../player/experience.ts';
 import { tossFromPlayer, spawnXpOrbs } from './item-manager.ts';
 import { syncInventory } from '../player/inventory-actions.ts';
@@ -109,8 +110,13 @@ export function onAttackEntity(core: ServerCore, player: ServerPlayer, value: Re
   const roll = rollOf(world);
   const base = isEmpty(held) ? 1 : (core.items.get(held.id)?.attackDamage ?? 1);
   // 附魔加成在最后一步才取整，与 MC 一致：锋利 V 是 +6.25，
-  // 先取整成 +6 的话五级和四级（+5.0）之间就只差 1 而不是 1.25
-  const damage = Math.floor(base + meleeBonusAgainst(held, mob));
+  // 先取整成 +6 的话五级和四级（+5.0）之间就只差 1 而不是 1.25。
+  // 力量/虚弱与附魔加在一起之后**一次**取整，各取各的会把两边的零头都抹掉
+  const damage = Math.floor(base + meleeBonusAgainst(held, mob) + meleePotionBonus(player.effects));
+  // 虚弱能把伤害压到 0 甚至负数。那一下**整个不成立** —— 不掉血、不击退、
+  // 也不算一次抢夺（MC 的 `if (f > 0)`）。让它以 0 伤害"打中"的话，
+  // 怪会被推着走还会进无敌帧，看起来像"打得动但一点血都不掉"
+  if (damage <= 0) return;
   // 抢夺等级要在**打之前**记下来：mob.hurt 可能当场把它打死并走掉落，
   // 而掉落那边已经不知道是谁打的了
   mob.lootingLevel = lootingLevelOf(held);

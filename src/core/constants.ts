@@ -119,6 +119,26 @@ export const DAMAGE_VOID = { interval: 10, amount: 4 } as const;
 export const DAMAGE_STARVE = { interval: 80, amount: 1 } as const;
 export const DAMAGE_LIGHTNING = 5;
 
+/**
+ * 药水效果的节奏与强度，照 MC 1.0 的 Potion.java 与 EntityPlayer 取值。
+ *
+ * "按等级翻倍"在原版里一律写成移位（`25 >> 等级`、`6 << 等级`），
+ * 这里保持同一个形状 —— 换成乘除会在 II 级上差出一两点，
+ * 而那正是玩家会拿去和 wiki 对照的地方。
+ */
+export const POTION = {
+  /** 中毒每这么多刻掉 1 点血，II 级减半。**毒不死人**，最低留 1 血 */
+  poisonInterval: 25,
+  /** 再生每这么多刻回 1 点血，II 级减半 */
+  regenInterval: 50,
+  /** 瞬间治疗/伤害的点数，II 级翻倍 */
+  instantAmount: 6,
+  /** 力量加的近战伤害，II 级翻倍 */
+  strengthBonus: 3,
+  /** 虚弱减的近战伤害，II 级翻倍 */
+  weaknessPenalty: 2,
+} as const;
+
 /** 1.9 之前的盔甲减伤：输出 = 输入 × (25 - 点数) / 25，即每点减 4%，上限 80% */
 export const ARMOR_DAMAGE_DIVISOR = 25;
 /** 各材质整套盔甲的护甲点数 */

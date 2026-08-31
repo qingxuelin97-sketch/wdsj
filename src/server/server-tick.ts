@@ -21,6 +21,7 @@ import { runWeatherTick } from './world/weather-tick.ts';
 import { tickItems, broadcastItems } from './entity/item-manager.ts';
 import { tickArrows } from './entity/combat.ts';
 import { tickVitals } from './player/player-vitals.ts';
+import { tickEffects } from './player/player-effects.ts';
 import { broadcastPlayers } from './player/player-sync.ts';
 import { tickPortal } from './world/portal-manager.ts';
 import { tickEndPortal } from './world/end-portal.ts';
@@ -98,6 +99,10 @@ export function runServerTick(core: ServerCore): void {
   for (const player of core.eachPlayer()) {
     core.setVitalsWorld(core.worldOf(player.dimension));
     tickVitals(player, player.vitals, core.vitalsCtx);
+    // 药水效果紧跟在生存循环之后：中毒与再生改的是同一个血量，
+    // 而抗火/水下呼吸是 tickVitals 里**查**这张表的 —— 反过来排的话，
+    // 刚喝下去的抗火要等一刻才挡得住岩浆
+    tickEffects(player, core.vitalsCtx);
   }
 
   // 传送门：站够时间就走。排在生存之后 —— 传送会换掉玩家的世界，

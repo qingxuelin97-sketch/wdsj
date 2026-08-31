@@ -85,6 +85,15 @@ export class EnchantingEntity extends BlockEntity {
  */
 export const BREW_TICKS = 400;
 
+/**
+ * 药水的物品 id。
+ *
+ * 和 enchant-actions.ts 的 BOOKSHELF_ID 一样写成常量：物品名字表在 content 层，
+ * 由服务端注入给 tickBrew 的 `resolve` 回调，方块实体自己够不着 ——
+ * 而"瓶位里是不是一瓶药水"这一条判断不值得为它把回调的签名再拓宽一个参数。
+ */
+const POTION_ITEM_ID = 373;
+
 export class BrewingEntity extends BlockEntity {
   /** 0..2 瓶位，3 材料 */
   readonly slots: ItemStack[] = Array.from({ length: 4 }, () => emptyStack());
@@ -131,7 +140,11 @@ export class BrewingEntity extends BlockEntity {
       for (let i = 0; i < 3; i++) {
         const out = this.pending[i];
         if (out === null || out === undefined) continue;
-        this.slots[i]!.damage = out;
+        const bottle = this.slots[i]!;
+        // 出货这一刻再验一次：这 400 刻里瓶子可能被换成了玻璃瓶或别的东西。
+        // 开工时验过就不管的话，同一个"改写 damage"的怪东西换个时机照样出得来
+        if (bottle.id !== POTION_ITEM_ID) continue;
+        bottle.damage = out;
       }
       this.pending = [null, null, null];
       ingredient.count--;
@@ -145,6 +158,12 @@ export class BrewingEntity extends BlockEntity {
     for (let i = 0; i < 3; i++) {
       const bottle = this.slots[i]!;
       if (isEmpty(bottle)) continue;
+      // 瓶位里必须**真的是一瓶药水**。1.0 的 TileEntityBrewingStand.canBrew()
+      // 头一句就是 `itemID == Item.potion.shiftedIndex`。少了它，把一个空玻璃瓶
+      // 塞进瓶位照样开酿：材料被吃掉，玻璃瓶的 damage 被改写成药水的 damage，
+      // 玩家手上多出一个"看着是玻璃瓶、damage 却是迅捷药水"的怪东西 ——
+      // 它堆叠不了、喝不了，而且会一路写进存档
+      if (bottle.id !== POTION_ITEM_ID) continue;
       const out = resolve(bottle.damage, ingredient.id);
       if (out === null || out === bottle.damage) continue;
       next[i] = out;

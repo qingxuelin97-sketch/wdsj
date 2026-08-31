@@ -24,6 +24,8 @@ import {
 import {
   countBookshelves, targetOf, enchantabilityOf,
 } from '../../src/server/player/enchant-actions.ts';
+import { dropOf } from '../../src/server/player/inventory-actions.ts';
+import { Enchantment } from '../../src/core/item/enchantment.ts';
 import { EnchantTarget } from '../../src/core/item/enchantment.ts';
 import {
   AWKWARD_POTION, WATER_BOTTLE, readPotion, Effect,
@@ -217,6 +219,34 @@ test('附魔性：金最高、石头最低 —— MC 的反直觉设定', () => 
   assert.equal(e(Items.STONE_SWORD), 5);
 });
 
+test('附魔性：盔甲是**另一套数**，不能套工具的', () => {
+  const r = makeRig();
+  const e = (name: string): number => enchantabilityOf(r.core, items.idOf(name));
+
+  // 1.0 的 EnumArmorMaterial：皮革 15 / 铁 9 / 金 25 / 钻石 10
+  assert.equal(e(Items.LEATHER_CHESTPLATE), 15);
+  assert.equal(e(Items.IRON_CHESTPLATE), 9, '铁甲套了工具的 14');
+  assert.equal(e(Items.GOLDEN_CHESTPLATE), 25, '金甲套了工具的 22');
+  assert.equal(e(Items.DIAMOND_CHESTPLATE), 10);
+
+  // 四个部位都一样，别只改对了胸甲
+  for (const n of [Items.IRON_HELMET, Items.IRON_LEGGINGS, Items.IRON_BOOTS]) {
+    assert.equal(e(n), 9, `${n} 的附魔性不对`);
+  }
+  for (const n of [Items.GOLDEN_HELMET, Items.GOLDEN_LEGGINGS, Items.GOLDEN_BOOTS]) {
+    assert.equal(e(n), 25, `${n} 的附魔性不对`);
+  }
+
+  // 同材质的工具不受影响 —— 这两套数必须是分开的，不是整体挪了一下
+  assert.equal(e(Items.IRON_PICKAXE), 14);
+  assert.equal(e(Items.GOLDEN_PICKAXE), 22);
+  // 金甲 25 是全表最高，比金工具还高
+  assert.ok(
+    e(Items.GOLDEN_CHESTPLATE) > e(Items.GOLDEN_SWORD),
+    '"金装最好附魔"在金甲身上该是最极端的一处',
+  );
+});
+
 // --- 酿造台 ---
 
 test('右键酿造台开出酿造界面', () => {
@@ -308,4 +338,117 @@ test('附了魔的物品不与别的堆合并 —— 合并会吞掉三十级的
   const c = cloneStack(a);
   c.enchantments![0]!.level = 99;
   assert.equal(a.enchantments[0]!.level, 3, 'cloneStack 是浅拷的');
+});
+
+test('瓶位里不是药水就不该开酿 —— 玻璃瓶不会变成"damage 是迅捷"的怪东西', () => {
+  const r = makeRig();
+  const w = r.core.world;
+  w.setBlock(2, 71, 0, STAND);
+  const stand = w.blockEntities.get(2, 71, 0) as BrewingEntity;
+  const bottleId = items.idOf(Items.GLASS_BOTTLE);
+  // 0 号位是空玻璃瓶，1 号位是正经水瓶 —— 一炉里混着放，
+  // 校验漏了的话两格会一起被改写
+  stand.slots[0] = makeStack(bottleId, 1, 0);
+  stand.slots[1] = makeStack(items.idOf(Items.POTION), 1, WATER_BOTTLE);
+  stand.slots[3] = makeStack(items.idOf(Items.NETHER_WART), 2);
+
+  for (let i = 0; i < BREW_TICKS + 5; i++) r.core.tick();
+
+  assert.equal(stand.slots[0]!.id, bottleId, '玻璃瓶被换成了别的东西');
+  assert.equal(stand.slots[0]!.damage, 0, '玻璃瓶的 damage 被改写成了药水的 damage');
+  assert.equal(stand.slots[1]!.damage, AWKWARD_POTION, '旁边那瓶正经水瓶该照常酿好');
+});
+
+test('整台只有玻璃瓶时一动不动，材料一份都不吃', () => {
+  const r = makeRig();
+  const w = r.core.world;
+  w.setBlock(2, 71, 0, STAND);
+  const stand = w.blockEntities.get(2, 71, 0) as BrewingEntity;
+  for (let i = 0; i < 3; i++) stand.slots[i] = makeStack(items.idOf(Items.GLASS_BOTTLE), 1, 0);
+  stand.slots[3] = makeStack(items.idOf(Items.NETHER_WART), 3);
+
+  for (let i = 0; i < BREW_TICKS + 5; i++) r.core.tick();
+  assert.equal(stand.brewTime, 0, '装的全是玻璃瓶却开工了');
+  assert.equal(stand.slots[3]!.count, 3, '酿不出来却把下界疣吃了');
+  for (let i = 0; i < 3; i++) assert.equal(stand.slots[i]!.damage, 0);
+});
+
+test('酿到一半把药水换成玻璃瓶：出货那一刻不该写进去', () => {
+  const r = makeRig();
+  const w = r.core.world;
+  w.setBlock(2, 71, 0, STAND);
+  const stand = w.blockEntities.get(2, 71, 0) as BrewingEntity;
+  stand.slots[0] = makeStack(items.idOf(Items.POTION), 1, WATER_BOTTLE);
+  stand.slots[3] = makeStack(items.idOf(Items.NETHER_WART), 1);
+  for (let i = 0; i < 100; i++) r.core.tick();
+  assert.ok(stand.brewTime > 0, '没开工，这条测的是开工之后的事');
+
+  // 开工时验过了就不管的话，同一个怪东西换个时机照样出得来
+  stand.slots[0] = makeStack(items.idOf(Items.GLASS_BOTTLE), 1, 0);
+  for (let i = 0; i < BREW_TICKS + 5; i++) r.core.tick();
+  assert.equal(stand.slots[0]!.damage, 0, '出货把粗制药水的 damage 写到玻璃瓶上了');
+});
+
+test('水瓶 + 发酵蛛眼真的在台子上酿出虚弱药水 —— 不用去下界的那条路', () => {
+  const r = makeRig();
+  const w = r.core.world;
+  w.setBlock(2, 71, 0, STAND);
+  const stand = w.blockEntities.get(2, 71, 0) as BrewingEntity;
+  stand.slots[0] = makeStack(items.idOf(Items.POTION), 1, WATER_BOTTLE);
+  stand.slots[3] = makeStack(items.idOf(Items.FERMENTED_SPIDER_EYE), 1);
+
+  for (let i = 0; i < BREW_TICKS + 5; i++) r.core.tick();
+  assert.equal(
+    readPotion(stand.slots[0]!.damage).effect, Effect.WEAKNESS,
+    '水瓶 + 发酵蛛眼没酿出虚弱 —— 没去过下界的玩家一瓶药也做不出来',
+  );
+  assert.equal(stand.slots[3]!.count, 0, '材料该被消耗掉');
+});
+
+test('挖萤石掉 2–4 个萤石粉 —— 不然整条二级药水的路是断的', () => {
+  const r = makeRig();
+  const glowstone = registry.idOf(Blocks.GLOWSTONE);
+  const dust = items.idOf(Items.GLOWSTONE_DUST);
+
+  // 徒手就能挖（1.0 的萤石不要求工具）
+  const counts = new Set<number>();
+  for (let i = 0; i < 400; i++) {
+    const d = dropOf(r.core, glowstone, r.player);
+    assert.ok(d !== null, '挖萤石什么都没掉');
+    assert.equal(d.id, dust, '萤石掉的是方块自己，萤石粉全游戏拿不到');
+    counts.add(d.count);
+  }
+  assert.deepEqual([...counts].sort((a, b) => a - b), [2, 3, 4], `件数分布不对：${[...counts]}`);
+
+  // 精准采集拿回方块本身
+  const silk = makeStack(items.idOf(Items.DIAMOND_PICKAXE), 1);
+  silk.enchantments = [{ id: Enchantment.SILK_TOUCH, level: 1 }];
+  const held = r.player.inventory.held;
+  held.id = silk.id;
+  held.count = 1;
+  held.enchantments = silk.enchantments;
+  const s2 = dropOf(r.core, glowstone, r.player);
+  assert.equal(s2?.id, glowstone, '精准采集该掉萤石方块本身');
+  assert.equal(s2?.count, 1);
+});
+
+test('萤石粉拿得到，二级药水这条路才通', () => {
+  const r = makeRig();
+  const w = r.core.world;
+  w.setBlock(2, 71, 0, STAND);
+  const stand = w.blockEntities.get(2, 71, 0) as BrewingEntity;
+  // 挖萤石 -> 萤石粉 -> 增强药水，整条接起来跑一遍
+  const drop = dropOf(r.core, registry.idOf(Blocks.GLOWSTONE), r.player);
+  assert.ok(drop !== null && drop.count >= 2);
+  stand.slots[0] = makeStack(items.idOf(Items.POTION), 1, WATER_BOTTLE);
+  stand.slots[3] = makeStack(items.idOf(Items.NETHER_WART), 1);
+  for (let i = 0; i < BREW_TICKS + 2; i++) r.core.tick();
+  stand.slots[3] = makeStack(items.idOf(Items.SUGAR), 1);
+  for (let i = 0; i < BREW_TICKS + 2; i++) r.core.tick();
+  // 用刚挖到的那一堆萤石粉
+  stand.slots[3] = makeStack(drop.id, drop.count);
+  for (let i = 0; i < BREW_TICKS + 2; i++) r.core.tick();
+  const p = readPotion(stand.slots[0]!.damage);
+  assert.equal(p.effect, Effect.SPEED);
+  assert.equal(p.upgraded, true, '挖来的萤石粉没能把药水升到二级');
 });

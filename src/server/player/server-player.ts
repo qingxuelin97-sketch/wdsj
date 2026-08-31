@@ -14,6 +14,7 @@ import type { ServerWorld } from '../world/server-world.ts';
 import { DEFAULT_RENDER_DISTANCE, SEA_LEVEL, MAX_HEALTH } from '../../core/constants.ts';
 import type { BlockEntity } from '../world/block-entity.ts';
 import { PlayerVitals } from './player-vitals.ts';
+import { PlayerEffects } from './player-effects.ts';
 import { Experience } from './experience.ts';
 import { Dimension, type DimensionId } from '../../core/world/dimension.ts';
 
@@ -45,6 +46,11 @@ export class ServerPlayer {
    * 血量本身在 M10 就打通了（生物要能打到人），M12 把整套循环接上。
    */
   readonly vitals = new PlayerVitals();
+  /**
+   * 身上的药水效果。与 vitals 并列而不是塞进它：vitals 是"身体本身"，
+   * 效果是"临时加在身体上的修正"，而且效果要单独存进 player.dat。
+   */
+  readonly effects = new PlayerEffects();
   /** 经验等级与进度 */
   readonly xp = new Experience();
   /** 上一次报上来的位置里，下落的最高点。摔落伤害按它算 */

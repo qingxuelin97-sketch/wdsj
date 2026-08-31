@@ -20,6 +20,7 @@ import {
   type NbtValue,
 } from '../../core/nbt/nbt.ts';
 import { emptyStack, type ItemStack } from '../../core/item/item-def.ts';
+import type { SavedEffect } from '../player/player-effects.ts';
 import { stacksToNbt, nbtToStacks } from '../world/block-entity.ts';
 
 /** 存档格式版本。布局一改就 +1 */
@@ -89,6 +90,13 @@ export interface PlayerSaveData {
   xpLevel: number;
   xpProgress: number;
   xpTotal: number;
+  /**
+   * 身上的药水效果。
+   *
+   * 不存的话，喝下一瓶三分钟的抗火再存盘退出，回来时人还站在岩浆边上
+   * 却已经没有保护了 —— 而玩家手里那瓶药早就没了。
+   */
+  effects: SavedEffect[];
 }
 
 export class WorldSave {
@@ -344,6 +352,12 @@ export class WorldSave {
         xpLevel: getInt(root, 'XpLevel'),
         xpProgress: getInt(root, 'XpProgress'),
         xpTotal: getInt(root, 'XpTotal'),
+        // 老存档没有这一项，读成"身上什么效果都没有"
+        effects: getList(root, 'ActiveEffects').map((e) => ({
+          id: getInt(e, 'Id'),
+          amplifier: getInt(e, 'Amplifier'),
+          ticks: getInt(e, 'Duration'),
+        })),
       };
     } catch {
       return null;
@@ -366,6 +380,12 @@ export class WorldSave {
       XpLevel: nbt.int(p.xpLevel),
       XpProgress: nbt.int(p.xpProgress),
       XpTotal: nbt.int(p.xpTotal),
+      // 字段名同样照抄 MC 的 player.dat（ActiveEffects: Id/Amplifier/Duration）
+      ActiveEffects: nbt.list(TagType.COMPOUND, p.effects.map((e) => nbt.compound({
+        Id: nbt.byte(e.id),
+        Amplifier: nbt.byte(e.amplifier),
+        Duration: nbt.int(e.ticks),
+      }))),
     })));
   }
 }

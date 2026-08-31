@@ -23,6 +23,7 @@ import { isEmpty } from '../../core/item/item-def.ts';
 import { stateId } from '../../core/world/chunk.ts';
 import { S_EnchantOffers } from '../../core/net/packets.ts';
 import { syncInventory } from './inventory-actions.ts';
+import { sendVitals } from '../entity/combat.ts';
 
 /**
  * 数附魔台周围的书架。
@@ -125,6 +126,10 @@ export function selectEnchantment(
   // markBlockEntityDirty 会给每个正看着它的人重抄一遍并重发
   core.markBlockEntityDirty(entity);
   syncInventory(core, player);
+  // 等级刚被扣掉，得把新的发过去。不发的话 HUD 上还是旧数字，
+  // 而附魔台会照着旧等级把下一轮报价画成"买得起"——
+  // 玩家点下去才发现不够，看着像服务端赖账
+  sendVitals(player);
   sendOffers(player, entity);
   return true;
 }
@@ -153,18 +158,40 @@ export function targetOf(core: ServerCore, itemId: number): EnchantTargetKind | 
 }
 
 /**
- * 物品材质的附魔性。MC 的数：木 15 / 石 5 / 铁 14 / 钻石 10 / 金 22 / 皮革 15。
+ * 物品材质的附魔性。
  *
- * 金最高是 MC 一个著名的反直觉设定 —— 金装很脆，但附魔起来最好。
+ * **工具和盔甲是两套数，不能共用一张表。** 1.0 里它们分别写在
+ * `EnumToolMaterial` 与 `EnumArmorMaterial` 两个枚举的最后一个字段上：
+ *
+ *   工具：木 15 / 石 5 / 铁 14 / 金 22 / 钻石 10
+ *   盔甲：皮革 15 / 锁链 12 / 铁 9 / 金 25 / 钻石 10
+ *
+ * 有两处对不上，原来这里两处都套了工具的数：
+ *
+ *   - **铁甲是 9，不是 14。** 套成 14 的话铁甲比原版好附一大截，
+ *     "铁甲将就着用、要附魔得攒钻石"这个前中期的动力就没了
+ *   - **金甲是 25，不是 22。** 25 是全表最高 —— "金装很脆但附魔起来最好"
+ *     这个著名的反直觉设定，在金**甲**身上恰恰是最极端的一处，
+ *     套成工具的 22 就把它抹平了
+ *
+ * 木和石只有工具、锁链只有盔甲，各自那一档没有歧义。钻石两边都是 10。
+ *
+ * 按 `armorSlot` 判而不是看名字里有没有 helmet / chestplate：与 targetOf 用的是
+ * 同一个字段，两处保持一致；名字判法在这个文件里已经失手过一次（见 targetOf）。
+ *
+ * 兜底的 1 主要是给弓的（1.0 的 `ItemBow.getItemEnchantability` 返回 1）。
  */
 export function enchantabilityOf(core: ServerCore, itemId: number): number {
-  const name = core.items.get(itemId)?.name ?? '';
-  if (name.startsWith('golden_')) return 22;
+  const def = core.items.get(itemId);
+  const name = def?.name ?? '';
+  // 注意是 !== null 不是 !== undefined，理由同 targetOf
+  const armor = def !== undefined && def.armorSlot !== null;
+  if (name.startsWith('golden_')) return armor ? 25 : 22;
   if (name.startsWith('wooden_')) return 15;
   if (name.startsWith('leather_')) return 15;
   if (name.startsWith('stone_')) return 5;
   if (name.startsWith('chainmail_')) return 12;
-  if (name.startsWith('iron_')) return 14;
+  if (name.startsWith('iron_')) return armor ? 9 : 14;
   if (name.startsWith('diamond_')) return 10;
   return 1;
 }

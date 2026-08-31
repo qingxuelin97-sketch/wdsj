@@ -37,7 +37,22 @@ const DROP_OVERRIDE: Record<number, number> = {
   21: 351, // 青金石矿 -> 青金石（染料）
   56: 264, // 钻石矿 -> 钻石
   73: 331, // 红石矿 -> 红石
+  89: 348, // 萤石 -> 萤石粉
   110: 3,  // 菌丝 -> 泥土
+};
+
+/**
+ * 一次掉好几件的方块：`方块id -> [最少, 最多]`，含两端。查不到的一律掉 1 件。
+ *
+ * 单开一张只管数量的小表，而不是把 DROP_OVERRIDE 改成 `[物品, 数量]`：
+ * 那张表七条里只有萤石要数量，改结构等于把七行全动一遍。
+ *
+ * 萤石在 1.0 掉 2–4 个萤石粉（BlockGlowStone.quantityDropped），而萤石粉是
+ * 酿造里"药水升二级"的唯一材料。掉方块自己的话，萤石粉全游戏只能靠
+ * 四合一那条反向合成拿 —— 而那需要先有萤石粉，于是整条二级药水的路是断的。
+ */
+const DROP_COUNT: Record<number, readonly [number, number]> = {
+  89: [2, 4],
 };
 
 /**
@@ -60,13 +75,18 @@ export function dropOf(core: ServerCore, blockId: number, player: ServerPlayer):
   // 这才是它的全部意义 —— 圆石谁都挖得到，玩家要的是**石头本身**
   if (alt !== undefined && hasSilkTouch(held)) return makeStack(blockId, 1);
 
+  // 一次掉几件。表里没有的方块**一次随机数都不摸** —— 世界随机源是共用的，
+  // 白摇会让后面所有依赖它的序列错位
+  const span = DROP_COUNT[blockId];
+  const base = span === undefined ? 1 : span[0] + world.random.nextInt(span[1] - span[0] + 1);
+
   // 时运：只对"掉的不是自己"的那几种矿生效。
   // 对石头/草方块这类也翻倍的话，一镐下去能出四块圆石 —— 原版没有这回事
   const isOre = alt !== undefined && ORE_BLOCKS.has(blockId);
   const count = isOre
     ? fortuneMultiplier(held, (bound) => world.random.nextInt(bound))
     : 1;
-  return makeStack(alt ?? blockId, count);
+  return makeStack(alt ?? blockId, base * count);
 }
 
 /**

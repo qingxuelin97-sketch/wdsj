@@ -15,6 +15,7 @@ import type { ServerPlayer } from './server-player.ts';
 import type { ServerWorld } from '../world/server-world.ts';
 import { stateId } from '../../core/world/chunk.ts';
 import { consumesAir } from '../../core/item/enchant-effects.ts';
+import { Effect } from '../../core/craft/brewing.ts';
 import {
   MAX_HEALTH, MAX_HUNGER, EXHAUSTION_PER_UNIT, EXHAUSTION,
   REGEN_MIN_HUNGER, REGEN_INTERVAL, AIR_SUPPLY_TICKS,
@@ -135,6 +136,14 @@ export interface VitalsContext {
   armorPoints(player: ServerPlayer): number;
   /** 掉血（已经过护甲），负责广播与死亡处理 */
   hurt(player: ServerPlayer, amount: number, kind: DamageKind): void;
+  /**
+   * 把血量/饥饿推给客户端。
+   *
+   * 掉血那条路自己会推（damagePlayer 末尾），但**回血**没有别的出口 ——
+   * 再生药水回了血却不推的话，血条要等到下一次挨打才跳，
+   * 玩家会以为这瓶药水没生效。
+   */
+  sync(player: ServerPlayer): void;
 }
 
 /**
@@ -190,9 +199,13 @@ export function tickVitals(player: ServerPlayer, v: PlayerVitals, ctx: VitalsCon
   // --- 溺水：头在水里就憋气，憋完开始掉血 ---
   const headInWater = (tables.isWater[headId] ?? 0) !== 0;
   if (headInWater) {
-    // 水下呼吸：摇中就这一刻不扣氧气。逐刻判定而不是"把总时长乘以倍数"，
+    // 水下呼吸药水：整条氧气链**直接跳过**。这是这瓶药唯一的作用，
+    // 少了这一句它就只是个占格子的东西
+    const breathing = player.effects.has(Effect.WATER_BREATHING);
+    // 呼吸附魔：摇中就这一刻不扣氧气。逐刻判定而不是"把总时长乘以倍数"，
     // 与原版一致 —— 结果的期望是 ×(等级+1)，呼吸 III 大约 60 秒
-    if (consumesAir(player.inventory.armorAt(0), (n: number) => world.random.nextInt(n))) v.air--;
+    if (!breathing
+      && consumesAir(player.inventory.armorAt(0), (n: number) => world.random.nextInt(n))) v.air--;
     if (v.air < 0) {
       v.air = 0;
       if (v.due('drown', DAMAGE_DROWN.interval)) {
@@ -208,9 +221,15 @@ export function tickVitals(player: ServerPlayer, v: PlayerVitals, ctx: VitalsCon
   // 按整个身体判，不是只看脚下那一格 —— 见 bodyHas 的注释。
   // 10/11 是流动/静止岩浆
   const inLava = bodyHas((id) => id === 10 || id === 11);
+  // 抗火药水：只挡**伤害**，人照样在烧（fireTicks 照常涨）。
+  // MC 也是这样 —— 身上带着火焰特效却不掉血，那一下的反差正是这瓶药的卖点。
+  // 连着火一起挡掉的话，玩家看不出自己到底有没有喝对药
+  const fireproof = player.effects.has(Effect.FIRE_RESISTANCE);
   if (inLava) {
     v.fireTicks = Math.max(v.fireTicks, 300);
-    if (v.due('lava', DAMAGE_LAVA.interval)) ctx.hurt(player, DAMAGE_LAVA.amount, DamageKind.FIRE);
+    if (!fireproof && v.due('lava', DAMAGE_LAVA.interval)) {
+      ctx.hurt(player, DAMAGE_LAVA.amount, DamageKind.FIRE);
+    }
   }
   // 火同理：站在火苗边上、火在膝盖高度时照样该着火
   if (bodyHas((id) => id === 51)) {
@@ -220,7 +239,9 @@ export function tickVitals(player: ServerPlayer, v: PlayerVitals, ctx: VitalsCon
     v.fireTicks--;
     // 站在水里会灭火
     if (headInWater || bodyHas((id) => (tables.isWater[id] ?? 0) !== 0)) v.fireTicks = 0;
-    else if (v.due('fire', DAMAGE_FIRE.interval)) ctx.hurt(player, DAMAGE_FIRE.amount, DamageKind.FIRE);
+    else if (!fireproof && v.due('fire', DAMAGE_FIRE.interval)) {
+      ctx.hurt(player, DAMAGE_FIRE.amount, DamageKind.FIRE);
+    }
   }
 
   // --- 仙人掌 ---
