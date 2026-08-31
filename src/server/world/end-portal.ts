@@ -147,7 +147,13 @@ export function tickEndPortal(core: ServerCore, player: ServerPlayer): void {
 /** 送进末地。落点固定在原点上方，与 MC 一致 */
 export function enterTheEnd(core: ServerCore, player: ServerPlayer): void {
   const end = core.worldOf(Dimension.END);
-  end.forceChunk(0, 0);
+  // 2×2 个区块，不是一个。平台跨 x=-2..2 / z=-2..2，
+  // 而原点那一格在区块 (0,0) 的角上 —— 只 force (0,0) 的话
+  // 平台有一半落在没加载的区块里，setBlock 静默失败，
+  // 铺出来是个缺角的台子
+  for (let cx = -1; cx <= 0; cx++) {
+    for (let cz = -1; cz <= 0; cz++) end.forceChunk(cx, cz);
+  }
   // 落点下面铺一小块黑曜石平台。MC 也铺 —— 不铺的话第一次进末地
   // 有相当概率直接掉进虚空，而那看起来像传送坏了
   const obsidian = packState(core.registry.idOf(Blocks.OBSIDIAN));

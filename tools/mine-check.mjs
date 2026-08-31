@@ -37,6 +37,17 @@ const HEADLESS = !process.argv.includes('--head');
 const SEED = 20261118;
 const URL = `http://127.0.0.1:${PORT}/?test=mine&seed=${SEED}&radius=3`
   + '&persist=0&randomTicks=0&particles=0'
+  // 关自然刷怪。
+  //
+  // 这一项验的是**光照、矿物分布、工具分级、岩浆致命、活着回来**，
+  // 名单里没有战斗 —— 熬过怪是闸门①的事，那边有火把、掩体和一整夜。
+  // 开着的话，Y=12 的黑暗矿洞里随时会刷出僵尸，玩家一路被打到残血，
+  // 于是"泡岩浆掉了多少血"量到的是"死在半路"，而失败信息会指向岩浆。
+  // 实测就是这么被误导的：血 20 -> 14 -> 0，全程 body=air、fire=0。
+  //
+  // 而且它让这一项变成随机失败的 —— 规约明写着"一个 flaky 的测试
+  // 比没有测试更糟"
+  + '&mobs=0'
   // 指令超时调到 30 秒。这一项要连发十几条 fillbox/getblock，
   // 而软件渲染的机器（无 GPU 的 CI 容器）帧时间能到 160ms，
   // 默认的 8 秒会一条条撞上去 —— 报 "指令超时: getblock ..."，
@@ -230,6 +241,20 @@ try {
     if (diamond === '') fail('挖穿了钻石矿却没捡到钻石：' + (await m.command('inv')).text);
     else ok('拿到钻石：' + diamond);
 
+    // **挖完就查一次血。**
+    //
+    // 不查的话，玩家在这一段里死掉（摔进洞、被怪打、被填方块闷住）
+    // 要等三步之后的岩浆判定才暴露，而那时的失败信息是
+    // "在岩浆里泡了一秒多只掉了 0 点血（0 -> 0）" —— 看着像伤害判定坏了，
+    // 实际是人早就死了。真在这里查过一次，就是这么发现的。
+    const hpAfterMining = m.vitals().health;
+    if (hpAfterMining <= 0) {
+      fail('挖完钻石人已经死了（血 ' + hpAfterMining + '）—— 后面的岩浆判定无从谈起。'
+        + '服务端 ' + (await m.command('pos')).text);
+    } else {
+      ok('挖完钻石还活着：血 ' + hpAfterMining);
+    }
+
     return { notes, ironOk, woodTry };
   `);
 
@@ -294,7 +319,9 @@ try {
       + (sx+2) + ' ' + deepY + ' ' + (sz+9) + ' stone');
     await m.command('fillbox ' + (sx-1) + ' ' + deepY + ' ' + (sz+6) + ' '
       + (sx+1) + ' ' + deepY + ' ' + (sz+8) + ' lava');
+    ok('填池子之前：血 ' + m.vitals().health + '｜' + (await m.command('pos')).text);
     await m.waitForIdle();
+    ok('填完池子：血 ' + m.vitals().health + '｜' + (await m.command('pos')).text);
     // 岩浆池到底摆上没有 —— 先把它读出来再说
     const poolRow = async (tag) => {
       const cells = [];
@@ -311,42 +338,82 @@ try {
     await m.command('tp ' + (sx + 0.5) + ' ' + (deepY + 1) + ' ' + (sz + 3.5));
     m.attachPlayer(sx + 0.5, deepY + 1, sz + 3.5);
     await m.waitForIdle();
-    const hpBefore = m.vitals().health;
+    const hpAtPoolEdge = m.vitals().health;
+    ok('站到池边：血 ' + hpAtPoolEdge + '｜' + (await m.command('pos')).text);
+    if (hpAtPoolEdge <= 0) {
+      fail('还没下岩浆人就已经死了（血 ' + hpAtPoolEdge + '）。服务端 '
+        + (await m.command('pos')).text);
+      return { notes };
+    }
 
     // 踩进岩浆：y 取 deepY，脚就在岩浆那一格里
     await m.command('tp ' + (sx + 0.5) + ' ' + deepY + ' ' + (sz + 7));
     m.attachPlayer(sx + 0.5, deepY, sz + 7);
 
-    // **先确认人真的站在岩浆里，再开始泡。**
+    // **先确认人真的泡在岩浆里，再开始计时。**
     //
     // 不确认的话，"没掉血"有两种完全不同的原因 —— 岩浆不致命（代码错了）、
     // 或者人根本不在岩浆里（场景错了）—— 而失败信息长得一模一样。
-    // 这一项之前正是卡在这里：报出来像是伤害判定坏了，实际是人掉下去了。
-    for (let i = 0; i < 10; i++) await new Promise(r => requestAnimationFrame(r));
+    //
+    // 只等**一帧**。原来等 10 帧，在 4fps 的容器里就是 2.5 秒 = 50 刻，
+    // 而岩浆每 10 刻 4 点 —— 人在"开始泡"之前就已经被烧死了，
+    // 报出来是"0 刻掉了 20 点血"。等待的长度必须按刻算，不能按帧。
+    await new Promise(r => requestAnimationFrame(r));
     const standing = (await m.command('pos')).text;
-    if (!standing.includes('feet=lava')) {
+    // 正则里的反斜杠要写两个 ——**这一整段在一个模板字符串里**，
+    // 模板字符串会把单个反斜杠吃掉，浏览器实际拿到的是 /body=(S+)/，
+    // 匹配不到任何东西。文件头上那条"注释里不能出现反引号"是同一类坑。
+    const bodyField = (standing.match(/body=(\\S+)/) ?? [])[1] ?? '';
+    if (!bodyField.split('/').includes('lava')) {
       // 人不在岩浆里有两种可能：人掉下去了，或者岩浆变了。
-      // 再读一次池子就能分开这两件事 —— 少了这一步，
-      // 两种完全不同的原因会长成同一条失败信息
+      // 再读一次池子就能分开这两件事
       await poolRow('失败时池子:');
-      fail('人没能站在岩浆里，后面的掉血判定无从谈起。服务端 ' + standing
+      fail('人没能泡在岩浆里，后面的掉血判定无从谈起。服务端 ' + standing
         + '（岩浆没有碰撞盒，池子底下必须有实心方块托着，否则会直接穿过去）');
       return { notes };
     }
 
-    for (let i = 0; i < 70; i++) await new Promise(r => requestAnimationFrame(r));
+    // 基准血量在**确认泡进去之后**才取。取早了的话，从传送到确认之间
+    // 挨的那几下会算不进去，看起来像"岩浆伤害偏低"
+    const hpBefore = m.vitals().health;
+
+    // 按**服务端刻**计时，不是客户端物理刻，更不是帧。
+    //
+    // 三者在慢机器上完全不是一回事：帧最慢（4fps）；客户端物理刻被
+    // clock.dt 的 0.1 秒上限截断，一帧最多补 2 刻；而服务端在自己的
+    // SAB 时钟上跑满 20 TPS，不受任何影响 —— 而**伤害是服务端算的**。
+    // 用客户端刻计的话，"泡 16 刻"实际是 40 个服务端刻，
+    // 报出来是"16 刻掉了 20 点血"，看着像岩浆伤害高了两倍。
+    const serverTick = () => {
+      const sh = m.sharedStats();
+      return sh === null ? m.playerState().ticks : sh.serverTicks;
+    };
+    const t0Ticks = serverTick();
+    // 泡 15 刻。MC 的岩浆是**每 10 刻 4 点**，15 刻正好一到两下 ——
+    // 足够证明"岩浆致命"，又留得下命走到水边。
+    //
+    // 原来取 25 刻，实测掉 10 点、出来带着火再烧掉 5 点，只剩 5 血 ——
+    // 只要火多烧一下就死，于是"活着回来"那一条时过时不过。
+    // 一个时红时绿的验收比没有验收更糟
+    const SOAK_TICKS = 15;
+    for (let i = 0; i < 600; i++) {
+      await new Promise(r => requestAnimationFrame(r));
+      if (serverTick() - t0Ticks >= SOAK_TICKS) break;
+      if (m.vitals().health <= 0) break;
+    }
+    const soaked = serverTick() - t0Ticks;
     const hpInLava = m.vitals().health;
     const lost = hpBefore - hpInLava;
     await poolRow('泡完之后:');
-    // MC 1.0：岩浆每 10 刻 4 点。一秒多下来该掉两位数，
+    // MC 1.0：岩浆每 10 刻 4 点，15 刻就是一到两下。
     // 只掉一两点说明玩家其实没真的在岩浆里
-    if (lost < 6) {
+    if (lost < 4) {
       const st = m.playerState();
-      fail('在岩浆里泡了一秒多只掉了 ' + lost + ' 点血（' + hpBefore + ' -> ' + hpInLava
+      fail('在岩浆里泡了 ' + soaked + ' 刻只掉了 ' + lost + ' 点血（' + hpBefore + ' -> ' + hpInLava
         + '）。客户端 ' + JSON.stringify(st)
         + ' | 服务端 ' + (await m.command('pos')).text);
     } else {
-      ok('岩浆致命：一秒多掉了 ' + lost + ' 点血（' + hpBefore + ' -> ' + hpInLava + '）');
+      ok('岩浆致命：' + soaked + ' 刻掉了 ' + lost + ' 点血（' + hpBefore + ' -> ' + hpInLava + '）');
     }
 
     // 跳进水里灭火 —— 真玩家就是这么活下来的。

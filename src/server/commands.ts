@@ -182,9 +182,18 @@ value: Record<string, unknown>,
         // 11.9999996 照样显示成 "12.000000"，而判定用的 Math.floor 得到的是 11。
         // 于是"服务端说我在 12，脚下却是 12 下面那格的方块"，
         // 看着像同一格读出两种结果。真正该打的是判定实际用的那个整数。
+        // body= 是**伤害判定实际看的那一串格子**（从 floor(y+0.01) 扫到
+        // 头顶）。只打 feet= 会骗人：站在岩浆池底上时 y 是 11.9999996，
+        // feet 读到的是池底那块石头，而人整个泡在岩浆里 ——
+        // 闸门②卡了很久就是因为诊断信息本身与判定对不上
+        const y0 = Math.floor(player.y + 0.01);
+        const y1 = Math.floor(player.y + 1.8 - 0.01);
+        const body: string[] = [];
+        for (let y = y0; y <= y1; y++) body.push(nameAt(bx, y, bz));
         reply(true, `${player.x.toFixed(2)},${player.y.toFixed(6)},${player.z.toFixed(2)}`
           + ` blk=${bx},${fy},${bz}`
           + ` feet=${nameAt(bx, fy, bz)} head=${nameAt(bx, Math.floor(player.y + 1.62), bz)}`
+          + ` body=${body.join('/')}`
           + ` hp=${player.vitals.health} fire=${player.vitals.fireTicks}`);
         return;
       }

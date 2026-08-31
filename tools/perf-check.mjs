@@ -86,6 +86,10 @@ try {
   const deadline = Date.now() + totalMs;
   while (Date.now() < deadline) {
     const s = await page.evaluate(`
+      // 页面可能在采样期间崩掉（软件渲染 + 内存受限的容器上跑十分钟
+      // 确实会）。**这本身就是一条要报出来的结果**，所以不能让它
+      // 变成一个看不懂的 "Cannot read properties of undefined"
+      if (!window.__mc) return { dead: true };
       // 走一小段路，静止不动量出来的帧率没有意义 —— 网格化与区块流送
       // 是最大的开销，而站着不动这两样都不发生
       await window.__mc.press('KeyW', ${Math.min(step - 500, 3000)});
@@ -97,10 +101,16 @@ try {
         tickCentiMs: sh === null ? -1 : sh.tickCentiMs,
       };
     `);
+    if (s.dead === true) {
+      failures.push(`页面在第 ${Math.round((totalMs - (deadline - Date.now())) / 1000)} 秒崩溃或重载了`
+        + `（已采到 ${samples.length} 个样本）`);
+      break;
+    }
     samples.push(s);
     await new Promise((r) => setTimeout(r, 500));
   }
 
+  if (samples.length === 0) throw new Error('一个样本都没采到');
   const med = (xs) => {
     const a = [...xs].sort((x, y) => x - y);
     return a[Math.floor(a.length / 2)] ?? 0;

@@ -157,6 +157,29 @@ export function tickVitals(player: ServerPlayer, v: PlayerVitals, ctx: VitalsCon
   const headId = idAt(bx, headY, bz);
   const feetId = idAt(bx, feetY, bz);
 
+  /**
+   * 身体**任意一格**是不是某种方块。
+   *
+   * 只看 `floor(y)` 那一格是不够的，而且错法很隐蔽：玩家站在岩浆池
+   * 底上时，脚下有实心方块托着，y 会停在 11.9999996 —— `floor` 得到 11，
+   * 也就是**池底那块石头**，于是"在岩浆里"判定为假，人整个泡在岩浆里
+   * 却不再掉血。闸门②卡了很久就是这个（诊断信息里 `y=12.000000` 而
+   * `blk=…,11,…`，两个数看着矛盾，其实是 toFixed 四舍五入把它藏起来了）。
+   *
+   * MC 的判据是**碰撞盒与流体相交**。这里按身高扫一遍所占的格子，
+   * 语义相同而代价只有两三次查表。
+   */
+  const bodyHas = (pred: (id: number) => boolean): boolean => {
+    // 从脚下那一格扫到头顶那一格。+0.01 吸收浮点：贴着方块顶面站着时
+    // y 可能是 11.9999996，那一格其实已经不属于身体
+    const y0 = Math.floor(player.y + 0.01);
+    const y1 = Math.floor(player.y + PLAYER_HEIGHT - 0.01);
+    for (let y = y0; y <= y1; y++) {
+      if (pred(idAt(bx, y, bz))) return true;
+    }
+    return false;
+  };
+
   // --- 虚空 ---
   if (player.y < -8 && v.due('void', DAMAGE_VOID.interval)) {
     ctx.hurt(player, DAMAGE_VOID.amount, DamageKind.BYPASS_ARMOR);
@@ -178,18 +201,22 @@ export function tickVitals(player: ServerPlayer, v: PlayerVitals, ctx: VitalsCon
   }
 
   // --- 岩浆与火 ---
-  const inLava = feetId === 10 || feetId === 11;
+  //
+  // 按整个身体判，不是只看脚下那一格 —— 见 bodyHas 的注释。
+  // 10/11 是流动/静止岩浆
+  const inLava = bodyHas((id) => id === 10 || id === 11);
   if (inLava) {
     v.fireTicks = Math.max(v.fireTicks, 300);
     if (v.due('lava', DAMAGE_LAVA.interval)) ctx.hurt(player, DAMAGE_LAVA.amount, DamageKind.FIRE);
   }
-  if (feetId === 51 || headId === 51) {
+  // 火同理：站在火苗边上、火在膝盖高度时照样该着火
+  if (bodyHas((id) => id === 51)) {
     v.fireTicks = Math.max(v.fireTicks, 160);
   }
   if (v.fireTicks > 0) {
     v.fireTicks--;
     // 站在水里会灭火
-    if (headInWater || (tables.isWater[feetId] ?? 0) !== 0) v.fireTicks = 0;
+    if (headInWater || bodyHas((id) => (tables.isWater[id] ?? 0) !== 0)) v.fireTicks = 0;
     else if (v.due('fire', DAMAGE_FIRE.interval)) ctx.hurt(player, DAMAGE_FIRE.amount, DamageKind.FIRE);
   }
 
