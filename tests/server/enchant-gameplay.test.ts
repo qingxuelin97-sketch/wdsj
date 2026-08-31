@@ -24,6 +24,10 @@ import { packState } from '../../src/core/world/chunk.ts';
 import { ticksToBreak, breakProgressPerTick } from '../../src/core/block/breaking.ts';
 import { toolOf, dropOf } from '../../src/server/player/inventory-actions.ts';
 import { advanceDigging } from '../../src/server/player/block-interaction.ts';
+import { showWindow, closeWindow } from '../../src/server/player/inventory-actions.ts';
+import { refreshOffers, selectEnchantment } from '../../src/server/player/enchant-actions.ts';
+import { EnchantingEntity } from '../../src/server/world/block-entity-craft.ts';
+import { WindowKind } from '../../src/core/net/packets.ts';
 import { onAttackEntity, damagePlayer } from '../../src/server/entity/combat.ts';
 import { DamageKind } from '../../src/server/player/player-vitals.ts';
 import type { ServerPlayer } from '../../src/server/player/server-player.ts';
@@ -293,4 +297,66 @@ test('抢夺记在打死它的那一击上，事后换刀无效', () => {
   setHeld(player, makeStack(items.idOf(Items.DIAMOND_SWORD), 1));
   onAttackEntity(core, player, { entityId: mob.entityId } as never);
   assert.equal(mob.lootingLevel, 0, '换成普通剑之后该清零 —— 记的永远是最后一击');
+});
+
+// ---------------------------------------------------------------------------
+// 从附魔台把东西**拿回来**
+//
+// 这一组盯的是整条附魔链最致命的一处：附魔写在方块实体上，而窗口里是
+// 打开那一刻抄下来的一份副本。窗口关闭或再点一下时会把整份副本写回去 ——
+// 于是玩家花三十级换来的附魔被自己那份旧快照抹掉，等级还照扣。
+// 无论怎么操作都拿不到附了魔的装备，而且没有任何报错。
+// ---------------------------------------------------------------------------
+
+/** 摆一台附魔台，台上放一把剑，玩家开着它的窗口。返回台子 */
+function tableRig(): { core: ServerCore; player: ServerPlayer; table: EnchantingEntity } {
+  const { core, player } = rig();
+  const bx = Math.floor(player.x) + 2;
+  const by = Math.floor(player.y) + 1;
+  const bz = Math.floor(player.z);
+  assert.ok(core.world.setBlock(bx, by, bz, packState(registry.idOf(Blocks.ENCHANTING_TABLE))));
+  const table = core.world.blockEntities.get(bx, by, bz) as EnchantingEntity;
+  assert.ok(table instanceof EnchantingEntity);
+  table.slots[0] = makeStack(items.idOf(Items.DIAMOND_SWORD), 1);
+  player.xp.level = 40;
+  refreshOffers(core, core.world, table);
+  player.openBlockEntity = table;
+  showWindow(core, player, WindowKind.ENCHANTING, table.slots);
+  return { core, player, table };
+}
+
+test('附完魔按 Esc 关窗口，附魔要还在 —— 抹掉的话三十级白花', () => {
+  const { core, player, table } = tableRig();
+  assert.ok(selectEnchantment(core, player, 2), '应该附得上');
+  const got = JSON.stringify(table.slots[0]!.enchantments);
+  assert.ok(table.slots[0]!.enchantments !== undefined, '附魔该写进台子');
+
+  closeWindow(core, player);
+  assert.equal(
+    JSON.stringify(table.slots[0]!.enchantments), got,
+    '关一下窗口附魔就没了 —— 窗口那份旧快照把方块实体整个盖掉了',
+  );
+});
+
+test('附完魔直接把剑拿走，拿到手的是附了魔的那把', () => {
+  const { core, player, table } = tableRig();
+  assert.ok(selectEnchantment(core, player, 1), '应该附得上');
+  const want = JSON.stringify(table.slots[0]!.enchantments);
+
+  // 左键点台面那一格，把剑拿到手上
+  assert.ok(player.openWindow !== null);
+  player.openWindow.click(0, 0, false);
+  assert.equal(
+    JSON.stringify(player.inventory.cursor.enchantments), want,
+    '拿到手上的是把普通剑 —— 窗口没重读方块实体',
+  );
+});
+
+test('附魔扣了等级就要真的扣掉', () => {
+  const { core, player, table } = tableRig();
+  const cost = table.offers[0]!;
+  assert.ok(cost > 0);
+  const before = player.xp.level;
+  assert.ok(selectEnchantment(core, player, 0));
+  assert.equal(player.xp.level, before - cost, `该扣 ${cost} 级`);
 });

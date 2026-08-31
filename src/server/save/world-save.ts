@@ -56,6 +56,16 @@ export interface LevelData {
   thundering: boolean;
   rainTime: number;
   thunderTime: number;
+  /**
+   * 末影龙打过了没。
+   *
+   * 不存的话每次读档龙都会原地复活 —— 而龙死一次给一颗龙蛋和 12000 点经验，
+   * 于是"退出重进再下末地"就是一台无限刷经验机。
+   *
+   * 只存这一个布尔量，不存战斗中途的角度/俯冲计时：读档时龙没打完就
+   * 从头再摆一次，那和 MC 的行为一致（战斗状态本来就不跨存档保留）。
+   */
+  dragonDefeated: boolean;
 }
 
 /** player.dat 里的东西 */
@@ -260,6 +270,9 @@ export class WorldSave {
         thundering: getInt(data, 'thundering') !== 0,
         rainTime: getInt(data, 'rainTime'),
         thunderTime: getInt(data, 'thunderTime'),
+        // 老存档没有这个字段，默认"还没打过" —— 玩家会多打一次龙，
+        // 总好过读档时凭空判定已经打过了
+        dragonDefeated: getInt(data, 'DragonDefeated') !== 0,
       };
     } catch {
       return null;
@@ -279,6 +292,7 @@ export class WorldSave {
         thundering: nbt.int(level.thundering ? 1 : 0),
         rainTime: nbt.int(level.rainTime),
         thunderTime: nbt.int(level.thunderTime),
+        DragonDefeated: nbt.int(level.dragonDefeated ? 1 : 0),
         // 存的是**我们自己的**存档版本号，不是 MC 的。格式一改就 +1，
         // 读到不认识的版本宁可当作没有存档，也不要按错的布局解析
         SaveVersion: nbt.int(SAVE_VERSION),

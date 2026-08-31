@@ -195,8 +195,18 @@ export class ServerCore {
       return out;
     };
     w.installLoadedMobs = (mobs, arrows) => {
-      for (const m of mobs) this.mobs.adopt(m);
-      for (const a of arrows) this.arrows.set(a.entityId, a);
+      // **维度要按装回哪个世界来定。** 存档里不写维度（区块本来就分维度存，
+      // 再写一遍是冗余），所以这里必须补上 —— 不补的话下界的怪读档之后
+      // 全变成主世界的怪：它们顶着下界的坐标在主世界里游荡，
+      // 而按维度过滤的同步会让玩家一个都看不见（幽灵怪照样吃 CPU）
+      for (const m of mobs) {
+        m.dimension = w.dimension;
+        this.mobs.adopt(m);
+      }
+      for (const a of arrows) {
+        a.dimension = w.dimension;
+        this.arrows.set(a.entityId, a);
+      }
     };
   }
 

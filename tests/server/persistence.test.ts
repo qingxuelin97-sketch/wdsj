@@ -629,7 +629,7 @@ test('老的单人存档（player.dat）升级后第一个人还能领走', asyn
   const legacy = new WorldSave(storage);
   await legacy.writeLevel({
     seed: 555n, worldAge: 100, timeOfDay: 1000, spawnX: 0, spawnY: 70, spawnZ: 0,
-    raining: false, thundering: false, rainTime: 0, thunderTime: 0,
+    raining: false, thundering: false, rainTime: 0, thunderTime: 0, dragonDefeated: false,
   });
   const slots = Array.from({ length: 40 }, () => makeStack(0, 0));
   slots[4] = makeStack(items.idOf(Items.IRON_PICKAXE), 1, 11);
@@ -656,4 +656,50 @@ test('老的单人存档（player.dat）升级后第一个人还能领走', asyn
   await rig.controller.saveNow();
   const keys = await storage.list('players/');
   assert.equal(keys.length, 1, `应该写出一份新格式的档，实际 ${keys.join(',')}`);
+});
+
+test('末影龙打过了就要记进存档 —— 否则退出重进又是一条龙', async () => {
+  const storage = new MemoryStorage();
+  const a = await makeRig(storage);
+  await tickAsync(a.core, 10);
+
+  assert.equal(a.core.dragonFight.finished, false, '一开始还没打过');
+  a.core.dragonFight.finished = true;
+  a.core.dragonFight.spawned = true;
+  await a.controller.saveNow();
+
+  const b = await makeRig(storage);
+  assert.equal(
+    b.core.dragonFight.finished, true,
+    '读档之后龙又活了 —— 而龙死一次给一颗龙蛋和 12000 点经验，这是台无限刷经验机',
+  );
+  assert.equal(b.core.dragonFight.spawned, true, '别再摆一次龙和水晶');
+});
+
+test('从存档读回来的生物要带着它所在的维度', async () => {
+  const storage = new MemoryStorage();
+  const a = await makeRig(storage);
+  await tickAsync(a.core, 20);
+
+  const nether = a.core.worldOf(Dimension.NETHER);
+  nether.forceChunk(0, 0);
+  const rock = packState(registry.idOf(Blocks.NETHERRACK));
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dz = -1; dz <= 1; dz++) nether.setBlock(5 + dx, 39, 5 + dz, rock);
+  }
+  const mob = a.core.mobs.spawnByName('zombie', 5.5, 40, 5.5, Dimension.NETHER);
+  assert.ok(mob !== null);
+  await a.controller.saveNow();
+
+  const b = await makeRig(storage);
+  const netherB = b.core.worldOf(Dimension.NETHER);
+  for (let i = 0; i < 50 && !netherB.areaReadyForForce(5, 5, 1); i++) await Promise.resolve();
+  netherB.forceChunk(0, 0);
+
+  const loaded = [...b.core.mobs.mobs.values()].find((m) => m.def.name === 'zombie');
+  assert.ok(loaded !== undefined, '这只僵尸该跟着区块回来');
+  assert.equal(
+    loaded.dimension, Dimension.NETHER,
+    '读回来变成主世界的怪了 —— 它顶着下界的坐标在主世界游荡，谁也看不见，但照样吃 CPU',
+  );
 });

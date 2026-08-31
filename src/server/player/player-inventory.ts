@@ -143,6 +143,11 @@ export class Window {
 
   /** 关闭窗口：合成格里的东西还给玩家，还不下的返回给调用方丢地上 */
   close(): ItemStack[] {
+    // 和 click 同一个理由：这份窗口是打开那一刻的快照，而下面的
+    // pushToPlayer 会把整份写回去。关窗前不重读的话，**开着窗口期间
+    // 外面发生的任何变化都会被这份旧快照抹掉** —— 最典型的是附魔台：
+    // 花三十级附完魔，按一下 Esc，附魔连同等级一起没了
+    this.pullFromPlayer();
     const dropped: ItemStack[] = [];
     if (this.craftSize > 0) {
       for (let i = 0; i < this.craftSize * this.craftSize; i++) {

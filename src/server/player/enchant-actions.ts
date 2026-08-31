@@ -119,6 +119,11 @@ export function selectEnchantment(
   if (!player.xp.spendLevels(cost)) return false;
   item.enchantments = rolled.map((e) => ({ id: e.id, level: e.level }));
   entity.clearOffers();
+  // 附魔写在**方块实体**上，而窗口里是打开那一刻抄下来的一份副本。
+  // 不刷新的话，发给客户端的还是那份没附魔的副本（紫光不出现），
+  // 而且同时开着这台附魔台的其他玩家也看不到。
+  // markBlockEntityDirty 会给每个正看着它的人重抄一遍并重发
+  core.markBlockEntityDirty(entity);
   syncInventory(core, player);
   sendOffers(player, entity);
   return true;

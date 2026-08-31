@@ -137,6 +137,7 @@ export class SaveController {
         thundering: this.core.world.weather.thundering,
         rainTime: this.core.world.weather.rainTime,
         thunderTime: this.core.world.weather.thunderTime,
+        dragonDefeated: this.core.dragonFight.finished,
       });
       let regions = 0;
       for (const s of this.dimSaves.values()) regions += await s.flush();
@@ -173,6 +174,13 @@ export class SaveController {
     // 确定性函数，而"读档时看着雨慢慢淡进来"比直接下着更奇怪 ——
     // 玩家关游戏时正在下大雨，回来该还是大雨
     w.snapStrength();
+    // 龙打过了就别再摆一次。不还原的话每次读档龙都原地复活，
+    // 而它死一次给一颗龙蛋和 12000 点经验 —— "退出重进再下末地"
+    // 就成了一台无限刷经验机
+    if (level.dragonDefeated) {
+      this.core.dragonFight.finished = true;
+      this.core.dragonFight.spawned = true;
+    }
     this.core.spawnX = level.spawnX;
     this.core.spawnY = level.spawnY;
     this.core.spawnZ = level.spawnZ;
