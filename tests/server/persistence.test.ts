@@ -21,6 +21,8 @@ import { MemoryStorage } from '../../src/platform/storage.ts';
 import { WorldSave } from '../../src/server/save/world-save.ts';
 import { SaveController } from '../../src/server/save/save-controller.ts';
 import { encodeChunkNbt } from '../../src/server/save/chunk-nbt.ts';
+import { nbt, encodeNbt, TagType } from '../../src/core/nbt/nbt.ts';
+import { stacksToNbt } from '../../src/server/world/block-entity.ts';
 import { spawnItem } from '../../src/server/entity/item-manager.ts';
 import { LoopbackTransport, PacketChannel } from '../../src/core/net/transport.ts';
 import { S2C, C_Handshake, C_SetViewDistance, PROTOCOL_VERSION } from '../../src/core/net/packets.ts';
@@ -52,7 +54,7 @@ interface Rig {
  * （见 save-controller.ts 的 loadLevel）。这个顺序是被
  * forcedOverPendingSave 断言盯着的。
  */
-async function makeRig(storage: MemoryStorage, seed = 4242n): Promise<Rig> {
+async function makeRig(storage: MemoryStorage, seed = 4242n, name = 'tester'): Promise<Rig> {
   const core = new ServerCore({ seed, registry });
   const save = new WorldSave(storage);
   const controller = new SaveController(core, save);
@@ -63,7 +65,7 @@ async function makeRig(storage: MemoryStorage, seed = 4242n): Promise<Rig> {
   core.addClient(serverSide);
   const channel = new PacketChannel(clientSide, S2C);
   channel.onPacket(() => {});
-  channel.send(C_Handshake, { protocolVersion: PROTOCOL_VERSION, playerName: 'tester' });
+  channel.send(C_Handshake, { protocolVersion: PROTOCOL_VERSION, playerName: name });
   channel.send(C_SetViewDistance, { distance: 2 });
   channel.flush();
   const player = [...core.eachPlayer()][0]!;
@@ -516,4 +518,111 @@ test('传送门在目标维度的存档到货前不送人 —— 送了就会顶
     stateId(netherB.getBlock(target.x, 45, target.z)), GOLD,
     '上次在下界盖的东西必须还在',
   );
+});
+
+test('多人存档：每个玩家一份档，不会互相串背包', async () => {
+  const storage = new MemoryStorage();
+
+  // 一个服务端，两个玩家。addClient 走的是真的握手，名字从 C_Handshake 来
+  const core = new ServerCore({ seed: 909n, registry });
+  const save = new WorldSave(storage);
+  const controller = new SaveController(core, save);
+  await controller.loadLevel();
+
+  const join = (name: string): ServerPlayer => {
+    const [clientSide, serverSide] = LoopbackTransport.createPair();
+    clientSide.synchronous = true;
+    serverSide.synchronous = true;
+    core.addClient(serverSide);
+    const ch = new PacketChannel(clientSide, S2C);
+    ch.onPacket(() => {});
+    ch.send(C_Handshake, { protocolVersion: PROTOCOL_VERSION, playerName: name });
+    ch.send(C_SetViewDistance, { distance: 2 });
+    ch.flush();
+    controller.restorePlayer([...core.eachPlayer()].at(-1)!);
+    return [...core.eachPlayer()].at(-1)!;
+  };
+
+  const alice = join('alice');
+  const bob = join('bob');
+  await tickAsync(core, 20);
+
+  alice.inventory.slots[0] = makeStack(items.idOf(Items.DIAMOND), 7);
+  alice.x = 100.5; alice.y = 70; alice.z = 100.5;
+  bob.inventory.slots[0] = makeStack(items.idOf(Items.COAL), 3);
+  bob.x = -50.5; bob.y = 68; bob.z = -50.5;
+  await controller.saveNow();
+
+  // --- 重开，两个人按同样的名字回来 ---
+  const core2 = new ServerCore({ seed: 909n, registry });
+  const save2 = new WorldSave(storage);
+  const controller2 = new SaveController(core2, save2);
+  await controller2.loadLevel();
+
+  const join2 = (name: string, expectSaved = true): ServerPlayer => {
+    const [c, sv] = LoopbackTransport.createPair();
+    c.synchronous = true; sv.synchronous = true;
+    core2.addClient(sv);
+    const ch = new PacketChannel(c, S2C);
+    ch.onPacket(() => {});
+    ch.send(C_Handshake, { protocolVersion: PROTOCOL_VERSION, playerName: name });
+    ch.flush();
+    const p = [...core2.eachPlayer()].at(-1)!;
+    assert.equal(
+      controller2.restorePlayer(p), expectSaved,
+      expectSaved ? `${name} 应该读到自己的档` : `${name} 从没玩过，不该读到任何档`,
+    );
+    return p;
+  };
+
+  // 故意反着来登录：还原必须按名字认人，而不是按登录顺序
+  const bob2 = join2('bob');
+  const alice2 = join2('alice');
+
+  assert.equal(alice2.inventory.slots[0]!.id, items.idOf(Items.DIAMOND), 'alice 拿回自己的钻石');
+  assert.equal(alice2.inventory.slots[0]!.count, 7);
+  assert.equal(bob2.inventory.slots[0]!.id, items.idOf(Items.COAL), 'bob 拿回自己的煤');
+  assert.equal(bob2.inventory.slots[0]!.count, 3);
+  assert.ok(Math.abs(alice2.x - 100.5) < 1e-9, 'alice 回到自己存的位置');
+  assert.ok(Math.abs(bob2.x - (-50.5)) < 1e-9, 'bob 回到自己存的位置');
+
+  // 从没登录过的人不该领到别人的档
+  const carol = join2('carol', false);
+  assert.ok(isEmpty(carol.inventory.slots[0]!), '新玩家不该拿到别人的背包');
+});
+
+test('老的单人存档（player.dat）升级后第一个人还能领走', async () => {
+  const storage = new MemoryStorage();
+
+  // 手工造一份老格式：直接往 player.dat 写
+  const legacy = new WorldSave(storage);
+  await legacy.writeLevel({
+    seed: 555n, worldAge: 100, timeOfDay: 1000, spawnX: 0, spawnY: 70, spawnZ: 0,
+    raining: false, thundering: false, rainTime: 0, thunderTime: 0,
+  });
+  const slots = Array.from({ length: 40 }, () => makeStack(0, 0));
+  slots[4] = makeStack(items.idOf(Items.IRON_PICKAXE), 1, 11);
+  await storage.write('player.dat', encodeNbt('', nbt.compound({
+    Pos: nbt.list(TagType.DOUBLE, [nbt.double(8.5), nbt.double(72), nbt.double(8.5)]),
+    Rotation: nbt.list(TagType.DOUBLE, [nbt.double(0), nbt.double(0)]),
+    SelectedItemSlot: nbt.int(2),
+    Inventory: stacksToNbt(slots),
+    Health: nbt.short(15),
+    foodLevel: nbt.short(17),
+  })));
+
+  const rig = await makeRig(storage, 555n, '玩家');
+  assert.ok(rig.controller.restorePlayer(rig.player), '老存档要认');
+  assert.equal(
+    rig.player.inventory.slots[4]!.id, items.idOf(Items.IRON_PICKAXE),
+    '老单人存档的背包没读回来 —— 升级一次就把玩家的东西弄丢了',
+  );
+  assert.equal(rig.player.inventory.slots[4]!.damage, 11);
+  assert.equal(rig.player.vitals.health, 15, '血量也要接上');
+  assert.ok(Math.abs(rig.player.x - 8.5) < 1e-9);
+
+  // 存一次之后就是新格式了
+  await rig.controller.saveNow();
+  const keys = await storage.list('players/');
+  assert.equal(keys.length, 1, `应该写出一份新格式的档，实际 ${keys.join(',')}`);
 });

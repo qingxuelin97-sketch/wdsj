@@ -39,7 +39,15 @@ export class SaveController {
    * 登录处理是同步的，异步套用会让玩家先在出生点出现、过几帧再被拉到
    * 存档里的位置 —— 那一下位移在客户端看来和被服务端"纠正"没有区别。
    */
-  private pendingPlayer: PlayerSaveData | null = null;
+  private readonly pendingPlayers = new Map<string, PlayerSaveData>();
+  /**
+   * 老的单人存档（player.dat）。
+   *
+   * 名字对不上也认：那个年代根本没记名字。第一个登录的人把它领走，
+   * 之后按新格式（players/<名字>.dat）写回去。
+   * 不认的话，所有单人老存档一升级就"背包空了、人回出生点了"
+   */
+  private legacyPlayer: PlayerSaveData | null = null;
   /** 已经有一次存盘在进行中。存档比 tick 慢得多，不能让它们叠起来 */
   private saving = false;
   autosaveInterval = AUTOSAVE_INTERVAL_TICKS;
@@ -112,9 +120,11 @@ export class SaveController {
       // 是按同一个种子重新长出来的，看着"还在那儿"，只是房子没了
       let chunks = 0;
       for (const w of this.core.loadedWorlds()) chunks += saveAllChunks(w);
+      // 每个在线玩家各写各的。以前这里 break 掉只存第一个 ——
+      // 多人时其余玩家的进度全丢，而且更糟：读档时**所有人**都会被套上
+      // 那一份数据，等于每来一个人就把同一份背包复制一遍
       for (const player of this.core.eachPlayer()) {
-        await this.save.writePlayer(snapshotPlayer(player));
-        break; // 单人：只有一个玩家。多人存档在 M17
+        await this.save.writePlayer(player.name, snapshotPlayer(player));
       }
       await this.save.writeLevel({
         seed: this.core.world.seed,
@@ -171,11 +181,19 @@ export class SaveController {
     // 出生点周围 3×3 个区块可能跨 region，各预载一次（同一个 region 只会读一遍）
     await this.preloadAround(level.spawnX, level.spawnZ);
 
-    // 玩家数据也在这里读：它决定玩家会出现在哪，那一片同样要先备好
-    this.pendingPlayer = await this.save.readPlayer(PERSISTENT_SLOTS);
-    if (this.pendingPlayer !== null) {
-      await this.preloadAround(this.pendingPlayer.x, this.pendingPlayer.z);
+    // 玩家数据也在这里读：它决定玩家会出现在哪，那一片同样要先备好。
+    //
+    // **一次把所有人的都读完**，而不是等谁登录再读谁的 —— restorePlayer
+    // 必须是同步的（登录处理是同步的，异步套用会让玩家先在出生点出现、
+    // 过几帧再被拽走，看起来和被服务端纠正没区别）
+    for (const key of await this.save.listPlayerKeys()) {
+      const data = await this.save.readPlayerAt(key, PERSISTENT_SLOTS);
+      if (data === null) continue;
+      this.pendingPlayers.set(nameFromKey(key), data);
+      await this.preloadAround(data.x, data.z);
     }
+    this.legacyPlayer = await this.save.readLegacyPlayer(PERSISTENT_SLOTS);
+    if (this.legacyPlayer !== null) await this.preloadAround(this.legacyPlayer.x, this.legacyPlayer.z);
     return true;
   }
 
@@ -195,7 +213,12 @@ export class SaveController {
    * 这让它可以直接挂在登录处理里，玩家一次到位地出现在存档里的位置。
    */
   restorePlayer(player: ServerPlayer): boolean {
-    const data = this.pendingPlayer;
+    // 先按名字找；找不到再看有没有一份没人领的老单人存档
+    let data = this.pendingPlayers.get(player.name) ?? null;
+    if (data === null && this.legacyPlayer !== null) {
+      data = this.legacyPlayer;
+      this.legacyPlayer = null; // 只给第一个人
+    }
     if (data === null) return false;
     // 维度要**先于**坐标设好：worldOf 会把那个维度的世界建出来（连同存档），
     // 而下面的 resetSubscriptions 是按玩家所在的世界算的。
@@ -228,6 +251,18 @@ export class SaveController {
     player.resetSubscriptions();
     syncInventory(this.core, player);
     return true;
+  }
+}
+
+/** players/<转义过的名字>.dat -> 名字 */
+function nameFromKey(key: string): string {
+  const base = key.slice(key.lastIndexOf('/') + 1).replace(/\.dat$/, '');
+  try {
+    return decodeURIComponent(base);
+  } catch {
+    // 名字里有裸的 % 时 decodeURIComponent 会抛。原样用，
+    // 大不了这个人这次读不到自己的档，总好过整个 loadLevel 挂掉
+    return base;
   }
 }
 

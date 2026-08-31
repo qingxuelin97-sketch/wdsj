@@ -26,7 +26,22 @@ import { stacksToNbt, nbtToStacks } from '../world/block-entity.ts';
 export const SAVE_VERSION = 1;
 
 export const LEVEL_KEY = 'level.dat';
-const PLAYER_KEY = 'player.dat';
+/** 单人时代的玩家档。读得到就当第一个登录的人的档，写只写新格式 */
+const LEGACY_PLAYER_KEY = 'player.dat';
+/** 每个玩家一份，键里带名字。MC 的服务端也是这么放的（players/<名字>.dat） */
+export const PLAYERS_PREFIX = 'players/';
+
+/**
+ * 玩家名 -> 存储键。
+ *
+ * 名字要转义：它是玩家自己填的，可能带 `/`、`.` 或空字符串，
+ * 而键会被 FsStorage 直接当路径用 —— 一个名叫 `../../etc/x` 的玩家
+ * 就能把文件写到存档目录外面去。
+ */
+export function playerKeyOf(name: string): string {
+  const safe = encodeURIComponent(name === '' ? 'player' : name).replace(/[*?"<>|:\\]/g, '_');
+  return `${PLAYERS_PREFIX}${safe}.dat`;
+}
 
 /** level.dat 里的东西 */
 export interface LevelData {
@@ -273,8 +288,22 @@ export class WorldSave {
 
   // --- 玩家 ---
 
-  async readPlayer(slotCount: number): Promise<PlayerSaveData | null> {
-    const bytes = await this.storage.read(PLAYER_KEY);
+  /** 存档里有档的所有玩家名（新格式）。给 loadLevel 一次性读完用 */
+  async listPlayerKeys(): Promise<string[]> {
+    return await this.storage.list(PLAYERS_PREFIX);
+  }
+
+  /** 老的单人存档还在吗 —— 在的话第一个登录的人继承它 */
+  async readLegacyPlayer(slotCount: number): Promise<PlayerSaveData | null> {
+    return await this.readPlayerAt(LEGACY_PLAYER_KEY, slotCount);
+  }
+
+  async readPlayer(name: string, slotCount: number): Promise<PlayerSaveData | null> {
+    return await this.readPlayerAt(playerKeyOf(name), slotCount);
+  }
+
+  async readPlayerAt(key: string, slotCount: number): Promise<PlayerSaveData | null> {
+    const bytes = await this.storage.read(key);
     if (bytes === null) return null;
     try {
       const root = decodeNbt(bytes).value;
@@ -307,8 +336,8 @@ export class WorldSave {
     }
   }
 
-  async writePlayer(p: PlayerSaveData): Promise<void> {
-    await this.storage.write(PLAYER_KEY, encodeNbt('', nbt.compound({
+  async writePlayer(name: string, p: PlayerSaveData): Promise<void> {
+    await this.storage.write(playerKeyOf(name), encodeNbt('', nbt.compound({
       Pos: nbt.list(TagType.DOUBLE, [nbt.double(p.x), nbt.double(p.y), nbt.double(p.z)]),
       Rotation: nbt.list(TagType.DOUBLE, [nbt.double(p.yaw), nbt.double(p.pitch)]),
       SelectedItemSlot: nbt.int(p.selectedHotbar),

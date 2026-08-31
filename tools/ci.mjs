@@ -45,6 +45,11 @@ if (!skipSmoke && fs.existsSync(path.join(ROOT, 'tools/smoke.mjs'))) {
   // （WebSocket 握手、帧编解码、把出生包画成一个人）——
   // 两者少了哪一半都可能"全绿但连不上"。
   steps.push({ name: '多人 (两个标签页)', cmd: NODE, args: [path.join(ROOT, 'tools/mp-check.mjs')] });
+  // 独立服务端的存档：真进程退出、真重启、真文件系统。
+  // 闸门③ 验的是浏览器内那条路（server-worker + OPFS），这条验的是
+  // tools/mp-server.mjs 那条 —— 两边的接线是分开写的，各挂各的。
+  // 同时也是唯一一条验"下界与主世界不会写到同一个 region 文件上"的端到端测试
+  steps.push({ name: '独立服务端存档 (关服再开服)', cmd: NODE, args: [path.join(ROOT, 'tools/mp-save-check.mjs')] });
   // 性能：只跑 1 分钟。帧率在软件渲染下不作数（工具自己会判断并跳过），
   // 但**服务端每刻耗时**与**堆漂移**与 GPU 无关，任何机器上都作数。
   // 十分钟的完整内存验收用 node tools/perf-check.mjs --minutes 10 单跑

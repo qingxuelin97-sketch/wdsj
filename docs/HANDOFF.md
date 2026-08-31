@@ -20,7 +20,7 @@ node tools/vendor.mjs
 # 2. 起开发服务器，浏览器打开 http://127.0.0.1:8080
 node tools/dev-server.mjs
 
-# 3. 全套验收（11 步，约 12 分钟）
+# 3. 全套验收（12 步，约 14 分钟）
 node tools/ci.mjs
 ```
 
@@ -35,10 +35,11 @@ node tools/ci.mjs
 
 | 命令 | 作用 | 耗时 |
 |---|---|---|
-| `node tools/ci.mjs` | 全套 11 步 | ~12 min |
-| `node --test` | 526 个单元测试 | ~2 min |
+| `node tools/ci.mjs` | 全套 12 步 | ~14 min |
+| `node --test` | 542 个单元测试 | ~2.5 min |
 | `node tools/mp-server.mjs` | 独立多人服务端（零依赖 WebSocket） | |
 | `node tools/mp-check.mjs` | 多人验收：两个真标签页 | ~2 min |
+| `node tools/mp-save-check.mjs` | 独立服务端存档：关服再开服，两个维度 | ~2 min |
 | `node tools/perf-check.mjs` | 帧率 / 每刻耗时 / 内存漂移 | ~2 min |
 | `node tools/smoke.mjs` | 无头 Chrome，21 张黄金截图 | ~1 min |
 | `UPDATE_GOLDEN=1 node tools/smoke.mjs` | 重生成黄金哈希 | |
@@ -228,7 +229,7 @@ MC 的判据是**碰撞盒与流体相交**。现在按身高扫一遍所占的�
    单人 = 服务端跑在 Web Worker 里走 MessagePort；多人 = 同一份服务端
    跑在 Node 里走 WebSocket。`ServerCore` **不含任何 Worker/DOM 依赖**，
    所以 `node --test` 能直接 `new ServerCore()` 跑几万刻做断言 ——
-   这是 526 个单元测试里绝大多数的地基
+   这是 542 个单元测试里绝大多数的地基
 
 2. **分层由 lint 强制**（`tools/lint-layers.mjs`）：
    ```
@@ -332,7 +333,7 @@ MC 的判据是**碰撞盒与流体相交**。现在按身高扫一遍所占的�
 6. **MC 有的常数就照抄**，自己估的数都是将来的 bug。
    已经被这条坑过三次：骷髅射箭的 `-1.1` 瞄准偏移、爆炸的两个常数、
    云的夜间亮度
-7. 提交前跑 `node tools/ci.mjs`，11 步全绿再提交
+7. 提交前跑 `node tools/ci.mjs`，12 步全绿再提交
 
 ---
 

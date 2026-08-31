@@ -83,6 +83,24 @@ async function closeClient(page) {
 
 const cmd = (page, line) => page.evaluate(`return await window.__mc.command(${JSON.stringify(line)});`);
 
+/**
+ * 反复发同一条指令直到它成功。
+ *
+ * 换维度这条**本来就会先失败几次** —— 目标维度的存档是异步到货的，
+ * 没到货时服务端会如实回 false 而不是抢在到货前把地形生成出来
+ * （见 ServerWorld.areaReadyForForce）。游戏里踩着传送门站着会自动重试，
+ * 指令这条路得调用方自己重试。
+ */
+async function cmdUntilOk(page, line, tries = 40) {
+  let last = null;
+  for (let i = 0; i < tries; i++) {
+    last = await cmd(page, line);
+    if (last && last.ok) return last;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return last;
+}
+
 // 主世界与下界故意用同一个区块坐标：region 键里漏了维度的话，
 // 两边写到同一个文件，后写的那个赢
 const SPOT = { x: 5, y: 70, z: 5 };
@@ -106,8 +124,9 @@ try {
   log(`主世界放置：${JSON.stringify(put1)}`);
 
   // 去下界，在同一个区块坐标上放另一种方块
-  const dim = await cmd(page, 'dimension nether');
+  const dim = await cmdUntilOk(page, 'dimension nether');
   log(`换维度：${JSON.stringify(dim)}`);
+  if (!dim || !dim.ok) failures.push(`换到下界一直没成功：${JSON.stringify(dim)}`);
   await page.evaluate('await window.__mc.waitForIdle(); return true;').catch(() => {});
   const put2 = await cmd(page, `setblock ${NSPOT.x} ${NSPOT.y} ${NSPOT.z} ${NETHER_BLOCK}`);
   log(`下界放置：${JSON.stringify(put2)}`);
@@ -117,7 +136,7 @@ try {
   }
 
   // 回主世界，确认刚才那格还在（同坐标不同维度，不该互相覆盖）
-  await cmd(page, 'dimension overworld');
+  await cmdUntilOk(page, 'dimension overworld');
   await page.evaluate('await window.__mc.waitForIdle(); return true;').catch(() => {});
   const check1 = await cmd(page, `getblock ${SPOT.x} ${SPOT.y} ${SPOT.z}`);
   if (!String(check1.text ?? check1).includes(OVERWORLD_BLOCK)) {
@@ -152,7 +171,8 @@ try {
     failures.push(`主世界盖的东西没还原：${JSON.stringify(back1)}`);
   }
 
-  await cmd(page, 'dimension nether');
+  const dim2 = await cmdUntilOk(page, 'dimension nether');
+  if (!dim2 || !dim2.ok) failures.push(`第二回换到下界没成功：${JSON.stringify(dim2)}`);
   await page.evaluate('await window.__mc.waitForIdle(); return true;').catch(() => {});
   const back2 = await cmd(page, `getblock ${NSPOT.x} ${NSPOT.y} ${NSPOT.z}`);
   if (String(back2.text ?? back2).includes(NETHER_BLOCK)) {
