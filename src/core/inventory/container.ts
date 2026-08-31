@@ -226,9 +226,11 @@ export class Container {
     for (let i = 0; i < region.count && !isEmpty(src); i++) {
       const dst = this.slots[region.start + i]!;
       if (!isEmpty(dst)) continue;
+      // 走 copyStack 而不是逐字段抄 —— 附魔要跟着搬。
+      // Shift 点击整堆搬走走的就是这里，逐字段抄的话
+      // 一次 Shift 点击就能把一把锋利 V 变成普通剑
       const move = Math.min(max, src.count);
-      dst.id = src.id;
-      dst.damage = src.damage;
+      copyStack(src, dst);
       dst.count = move;
       src.count -= move;
       if (src.count <= 0) clearStack(src);

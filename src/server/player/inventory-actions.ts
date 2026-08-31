@@ -11,7 +11,7 @@
 import type { ServerCore } from '../server-core.ts';
 import type { ServerPlayer } from './server-player.ts';
 import { canHarvest, type HeldTool } from '../../core/block/breaking.ts';
-import { isEmpty, cloneStack, makeStack, type ItemStack } from '../../core/item/item-def.ts';
+import { isEmpty, cloneStack, copyStack, makeStack, type ItemStack } from '../../core/item/item-def.ts';
 import { Window, ARMOR_SLOTS, MAIN_SLOTS, HOTBAR_SLOTS } from './player-inventory.ts';
 import { S_WindowItems, S_OpenWindow, WindowKind } from '../../core/net/packets.ts';
 import { tossFromPlayer } from '../entity/item-manager.ts';
@@ -88,9 +88,10 @@ export function giveToPlayer(core: ServerCore, player: ServerPlayer, stack: Item
     if (work.count <= 0) break;
     const dst = inv.slots[i]!;
     if (!isEmpty(dst)) continue;
+    // 同 Container.moveInto：附魔要跟着搬。这条是**拾取**走的路，
+    // 逐字段抄的话把附魔剑扔在地上再捡回来就成了普通剑
     const move = Math.min(max, work.count);
-    dst.id = work.id;
-    dst.damage = work.damage;
+    copyStack(work, dst);
     dst.count = move;
     work.count -= move;
   }

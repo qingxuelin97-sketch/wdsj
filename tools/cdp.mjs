@@ -13,6 +13,18 @@ import os from 'node:os';
 import path from 'node:path';
 
 /** 在常见位置里找 chrome.exe */
+/**
+ * 一条 CDP 命令等多久。
+ *
+ * 60 秒在有真显卡的机器上绰绰有余，但闸门①把"等世界安定 + 打木头 + 合成 +
+ * 搭掩体"塞在**同一个** evaluate 里，软件渲染下（4fps）这一条就要一两分钟。
+ * 超时的表现是"CDP Runtime.evaluate 超时"，看着像页面挂了，
+ * 实际上它跑得好好的，只是慢。所以给它一个环境变量：
+ *
+ *   CDP_TIMEOUT_MS=300000 node tools/first-night-check.mjs
+ */
+export const CDP_TIMEOUT_MS = Number(process.env['CDP_TIMEOUT_MS'] ?? 60000);
+
 export function findChrome() {
   const candidates = [
     process.env['CHROME_PATH'],
@@ -149,9 +161,9 @@ export class CdpSession {
       setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
-          reject(new Error(`CDP ${method} 超时`));
+          reject(new Error(`CDP ${method} 超时（${CDP_TIMEOUT_MS}ms）`));
         }
-      }, 60000);
+      }, CDP_TIMEOUT_MS);
     });
   }
 
