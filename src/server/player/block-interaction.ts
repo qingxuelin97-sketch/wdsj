@@ -306,10 +306,10 @@ export function advanceDigging(core: ServerCore, player: ServerPlayer): void {
   // 箱子/熔炉被拆掉时，里面的东西撒一地。setBlock 会把方块实体摘下来
   // 放进 brokenBlockEntities，这里取出来处理
   for (const broken of world.drainBrokenBlockEntities()) {
-    scatterContents(core, broken.x, broken.y, broken.z, broken.contents());
+    scatterContents(core, world, broken.x, broken.y, broken.z, broken.contents());
   }
 
-  if (drop !== null) spawnBlockDrop(core, x, y, z, drop);
+  if (drop !== null) spawnBlockDrop(core, world, x, y, z, drop);
   // 挖一格消耗 0.025 体力。数字很小，但一场挖矿下来是实打实的饭量
   player.vitals.addExhaustion(EXHAUSTION.breakBlock);
 }

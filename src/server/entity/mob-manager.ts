@@ -7,6 +7,7 @@
  * "实体跨区块时谁该收到什么"的边界 bug。
  */
 import type { ServerCore } from '../server-core.ts';
+import { Dimension, isDimension } from '../../core/world/dimension.ts';
 import type { ServerPlayer } from '../player/server-player.ts';
 import { Mob } from './mob.ts';
 import { installGoals } from './mob-factory.ts';
@@ -192,14 +193,20 @@ export class MobManager {
    * 走不到 dropLoot 那条路；而 12000 点经验要拆成几十个球，
    * 那段拆分逻辑只此一份。
    */
-  giveDragonXp(x: number, y: number, z: number, amount: number): void {
-    spawnXpOrbs(this.core, x, y, z, amount);
+  giveDragonXp(world: ServerWorld, x: number, y: number, z: number, amount: number): void {
+    spawnXpOrbs(this.core, world, x, y, z, amount);
   }
 
   /** 死亡掉落 */
   private dropLoot(mob: Mob): void {
     if (mob.health > 0) return; // 是被卸载而不是被打死的
-    const rng = this.core.world.random;
+    // 掉在**这只怪所在的**维度里。用 core.world 的话，在下界打死的猪人
+    // 会把猪排掉进主世界的同一个坐标上 —— 打的人什么都没捡到
+    // isDimension 这一道是因为 Mob.dimension 是裸 number（实体是从存档
+    // 读回来的，值可能是任何东西）。坏值退回主世界，总好过 worldOf
+    // 拿到 undefined 的维度定义当场炸掉整个 tick
+    const world = this.core.worldOf(isDimension(mob.dimension) ? mob.dimension : Dimension.OVERWORLD);
+    const rng = world.random;
     const burned = mob.fireTicks > 0;
     for (const entry of mob.def.loot) {
       if (entry.chance < 1 && rng.nextDouble() > entry.chance) continue;
@@ -208,18 +215,18 @@ export class MobManager {
       const name = burned && entry.cooked !== undefined ? entry.cooked : entry.item;
       const id = this.core.items.idOf(name);
       if (id <= 0) continue;
-      spawnBlockDrop(this.core, Math.floor(mob.x), Math.floor(mob.y), Math.floor(mob.z), makeStack(id, count));
+      spawnBlockDrop(this.core, world, Math.floor(mob.x), Math.floor(mob.y), Math.floor(mob.z), makeStack(id, count));
     }
     // 经验：MC 里敌对生物给 5 点、动物给 1-3 点
     if (mob.def.xp > 0) {
-      spawnXpOrbs(this.core, mob.x, mob.y + 0.5, mob.z, mob.def.xp);
+      spawnXpOrbs(this.core, world, mob.x, mob.y + 0.5, mob.z, mob.def.xp);
     }
     // 羊掉自己颜色的羊毛，不走战利品表
     if (mob.def.name === 'sheep') {
       const wool = this.core.registry.idOf('wool');
       if (wool > 0) {
         spawnBlockDrop(
-          this.core, Math.floor(mob.x), Math.floor(mob.y), Math.floor(mob.z),
+          this.core, world, Math.floor(mob.x), Math.floor(mob.y), Math.floor(mob.z),
           makeStack(wool, 1, mob.variant),
         );
       }
@@ -278,7 +285,10 @@ export class MobManager {
       playerById: (id) => this.playerRef(id),
       canSee: (target) => this.canSee(mob, target),
       attack: (target, damage) => this.attackPlayer(mob, target, damage),
-      explode: (m, power) => this.core.explode(m.x, m.y, m.z, power, m.entityId),
+      // world 一定要传。漏了的话苦力怕在下界炸出来的坑开在**主世界**的
+      // 同一个坐标上 —— 玩家这边什么都没发生（没坑、没特效），
+      // 而主世界那边有人的房子被炸了
+      explode: (m, power) => this.core.explode(m.x, m.y, m.z, power, m.entityId, world),
       shootArrow: (m, target) => this.core.shootArrow(m, target),
       shootFireball: (m, target) => this.shootFireball(m, target),
       teleportRandomly: (m) => this.teleportRandomly(m),
@@ -351,14 +361,17 @@ export class MobManager {
    * 找不到就原地不动 —— MC 也是这样，传送是会失败的。
    */
   private teleportRandomly(mob: Mob): boolean {
-    const world = this.core.world;
+    // 末影人要传送到**它自己所在的**维度里去。读 core.world 的话，
+    // 下界的末影人会按主世界的地形找落点 —— 找到的坐标在下界多半是实心的，
+    // 表现是它闪一下然后卡在岩石里
+    const world = this.core.worldOf(isDimension(mob.dimension) ? mob.dimension : Dimension.OVERWORLD);
     const rng = world.random;
     for (let attempt = 0; attempt < 16; attempt++) {
       const x = Math.floor(mob.x) + rng.nextInt(65) - 32;
       const z = Math.floor(mob.z) + rng.nextInt(65) - 32;
       if (!world.isLoaded(x >> 4, z >> 4)) continue;
       for (let y = Math.min(WORLD_HEIGHT - 3, Math.floor(mob.y) + 16); y > 1; y--) {
-        if (!standable(this, x, y, z, mob.def)) continue;
+        if (!standable(world, x, y, z, mob.def)) continue;
         mob.body.x = x + 0.5;
         mob.body.y = y;
         mob.body.z = z + 0.5;
@@ -385,6 +398,10 @@ export class MobManager {
       const seen = new Set<number>();
 
       for (const mob of this.mobs.values()) {
+        // 维度要先过一道。订阅集按**区块坐标**算，而三个维度的区块坐标
+        // 是重叠的 —— 不过滤的话，从末地回到主世界之后，末影龙和十颗
+        // 末影水晶会挂在主世界出生点的天上
+        if (mob.dimension !== player.dimension) continue;
         if (!player.isSubscribed(Math.floor(mob.x) >> 4, Math.floor(mob.z) >> 4)) continue;
         seen.add(mob.entityId);
         if (player.knownMobs.has(mob.entityId)) {
@@ -467,6 +484,10 @@ export class MobManager {
     for (const mob of [...this.mobs.values()]) {
       let nearest = Infinity;
       for (const p of players) {
+        // 只算**同一个维度**的玩家。三个维度的坐标是重叠的 ——
+        // 不判这一句的话，一个站在主世界原点的玩家会把下界原点的怪
+        // 永远钉在内存里（它"离玩家 0 格"），而下界那边其实一个人都没有
+        if (p.dimension !== mob.dimension) continue;
         const d = Math.hypot(p.x - mob.x, p.y - mob.y, p.z - mob.z);
         if (d < nearest) nearest = d;
       }

@@ -374,7 +374,9 @@ value: Record<string, unknown>,
         const x = sx === undefined ? player.x : Number(sx);
         const y = sy === undefined ? player.y : Number(sy);
         const z = sz === undefined ? player.z : Number(sz);
-        const mob = core.mobs.spawnByName(String(kind), x, y, z);
+        // 刷在玩家**所在的**维度里。不传的话默认主世界 ——
+        // 在下界打这条指令等于什么都没发生（怪刷去了主世界，这边看不见）
+        const mob = core.mobs.spawnByName(String(kind), x, y, z, player.dimension);
         reply(mob !== null, mob === null ? `没有这种生物: ${String(kind)}` : String(mob.entityId));
         return;
       }

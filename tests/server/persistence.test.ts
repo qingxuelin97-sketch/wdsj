@@ -198,7 +198,7 @@ test('掉落物跟着区块一起存读', async () => {
   const x = Math.floor(a.player.x) + 1;
   const z = Math.floor(a.player.z);
   const y = Math.floor(a.player.y) + 3;
-  const entity = spawnItem(a.core, x + 0.5, y, z + 0.5, makeStack(items.idOf(Items.DIAMOND), 9), false);
+  const entity = spawnItem(a.core, a.core.world, x + 0.5, y, z + 0.5, makeStack(items.idOf(Items.DIAMOND), 9), false);
   assert.ok(entity !== null);
   await a.controller.saveNow();
 
@@ -412,7 +412,7 @@ test('扔在地上的附魔剑，存读之后附魔还在', async () => {
   const dx = Math.floor(a.player.x) + 1;
   const dz = Math.floor(a.player.z);
   const dy = Math.floor(a.player.y) + 3;
-  const dropped = spawnItem(a.core, dx + 0.5, dy, dz + 0.5, sword, false);
+  const dropped = spawnItem(a.core, a.core.world, dx + 0.5, dy, dz + 0.5, sword, false);
   assert.ok(dropped !== null, '应该扔得下');
   await a.controller.saveNow();
 

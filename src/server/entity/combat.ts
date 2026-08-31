@@ -12,14 +12,15 @@ import type { TargetRef } from './goal.ts';
 import { ArrowEntity, ARROW_SPEED, type ArrowEntity as Arrow } from './arrow.ts';
 import { explode } from './explosion.ts';
 import { REACH_LIMIT_SQ } from '../player/block-interaction.ts';
-import { isEmpty, cloneStack } from '../../core/item/item-def.ts';
+import { isEmpty, cloneStack, clearStack } from '../../core/item/item-def.ts';
+import { Dimension } from '../../core/world/dimension.ts';
 import { MobType } from '../../content/mobs.ts';
 import { applyArmor, DamageKind } from '../player/player-vitals.ts';
 import { xpToNextLevel } from '../player/experience.ts';
 import { tossFromPlayer, spawnXpOrbs } from './item-manager.ts';
 import { syncInventory } from '../player/inventory-actions.ts';
 import { setBodyBox, makeBox } from '../../core/physics/block-collision.ts';
-import { S_EntityEvent, S_Explosion, S_PlayerHealth, S_PlayerPosLook } from '../../core/net/packets.ts';
+import { S_EntityEvent, S_Explosion, S_PlayerHealth, S_PlayerPosLook, S_ChangeDimension } from '../../core/net/packets.ts';
 import { EYE_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT, MAX_HEALTH, INVULNERABLE_TICKS, EXHAUSTION } from '../../core/constants.ts';
 
 /** 箭命中判定复用的盒子。每刻可能有几十支箭，别每支都新建 */
@@ -261,13 +262,16 @@ export function onPlayerDeath(core: ServerCore, player: ServerPlayer): void {
   for (const slot of player.inventory.slots) {
     if (isEmpty(slot)) continue;
     tossFromPlayer(core, player, cloneStack(slot));
-    slot.id = 0;
-    slot.count = 0;
-    slot.damage = 0;
+    // clearStack 而不是逐字段清 —— 它还会把附魔删掉。
+    // 不删的话这个空格子身上挂着一份幽灵附魔，重生后捡回来的第一件
+    // 普通物品会白捡到它
+    clearStack(slot);
   }
   // 经验按等级掉，上限 100 点
   const dropped = player.xp.dropOnDeath();
-  if (dropped > 0) spawnXpOrbs(core, player.x, player.y + 0.5, player.z, dropped);
+  if (dropped > 0) {
+    spawnXpOrbs(core, core.worldOf(player.dimension), player.x, player.y + 0.5, player.z, dropped);
+  }
   player.xp.reset();
 
   syncInventory(core, player);
@@ -279,15 +283,29 @@ export function onPlayerDeath(core: ServerCore, player: ServerPlayer): void {
 export function respawnPlayer(core: ServerCore, player: ServerPlayer): void {
   player.vitals.reset();
   player.awaitingRespawn = false;
+  // 出生点在**主世界**。只改坐标不改维度的话，在下界死掉的人会"重生"
+  // 在下界的主世界出生点坐标上 —— 那八成是实心的地狱岩，人一进去就窒息，
+  // 死了又重生，卡在循环里出不来
+  const wasElsewhere = player.dimension !== Dimension.OVERWORLD;
+  player.dimension = Dimension.OVERWORLD;
   player.x = core.spawnX;
   player.y = core.spawnY;
   player.z = core.spawnZ;
   player.peakY = player.y;
   player.resetSubscriptions();
-  player.channel.send(S_PlayerPosLook, {
-    seq: 0, x: player.x, y: player.y, z: player.z,
-    yaw: player.yaw, pitch: player.pitch, onGround: true,
-  });
+  if (wasElsewhere) {
+    // 换维度要发 S_ChangeDimension 而不是 S_PlayerPosLook：客户端要靠它
+    // 清掉上一个维度的方块镜像与在飞的网格。只发 PosLook 的话，
+    // 人回了主世界而看到的还是下界的地形
+    player.channel.send(S_ChangeDimension, {
+      dimension: Dimension.OVERWORLD, x: player.x, y: player.y, z: player.z, yaw: player.yaw,
+    });
+  } else {
+    player.channel.send(S_PlayerPosLook, {
+      seq: 0, x: player.x, y: player.y, z: player.z,
+      yaw: player.yaw, pitch: player.pitch, onGround: true,
+    });
+  }
   sendVitals(player);
   syncInventory(core, player);
 }

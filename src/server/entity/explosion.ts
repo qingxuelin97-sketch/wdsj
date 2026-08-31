@@ -146,6 +146,10 @@ export function explode(
   // 于是"躲在方块后面"挡不住爆炸 —— 记在 DEVIATIONS 里
   const radius = power * 2;
   for (const p of core.eachPlayer()) {
+    // 只炸**同一个维度**的人。三个维度的坐标是重叠的 ——
+    // 不判这一句的话，下界炸一发 TNT，主世界同坐标的玩家当场暴毙，
+    // 而他那边什么都没发生
+    if (p.dimension !== world.dimension) continue;
     const d = Math.hypot(p.x - cx, p.y + 0.9 - cy, p.z - cz);
     if (d > radius) continue;
     const factor = 1 - d / radius;
@@ -154,6 +158,7 @@ export function explode(
   }
   for (const mob of core.mobs.mobs.values()) {
     if (mob.entityId === sourceId) continue;
+    if (mob.dimension !== world.dimension) continue; // 同上
     const d = Math.hypot(mob.x - cx, mob.y + mob.def.height / 2 - cy, mob.z - cz);
     if (d > radius) continue;
     const factor = 1 - d / radius;

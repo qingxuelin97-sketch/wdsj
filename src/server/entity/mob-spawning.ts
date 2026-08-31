@@ -30,8 +30,12 @@ const SPAWN_ATTEMPTS = 24;
 
 
 /** 这一格能不能站一只这么大的生物 */
-export function standable(m: MobManager, x: number, y: number, z: number, def: MobDef): boolean {
-  const world = m.core.world;
+export function standable(
+  world: ServerWorld, x: number, y: number, z: number, def: MobDef,
+): boolean {
+  // 世界要从外面传进来。原来读的是 m.core.world（永远是主世界）——
+  // 在下界刷怪时，"这一格站不站得住"问的是**主世界**同坐标的地形，
+  // 结果下界一只怪都刷不出来，偶尔刷出来的还卡在地狱岩里
   const tables = world.tables;
   const solidAt = (bx: number, by: number, bz: number): boolean => {
     const id = world.getBlock(bx, by, bz) & 0xfff;
@@ -93,7 +97,7 @@ export function trySpawn(m: MobManager, day: boolean, world: ServerWorld): void 
 
     // 敌对：从地表往下找一个够暗的落脚点（洞里也能刷）
     if (wantHostile) {
-      const y = findHostileSpot(m, x, z, surface, rng.nextInt(Math.max(1, surface)));
+      const y = findHostileSpot(world, x, z, surface, rng.nextInt(Math.max(1, surface)));
       if (y > 0 && farEnough(m, x, y, z, players)) {
         const def = pool[rng.nextInt(pool.length)]!;
         // 恶魂在空中刷，不需要落脚点 —— 拿 standable 判它的话
@@ -103,7 +107,7 @@ export function trySpawn(m: MobManager, day: boolean, world: ServerWorld): void 
           hostiles++;
           continue;
         }
-        if (standable(m, x, y, z, def)) {
+        if (standable(world, x, y, z, def)) {
           m.spawn(def, x + 0.5, y, z + 0.5, world.dimension);
           hostiles++;
           continue;
@@ -117,7 +121,7 @@ export function trySpawn(m: MobManager, day: boolean, world: ServerWorld): void 
       const below = world.getBlock(x, y - 1, z) & 0xfff;
       if (below === m.core.registry.idOf('grass_block') && farEnough(m, x, y, z, players)) {
         const def = PASSIVE_POOL[rng.nextInt(PASSIVE_POOL.length)]!;
-        if (standable(m, x, y, z, def)) {
+        if (standable(world, x, y, z, def)) {
           m.spawn(def, x + 0.5, y, z + 0.5);
           passives++;
         }
@@ -127,8 +131,9 @@ export function trySpawn(m: MobManager, day: boolean, world: ServerWorld): void 
 }
 
 /** 从某个高度往下找第一个够暗、站得住的位置 */
-function findHostileSpot(m: MobManager, x: number, z: number, surface: number, startOffset: number): number {
-  const world = m.core.world;
+function findHostileSpot(
+  world: ServerWorld, x: number, z: number, surface: number, startOffset: number,
+): number {
   const from = Math.min(surface, Math.max(2, startOffset + 2));
   for (let y = from; y > 1; y--) {
     if (world.store.getBlockLight(x, y, z) > MAX_SPAWN_LIGHT) continue;

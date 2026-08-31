@@ -9,6 +9,7 @@
  * 代价是每 tick 一次 O(玩家数 × 掉落物数) 的遍历，几百个实体时可以忽略。
  */
 import type { ServerCore } from '../server-core.ts';
+import type { ServerWorld } from '../world/server-world.ts';
 import type { ServerPlayer } from '../player/server-player.ts';
 import { ItemEntity } from './item-entity.ts';
 import {
@@ -33,18 +34,19 @@ const MERGE_RANGE = 0.5;
  */
 export function spawnItem(
   core: ServerCore,
+  world: ServerWorld,
   x: number, y: number, z: number,
   stack: ItemStack,
   scatter = true,
 ): ItemEntity | null {
   if (stack.count <= 0 || stack.id === 0) return null;
-  if (core.world.items.size >= MAX_ITEMS) return null;
-  const entity = new ItemEntity(core.world.allocEntityId(), x, y, z, stack);
+  if (world.items.size >= MAX_ITEMS) return null;
+  const entity = new ItemEntity(world.allocEntityId(), x, y, z, stack);
   if (scatter) {
-    const rng = core.world.random;
+    const rng = world.random;
     entity.scatter(rng.nextFloat() - 0.5, rng.nextFloat(), rng.nextFloat() - 0.5);
   }
-  core.world.items.set(entity.entityId, entity);
+  world.items.set(entity.entityId, entity);
   return entity;
 }
 
@@ -54,19 +56,24 @@ export function spawnItem(
  * 按面额从大到小拆，100 点不会变成 100 个球 —— 数量直接决定服务端
  * 要 tick 多少实体。
  */
-export function spawnXpOrbs(core: ServerCore, x: number, y: number, z: number, amount: number): void {
+export function spawnXpOrbs(
+  core: ServerCore, world: ServerWorld, x: number, y: number, z: number, amount: number,
+): void {
   for (const value of splitIntoOrbs(amount)) {
     // count 存的是这颗球值多少经验，最多 255（面额最大 2477 会被截断，
     // 但那只在末影龙那种量级才出现，M16 再说）
-    spawnItem(core, x, y, z, makeStack(XP_ORB_ITEM_ID, Math.min(255, value)));
+    spawnItem(core, world, x, y, z, makeStack(XP_ORB_ITEM_ID, Math.min(255, value)));
   }
 }
 
 /** 破坏一个方块时，掉落物出现在方块中心附近 */
-export function spawnBlockDrop(core: ServerCore, x: number, y: number, z: number, stack: ItemStack): void {
-  const rng = core.world.random;
+export function spawnBlockDrop(
+  core: ServerCore, world: ServerWorld, x: number, y: number, z: number, stack: ItemStack,
+): void {
+  const rng = world.random;
   spawnItem(
     core,
+    world,
     x + 0.25 + rng.nextFloat() * 0.5,
     y + 0.25 + rng.nextFloat() * 0.5,
     z + 0.25 + rng.nextFloat() * 0.5,
@@ -76,7 +83,10 @@ export function spawnBlockDrop(core: ServerCore, x: number, y: number, z: number
 
 /** 玩家丢东西：从眼睛高度朝着看的方向扔出去 */
 export function tossFromPlayer(core: ServerCore, player: ServerPlayer, stack: ItemStack): void {
-  const entity = spawnItem(core, player.x, player.y + 1.3, player.z, stack, false);
+  // 掉在玩家**所在的**那个维度里。用 core.world 的话，在下界丢东西
+  // 会把它扔进主世界的同一个坐标上 —— 丢的人看不见，而主世界那边
+  // 会凭空多出一件
+  const entity = spawnItem(core, core.worldOf(player.dimension), player.x, player.y + 1.3, player.z, stack, false);
   if (entity === null) return;
   // MC 的 dropPlayerItem：水平 0.3，向上 0.1，再叠一点随机
   const yaw = player.yaw;
@@ -94,8 +104,7 @@ export function tossFromPlayer(core: ServerCore, player: ServerPlayer, stack: It
  * 顺序有讲究：先物理再拾取。反过来的话，掉落物会在**上一刻**的位置上
  * 被判定拾取，玩家看到的是"走过去了才被吸走"。
  */
-export function tickItems(core: ServerCore): void {
-  const world = core.world;
+export function tickItems(core: ServerCore, world: ServerWorld): void {
   if (world.items.size === 0) return;
   const dead: number[] = [];
 
@@ -104,10 +113,14 @@ export function tickItems(core: ServerCore): void {
     if (item.dead) dead.push(item.entityId);
   }
 
-  mergeNearbyItems(core);
+  mergeNearbyItems(core, world);
 
-  // 拾取。玩家按 entityId 排序遍历，保证多人时"谁先捡到"是确定的
-  const players = [...core.eachPlayer()].sort((a, b) => a.entityId - b.entityId);
+  // 拾取。玩家按 entityId 排序遍历，保证多人时"谁先捡到"是确定的。
+  // **只有身在这个维度的玩家才捡得到** —— 不过滤的话，主世界的人
+  // 会隔着维度把下界地上的矿吸走（拾取判定只看 xyz，而三个维度的坐标是重叠的）
+  const players = [...core.eachPlayer()]
+    .filter((p) => p.dimension === world.dimension)
+    .sort((a, b) => a.entityId - b.entityId);
   for (const item of world.items.values()) {
     if (item.dead) continue;
     for (const player of players) {
@@ -145,8 +158,8 @@ export function tickItems(core: ServerCore): void {
  * 不并的话，砍一棵树留下的五六个木头会各自占一个实体，
  * 而挖矿几分钟后世界里能有上千个实体 —— 每个都要 tick、要同步。
  */
-function mergeNearbyItems(core: ServerCore): void {
-  const items = [...core.world.items.values()];
+function mergeNearbyItems(core: ServerCore, world: ServerWorld): void {
+  const items = [...world.items.values()];
   for (const a of items) {
     if (a.dead || !a.shouldTryMerge()) continue;
     const max = maxStackOf(core, a.stack.id);
@@ -167,14 +180,18 @@ function mergeNearbyItems(core: ServerCore): void {
     }
   }
   for (const item of items) {
-    if (item.dead) core.world.items.delete(item.entityId);
+    if (item.dead) world.items.delete(item.entityId);
   }
 }
 
 /** 把这一刻的实体增删改同步给每个玩家 */
-export function broadcastItems(core: ServerCore, destroyedElsewhere: readonly number[]): void {
-  const world = core.world;
+export function broadcastItems(
+  core: ServerCore, world: ServerWorld, destroyedElsewhere: readonly number[],
+): void {
   for (const player of core.eachPlayer()) {
+    // 维度要先过一道。订阅集是按**区块坐标**算的，而三个维度的区块坐标
+    // 是重叠的 —— 只看订阅的话，下界的玩家会看到主世界同坐标的掉落物
+    if (player.dimension !== world.dimension) continue;
     const spawns: ItemEntity[] = [];
     const moves: ItemEntity[] = [];
     const seen = new Set<number>();
@@ -235,8 +252,14 @@ export function broadcastItems(core: ServerCore, destroyedElsewhere: readonly nu
 }
 
 /** 方块实体被拆掉时，把里面的东西撒在原地 */
-export function scatterContents(core: ServerCore, x: number, y: number, z: number, contents: readonly ItemStack[]): void {
+export function scatterContents(
+  core: ServerCore, world: ServerWorld, x: number, y: number, z: number,
+  contents: readonly ItemStack[],
+): void {
   for (const s of contents) {
-    spawnBlockDrop(core, x, y, z, makeStack(s.id, s.count, s.damage));
+    // 直接把那一件撒出去，不要用 makeStack 重建 —— 重建会把附魔丢掉，
+    // 表现是"拆掉装着附魔装备的箱子，撒出来的全是普通装备"。
+    // contents() 已经是 cloneStack 过的副本，撒出去不会和箱子共用对象
+    spawnBlockDrop(core, world, x, y, z, s);
   }
 }

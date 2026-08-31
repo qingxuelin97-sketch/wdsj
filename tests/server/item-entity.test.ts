@@ -30,7 +30,7 @@ function makeCore(): ServerCore {
 
 /** 在指定位置放一个掉落物，不给初速度（scatter=false，好让位移可预测） */
 function drop(core: ServerCore, x: number, y: number, z: number, count = 1): ItemEntity {
-  const e = spawnItem(core, x, y, z, makeStack(DIAMOND, count), false);
+  const e = spawnItem(core, core.world, x, y, z, makeStack(DIAMOND, count), false);
   assert.ok(e !== null);
   return e;
 }
@@ -97,7 +97,7 @@ test('挨着的同类会合并 —— 砍一棵树不该在地上留六个实体
   assert.equal(core.world.items.size, 6);
 
   // 合并每 25 刻试一次，跑够一轮
-  for (let i = 0; i < 30; i++) tickItems(core);
+  for (let i = 0; i < 30; i++) tickItems(core, core.world);
   assert.equal(core.world.items.size, 1, '六个应该并成一个');
   assert.equal([...core.world.items.values()][0]!.stack.count, 6, '数量要守恒');
 });
@@ -106,7 +106,7 @@ test('超过上限的部分不合并，也不会凭空多出物品', () => {
   const core = makeCore();
   drop(core, 8.5, 70, 8.5, 60);
   drop(core, 8.52, 70, 8.5, 10);
-  for (let i = 0; i < 30; i++) tickItems(core);
+  for (let i = 0; i < 30; i++) tickItems(core, core.world);
   const total = [...core.world.items.values()].reduce((a, e) => a + e.stack.count, 0);
   assert.equal(total, 70, '合并前后总数必须守恒');
   assert.equal(core.world.items.size, 2, '60+10 超过 64，不该合并');
@@ -116,7 +116,7 @@ test('隔得远的不合并', () => {
   const core = makeCore();
   drop(core, 8.5, 70, 8.5, 1);
   drop(core, 12.5, 70, 8.5, 1);
-  for (let i = 0; i < 30; i++) tickItems(core);
+  for (let i = 0; i < 30; i++) tickItems(core, core.world);
   assert.equal(core.world.items.size, 2, '四格远不该合并');
 });
 

@@ -11,6 +11,7 @@
 import type { ServerCore } from './server-core.ts';
 import { S_BlockUpdate, S_TimeUpdate, S_ServerStats, S_Weather, S_Lightning } from '../core/net/packets.ts';
 import { chunkKey } from '../core/world/chunk.ts';
+import { Dimension } from '../core/world/dimension.ts';
 import type { ServerPlayer } from './player/server-player.ts';
 import { advanceDigging } from './player/block-interaction.ts';
 import { tickBlockEntities } from './world/block-entity-tick.ts';
@@ -106,8 +107,9 @@ export function runServerTick(core: ServerCore): void {
     tickEndPortal(core, player);
   }
 
-  // 掉落物：物理、合并、拾取
-  tickItems(core);
+  // 掉落物：物理、合并、拾取。**每个维度各推各的** ——
+  // 只推主世界的话，玩家在下界挖的矿会永远悬在原地不动，也不会被捡起来
+  for (const w of core.loadedWorlds()) tickItems(core, w);
 
   // 生物：AI、物理、生成、同步
   core.mobs.tick();
@@ -138,7 +140,7 @@ export function runServerTick(core: ServerCore): void {
   }
 
   // 掉落物的出生 / 移动 / 销毁
-  for (const w of core.loadedWorlds()) broadcastItems(core, w.drainUnloadedItems());
+  for (const w of core.loadedWorlds()) broadcastItems(core, w, w.drainUnloadedItems());
 
   // 服务端状态：每 tick 都发。它很小（10 字节），但让主线程随时知道
   // 服务端还有多少活没干完 —— 这是 waitForIdle 判定世界安定的必要依据。
@@ -273,6 +275,12 @@ function broadcastWeather(core: ServerCore): void {
   core.lastSentRain = rain;
   core.lastSentThunder = thunder;
   for (const player of core.eachPlayer()) {
-    player.channel.send(S_Weather, { rain, thunder });
+    // 天气是**主世界的**。下界与末地不下雨也不打雷（MC 1.0 就是这样），
+    // 无差别广播的话主世界一下雨，末地的天上也开始落雨点
+    const inOverworld = player.dimension === Dimension.OVERWORLD;
+    player.channel.send(S_Weather, {
+      rain: inOverworld ? rain : 0,
+      thunder: inOverworld ? thunder : 0,
+    });
   }
 }

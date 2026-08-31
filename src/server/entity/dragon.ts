@@ -258,9 +258,9 @@ export function onDragonDeath(core: ServerCore, dragon: Mob | undefined): void {
   end.setBlock(0, y + 4, 0, egg);
 
   if (dragon !== undefined) {
-    core.mobs.giveDragonXp(dragon.x, dragon.y, dragon.z, dragon.def.xp);
+    core.mobs.giveDragonXp(end, dragon.x, dragon.y, dragon.z, dragon.def.xp);
   } else {
-    core.mobs.giveDragonXp(0.5, y + 2, 0.5, 12000);
+    core.mobs.giveDragonXp(end, 0.5, y + 2, 0.5, 12000);
   }
   for (const p of core.eachPlayer()) core.sendChat(p, '末影龙被击败了');
 }
