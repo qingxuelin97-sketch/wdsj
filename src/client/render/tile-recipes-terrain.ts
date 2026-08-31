@@ -218,12 +218,16 @@ export const TERRAIN_RECIPES: Record<string, Recipe> = {
   // --- 矿石：石头底 + 带暗边的矿物团 ---
   // 直接撒亮点（原来的 speckles）在石头底上是"洒了一把糖"，退远了糊成一片；
   // 加了暗边每一团才有轮廓
-  coal_ore: (p) => { stoneBase(p); p.oreBlobs(rgb(0x2b2b2b), rgb(0x151515), 5, 1.9); p.edgeShade(10); },
-  iron_ore: (p) => { stoneBase(p); p.oreBlobs(rgb(0xd8a882), rgb(0x9a7458), 5, 1.9); p.edgeShade(10); },
-  gold_ore: (p) => { stoneBase(p); p.oreBlobs(rgb(0xf0d048), rgb(0xa2892a), 5, 1.8); p.edgeShade(10); },
+  // 矿石：**矿点要小、要少、要露出底下的石头**。
+  // 原来是 5 团 × 半径 1.9，加上暗边之后几乎铺满整块 —— 看着像"一整块铁"
+  // 而不是"石头里嵌着几粒铁"，而且那么大的团在 16×16 上必然排得很规则。
+  // 改成 4 团 × 半径 1.35：底下的石头露出来，矿点才读得出是嵌进去的
+  coal_ore: (p) => { stoneBase(p); p.oreBlobs(rgb(0x2b2b2b), rgb(0x151515), 4, 1.35); p.edgeShade(10); },
+  iron_ore: (p) => { stoneBase(p); p.oreBlobs(rgb(0xd8a882), rgb(0x9a7458), 4, 1.35); p.edgeShade(10); },
+  gold_ore: (p) => { stoneBase(p); p.oreBlobs(rgb(0xf0d048), rgb(0xa2892a), 4, 1.3); p.edgeShade(10); },
   diamond_ore: (p) => { stoneBase(p); p.oreBlobs(rgb(0x5decdc), rgb(0x33a096), 5, 1.8); p.edgeShade(10); },
-  lapis_ore: (p) => { stoneBase(p); p.oreBlobs(rgb(0x3559c0), rgb(0x1b2f6c), 5, 1.9); p.edgeShade(10); },
-  redstone_ore: (p) => { stoneBase(p); p.oreBlobs(rgb(0xd02020), rgb(0x861313), 6, 1.7); p.edgeShade(10); },
+  lapis_ore: (p) => { stoneBase(p); p.oreBlobs(rgb(0x3559c0), rgb(0x1b2f6c), 4, 1.35); p.edgeShade(10); },
+  redstone_ore: (p) => { stoneBase(p); p.oreBlobs(rgb(0xd02020), rgb(0x861313), 5, 1.3); p.edgeShade(10); },
 
   // --- 金属与宝石方块 ---
   // 这几张都是"一整块材料"，靠内嵌一圈边框做出板材感
@@ -264,10 +268,19 @@ export const TERRAIN_RECIPES: Record<string, Recipe> = {
   planks: (p) => {
     // 横向木纹：格点在 x 上少（沿板长变化慢）、y 上多（跨板变化快）
     p.grain(rgb(0xb08a52), 17);
+    // **板内要有纹丝。** 原来每块板内部几乎是纯色，四条板缝把它切成
+    // 四条色带 —— 那是瓦楞板不是木板。沿板长方向叠一层细纹，
+    // 木头的"丝"才出得来
+    p.noiseOverlay(11, 3, 15, 1);
+
+    // 板缝**不等距**：0/5/10/15 是四条等宽带，一整面墙铺开就是规则横线。
+    // 真实的木板宽度不一，这里用 0/4/9/15（宽度 4/5/6/1+）
     const seam = rgb(0x8a6a3c);
-    for (const y of [0, 5, 10, 15]) p.hLine(y, seam);
-    // 板缝下面提一行亮的：板与板之间才有台阶感，不然只是四条深线
-    for (const y of [1, 6, 11]) for (let x = 0; x < 16; x++) p.setWrapped(x, y, 0xc0, 0x99, 0x5e, 255);
+    for (const y of [0, 4, 9, 15]) p.hLine(y, seam);
+    // 板缝下面提一行亮的：板与板之间才有台阶感，不然只是几条深线
+    for (const y of [1, 5, 10]) for (let x = 0; x < 16; x++) p.setWrapped(x, y, 0xc0, 0x99, 0x5e, 255);
+    // 结疤。木板上偶尔有一个，位置固定但看着是随机的
+    p.blobs(rgb(0x8f6d3e), 2, 1.2, 6);
     p.edgeShade(8);
   },
   log_side: (p) => {

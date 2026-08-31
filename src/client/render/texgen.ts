@@ -317,9 +317,42 @@ export class TilePainter {
    * 加了暗边之后每一团才有轮廓，退远了也数得清几团。
    */
   oreBlobs(core: Rgb, rim: Rgb, count: number, radius = 2): this {
-    for (let i = 0; i < count; i++) {
-      const cx = Math.floor(this.rand() * TILE);
-      const cy = Math.floor(this.rand() * TILE);
+    // 位置用**抖动网格**而不是纯随机。
+    //
+    // 纯随机撒 4–6 个点在 16×16 上，挤成一坨的概率相当高 —— 实测钻石矿
+    // 就是这样：四团正好落在一起，变成一块巨大的青色斑，看着像
+    // "一整块钻石"而不是"石头里嵌着几粒"。而这种事**换个数量就变**，
+    // 调参数时会误以为是数量调对了，其实只是换了个随机序列。
+    //
+    // 抖动网格保证彼此分开，又不至于规则到看出阵列（圆石那边用的是
+    // 同一个手法，只是那边的目的相反 —— 那边要打散网格感，
+    // 这边要的正是"别聚在一起"）。
+    const per = Math.max(1, Math.ceil(Math.sqrt(count)));
+    const cellW = TILE / per;
+    const spots: Array<[number, number]> = [];
+    for (let gy = 0; gy < per; gy++) {
+      for (let gx = 0; gx < per; gx++) {
+        spots.push([
+          (gx + 0.5) * cellW + (this.rand() - 0.5) * cellW * 0.8,
+          (gy + 0.5) * cellW + (this.rand() - 0.5) * cellW * 0.8,
+        ]);
+      }
+    }
+    // 格子数通常多于要画的团数，随机丢掉多余的（而不是总画左上角那几个）
+    for (let i = spots.length - 1; i > 0; i--) {
+      const j = Math.floor(this.rand() * (i + 1));
+      const t = spots[i]!; spots[i] = spots[j]!; spots[j] = t;
+    }
+    return this.oreBlobsAt(core, rim, spots.slice(0, count), radius);
+  }
+
+  /** oreBlobs 的落点由调用方给定的版本 */
+  private oreBlobsAt(
+    core: Rgb, rim: Rgb, spots: ReadonlyArray<readonly [number, number]>, radius: number,
+  ): this {
+    for (const [sx, sy] of spots) {
+      const cx = Math.floor(sx);
+      const cy = Math.floor(sy);
       const r = radius * (0.7 + this.rand() * 0.6);
       const rr = Math.ceil(r) + 1;
       const wobble: number[] = [];

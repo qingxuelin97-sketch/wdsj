@@ -1,111 +1,109 @@
 /**
- * 贴图配方表。每张 16×16 原创像素画的画法。
+ * 贴图配方表（其余杂项）。地形/木制品/植物各自拆在同名的兄弟文件里。
  *
- * 关于染色：草和树叶的贴图画成**接近白的灰度**，最终颜色由 TintKind 在着色器里相乘 ——
- * 这与 MC 的做法一致，也是让不同群系共用同一张贴图的前提。现在就画成灰度，
- * M4 接入群系色表时不必重画。
+ * 关于染色：草、树叶、羊毛、红石线画成**接近白的灰度**，最终颜色由 TintKind
+ * 在着色器里相乘 —— 与 MC 一致，也是不同群系/不同羊毛色共用一张贴图的前提。
+ * 这意味着灰度图的明暗跨度会被**原样放大**到最终颜色上：振幅给小了，
+ * 一面羊毛墙远看就是一块塑料板。
  */
-import { TilePainter, rgb, mulberry32, fnv1a, type Rgb } from './texgen.ts';
+import { TilePainter, rgb, mulberry32, fnv1a } from './texgen.ts';
 import { SKY_RECIPES } from './tile-recipes-sky.ts';
 import { PARTICLE_RECIPES } from './tile-recipes-particles.ts';
-import { stoneBase, woodBase, metalBase, inset } from './tile-materials.ts';
+import { stoneBase, metalBase, inset } from './tile-materials.ts';
 import { TERRAIN_RECIPES } from './tile-recipes-terrain.ts';
+import { WOOD_RECIPES } from './tile-recipes-wood.ts';
+import { PLANT_RECIPES } from './tile-recipes-plants.ts';
 
 type Recipe = (p: TilePainter) => void;
 
-/** 在透明底上画一株十字植物的正面 */
-function plant(p: TilePainter, stem: Rgb, bloom: Rgb | null, height: number): void {
-  p.clear();
-  // 底部留一行透明。十字植物的底边与下方草方块的顶面正好共面，
-  // 那一行若有不透明像素就会 z-fighting，表现为地面上闪烁的杂色点。
-  // MC 的植物贴图同样是不贴底的。
-  const baseY = 14;
-  const topY = baseY - height;
-  let cx = 8;
-  for (let y = baseY; y >= topY; y--) {
-    if (p.rand() < 0.25) cx += p.rand() < 0.5 ? -1 : 1;
-    cx = Math.max(4, Math.min(11, cx));
-    const d = (p.rand() - 0.5) * 20;
-    p.set(cx, y, stem.r + d, stem.g + d, stem.b + d);
-    // 偶尔长出侧叶
-    if (p.rand() < 0.3) p.set(cx + (p.rand() < 0.5 ? -1 : 1), y, stem.r + d, stem.g + d, stem.b + d);
-  }
-  if (bloom !== null) {
-    for (let dy = 0; dy < 3; dy++) {
-      for (let dx = -2; dx <= 2; dx++) {
-        if (Math.abs(dx) === 2 && dy !== 1) continue;
-        const d = (p.rand() - 0.5) * 24;
-        p.set(cx + dx, topY - 1 + dy, bloom.r + d, bloom.g + d, bloom.b + d);
-      }
-    }
-  }
-}
-
-/** 蘑菇：矮柄 + 伞盖 */
-function mushroom(p: TilePainter, cap: Rgb, spots: boolean): void {
-  p.clear();
-  const stem = rgb(0xd6cfc0);
-  for (let y = 9; y < 14; y++) for (let x = 7; x <= 8; x++) p.set(x, y, stem.r, stem.g, stem.b);
-  for (let y = 5; y < 10; y++) {
-    const half = y < 7 ? 3 : 4;
-    for (let x = 8 - half; x <= 7 + half; x++) {
-      const d = (p.rand() - 0.5) * 16;
-      p.set(x, y, cap.r + d, cap.g + d, cap.b + d);
-    }
-  }
-  if (spots) {
-    for (let i = 0; i < 4; i++) {
-      p.set(5 + Math.floor(p.rand() * 6), 6 + Math.floor(p.rand() * 3), 235, 235, 228);
-    }
-  }
-}
-
 export const RECIPES: Record<string, Recipe> = {
   ...TERRAIN_RECIPES,
+  // 木制品与机器（箱子/梯子/门/铁轨/活塞/床/蛋糕）搬去了 tile-recipes-wood.ts —— 见那个文件的头注释
+  ...WOOD_RECIPES,
+  // 植物/农作物搬去了 tile-recipes-plants.ts —— 见那个文件的头注释
+  ...PLANT_RECIPES,
   // --- 熔炉 ---
   furnace_top: (p) => { stoneBase(p, rgb(0x707070)); p.rect(4, 4, 8, 8, rgb(0x5e5e5e)); inset(p, 4); p.edgeShade(9); },
   furnace_side: (p) => { stoneBase(p, rgb(0x707070)); p.edgeShade(9); },
   furnace_front: (p) => {
     stoneBase(p, rgb(0x707070));
-    p.rect(3, 5, 10, 8, rgb(0x2e2e2e));
-    p.rect(4, 6, 8, 2, rgb(0x4a4a4a));
+    // 炉膛要有**进深**：外圈是被烟熏黑的炉口石，里圈才是看不见底的黑。
+    // 原来是一个纯黑矩形加一条灰杠，读作"墙上贴了张黑纸"
+    p.rect(3, 5, 10, 8, rgb(0x3b3733));
+    p.rect(4, 7, 8, 5, rgb(0x191715));
+    // 炉栅：三根竖条，间距不等
+    for (const x of [5, 8, 12]) for (let y = 7; y < 12; y++) p.set(x, y, 0x36, 0x32, 0x2d);
     // 炉口内凹：左上压暗、右下提亮，与外凸的机身正好相反
     inset(p, 3, -20, -14);
     p.edgeShade(9);
   },
-
   // --- 其它 ---
+  /**
+   * 玻璃。
+   *
+   * 三处改动，都针对"一眼看出是程序画的"：
+   *   1. 边框不再是四条一模一样的实线 —— 那在 2×2 平铺时相邻两格并成
+   *      2px 的粗黑框，一面窗户读作铅条格栅。现在左上两边亮（受光）、
+   *      右下两边暗（背光），四角再点一下，框本身就有厚度
+   *   2. 高光从"一道孤零零的长斜线"改成**长短不一的三四道**。单独一道
+   *      又长又亮的线是典型的"记号"：一平铺整面墙上全是同一条杠
+   *   3. 玻璃内部原来是纯透明的空。真玻璃有极淡的反光雾，
+   *      补几粒 alpha 很低的点，退远看才是"有东西"而不是"洞"
+   */
   glass: (p) => {
     p.clear();
-    const frame = rgb(0xd0e8f0);
-    for (let x = 0; x < 16; x++) { p.set(x, 0, frame.r, frame.g, frame.b); p.set(x, 15, frame.r, frame.g, frame.b); }
-    for (let y = 0; y < 16; y++) { p.set(0, y, frame.r, frame.g, frame.b); p.set(15, y, frame.r, frame.g, frame.b); }
-    // 一道斜高光，玻璃才像玻璃。原来撒的是五个随机点 —— 那读作"脏"，
-    // 不读作"反光"：反光必须是**连续的一道**，眼睛靠它判断这是个平面
-    for (let i = 0; i < 7; i++) {
-      p.set(3 + i, 11 - i, 0xe8, 0xf4, 0xf8, 150);
-      if (i < 4) p.set(4 + i, 11 - i, 0xe8, 0xf4, 0xf8, 90);
+    const lit = rgb(0xdcf0f8);
+    const dim = rgb(0x8fb0be);
+    for (let i = 0; i < 16; i++) {
+      p.set(i, 0, lit.r, lit.g, lit.b);
+      p.set(0, i, lit.r, lit.g, lit.b);
+      p.set(i, 15, dim.r, dim.g, dim.b);
+      p.set(15, i, dim.r, dim.g, dim.b);
+    }
+    // 边框内侧再补一圈很淡的，玻璃的"厚度"就出来了
+    for (let i = 1; i < 15; i++) {
+      p.set(i, 1, 0xc4, 0xdc, 0xe6, 70);
+      p.set(1, i, 0xc4, 0xdc, 0xe6, 70);
+    }
+    // 反光：从右下往左上的几道斜线，长度与不透明度都不同
+    const streak = (x0: number, y0: number, len: number, a: number): void => {
+      for (let i = 0; i < len; i++) p.set(x0 + i, y0 - i, 0xee, 0xf8, 0xfc, a);
+    };
+    streak(3, 12, 8, 165);
+    streak(4, 12, 5, 80);
+    streak(9, 13, 4, 120);
+    streak(3, 6, 3, 95);
+    // 极淡的雾点。透明处的 RGB 要填玻璃色而不是黑，否则 mip 缩小后边缘发黑
+    for (let i = 0; i < 10; i++) {
+      p.set(2 + Math.floor(p.rand() * 12), 2 + Math.floor(p.rand() * 12), 0xd4, 0xe8, 0xf0, 34);
     }
   },
-  // 羊毛是灰度，颜色由方块的染色决定。织物感靠**细密的短团**，
-  // 不是逐像素噪声 —— 后者在 16×16 上就是一张灰纸
-  wool: (p) => { p.valueNoise(rgb(0xe4e4e4), 9, 8, 8, 2); p.blobs(rgb(0xd6d6d6), 12, 1.1, 7); p.edgeShade(7); },
-  obsidian: (p) => {
-    p.valueNoise(rgb(0x171024), 10, 5, 5, 2);
-    // 紫色的解理面成团，黑曜石才有"一块玻璃质的石头"的样子
-    p.blobs(rgb(0x33254a), 6, 2.1, 10);
-    p.blobs(rgb(0x0d0916), 5, 1.6, 6);
+  /**
+   * 羊毛。灰度，颜色由方块的 tint 乘上去 —— 也就是说这张图的明暗跨度
+   * 会被**原样放大**到最终颜色上。原来振幅只有 9/255（3.5%），
+   * 一面羊毛墙远看是一块塑料板，连"这是布"都读不出来。
+   *
+   * 布的质感是**两个尺度**：大块的褶皱起伏（低频）+ 密集的绒毛颗粒（高频）。
+   * 只有一层的话调小是纸、调大是糊。
+   */
+  wool: (p) => {
+    p.valueNoise(rgb(0xdcdcdc), 17, 8, 8, 3);
+    p.noiseOverlay(13, 16, 16, 1);
+    p.blobs(rgb(0xc6c6c6), 14, 1.1, 8);
+    p.blobs(rgb(0xf0f0f0), 9, 0.9, 7);
     p.edgeShade(8);
   },
-
-  // --- 植物 ---
-  tall_grass: (p) => plant(p, rgb(0xc8c8c8), null, 11),
-  dead_bush: (p) => plant(p, rgb(0x6f5321), null, 10),
-  sapling: (p) => plant(p, rgb(0x4f7f2f), rgb(0x3f7a28), 9),
-  dandelion: (p) => plant(p, rgb(0x4f7f2f), rgb(0xf0e050), 10),
-  rose: (p) => plant(p, rgb(0x4f7f2f), rgb(0xd02020), 10),
-  brown_mushroom: (p) => mushroom(p, rgb(0x9b6b4b), false),
-  red_mushroom: (p) => mushroom(p, rgb(0xc23a2a), true),
+  obsidian: (p) => {
+    // 黑曜石是**玻璃质**的石头：底要够暗，紫色只在解理面上闪。
+    // 高频那层给它"碎裂的光泽"，少了就是一块黑橡皮
+    p.valueNoise(rgb(0x171024), 16, 5, 5, 3);
+    p.noiseOverlay(9, 13, 13, 1);
+    p.blobs(rgb(0x3a2a56), 8, 1.6, 10);
+    p.blobs(rgb(0x0b0712), 7, 1.3, 6);
+    // 几粒亮紫的高光点：黑曜石在火把下会反出一点光
+    p.blobs(rgb(0x6a4f96), 4, 0.8, 6);
+    p.edgeShade(8);
+  },
 
   // --- M7 的非立方体方块贴图 ---
   stone_slab_top: (p) => { stoneBase(p, rgb(0x9a9a9a)); p.edgeShade(9); },
@@ -115,78 +113,71 @@ export const RECIPES: Record<string, Recipe> = {
     const edge = rgb(0xa8a8a8);
     for (let x = 0; x < 16; x++) { p.set(x, 0, edge.r, edge.g, edge.b); p.set(x, 15, edge.r, edge.g, edge.b); }
   },
+  /**
+   * 火把。全游戏出现次数最多的 cutout 贴图之一（地下每隔几格一支）。
+   *
+   * 原来是"两列同色的棕 + 一块两色的黄"，共四个色 —— 在黑漆漆的矿洞里
+   * 那就是一根塑料棒顶着一坨黄。真火把要的是三件事：
+   *   1. 木棍是**圆**的：左列受光、右列背光，中间本色
+   *   2. 火焰有**层次**：外焰暗橙 -> 内焰橙黄 -> 焰心近白，一层套一层
+   *   3. 棍与焰之间有一道**烧焦的暗**，火才像是从棍上烧起来的
+   */
   torch: (p) => {
     p.clear();
-    // 木棍
-    const stick = rgb(0x8a6a3a);
-    for (let y = 6; y < 16; y++) for (let x = 7; x <= 8; x++) p.set(x, y, stick.r, stick.g, stick.b);
-    // 火焰头
-    for (let y = 2; y < 6; y++) {
-      for (let x = 6; x <= 9; x++) {
-        const hot = y < 4;
-        const c = hot ? rgb(0xfff0a0) : rgb(0xf0a020);
-        if (x === 6 || x === 9) { if (y < 3) continue; }
-        p.set(x, y, c.r, c.g, c.b);
-      }
+    for (let y = 8; y < 16; y++) {
+      const g = (p.rand() - 0.5) * 12;
+      p.set(7, y, 0xa6 + g, 0x82 + g, 0x4a + g);
+      p.set(8, y, 0x6a + g, 0x4e + g, 0x2a + g);
     }
-  },
-  ladder: (p) => {
-    p.clear();
-    const wood = rgb(0x9a7a44);
-    for (let y = 0; y < 16; y++) { for (const x of [2, 3, 12, 13]) p.set(x, y, wood.r, wood.g, wood.b); }
-    for (const y of [2, 7, 12]) { for (let x = 3; x < 13; x++) { p.set(x, y, wood.r, wood.g, wood.b); p.set(x, y + 1, wood.r, wood.g, wood.b); } }
-  },
-  cake_top: (p) => { p.valueNoise(rgb(0xf7f0e0), 7, 7, 7, 2); p.blobs(rgb(0xd04040), 9, 1.3, 14); p.edgeShade(7); },
-  cake_bottom: (p) => { woodBase(p, rgb(0x8a6a45)); p.edgeShade(8); },
-  cake_side: (p) => {
-    p.valueNoise(rgb(0xf7f0e0), 7, 7, 7, 2);
-    p.rect(0, 0, 16, 3, rgb(0xd04040));
-    p.rect(0, 12, 16, 4, rgb(0x8a6a45));
-  },
-  door_lower: (p) => {
-    woodBase(p, rgb(0x9a7a4a), true);
-    p.rect(1, 1, 14, 6, rgb(0x8a6a3c));
-    p.rect(1, 9, 14, 6, rgb(0x8a6a3c));
-    p.rect(12, 7, 2, 2, rgb(0xd8d8d8));
-  },
-  trapdoor: (p) => {
-    p.clear();
-    const wood = rgb(0x9a7a44);
-    for (const y of [1, 2, 7, 8, 13, 14]) for (let x = 0; x < 16; x++) p.set(x, y, wood.r, wood.g, wood.b);
-    for (const x of [1, 2, 13, 14]) for (let y = 0; y < 16; y++) p.set(x, y, wood.r, wood.g, wood.b);
-  },
-  bed_top: (p) => { p.valueNoise(rgb(0xc03030), 10, 7, 7, 2); p.rect(0, 0, 16, 4, rgb(0xf0f0f0)); p.edgeShade(9); },
-  bed_side: (p) => { p.valueNoise(rgb(0xc03030), 10, 7, 7, 2); woodBase(p, rgb(0x9a7a44)); p.rect(0, 0, 16, 11, rgb(0xc03030)); p.valueNoise(rgb(0xc03030), 10, 7, 7, 2); p.edgeShade(9); },
-  rail: (p) => {
-    p.clear();
-    const tie = rgb(0x8a6a3a);
-    for (let y = 1; y < 16; y += 4) for (let x = 2; x < 14; x++) { p.set(x, y, tie.r, tie.g, tie.b); p.set(x, y + 1, tie.r, tie.g, tie.b); }
-    const metal = rgb(0xc0c0c0);
-    for (let y = 0; y < 16; y++) { for (const x of [4, 5, 10, 11]) p.set(x, y, metal.r, metal.g, metal.b); }
-  },
-
-  // --- M8 批的贴图 ---
-  chest_top: (p) => { woodBase(p, rgb(0x9a6f3f)); p.rect(0, 0, 16, 1, rgb(0x6f4f2a)); inset(p, 1); p.edgeShade(9); },
-  chest_side: (p) => { woodBase(p, rgb(0x9a6f3f)); p.rect(0, 5, 16, 2, rgb(0x6f4f2a)); inset(p, 1); p.edgeShade(9); },
-  chest_front: (p) => {
-    woodBase(p, rgb(0x9a6f3f));
-    p.rect(0, 5, 16, 2, rgb(0x6f4f2a));
-    p.rect(7, 6, 2, 4, rgb(0xd8c060));   // 锁扣
-    p.shade(7, 6, 26);                   // 锁扣顶上一点高光，才像金属
-    inset(p, 1);
-    p.edgeShade(9);
+    // 烧焦的一截
+    p.set(7, 7, 0x5a, 0x3c, 0x1e);
+    p.set(8, 7, 0x40, 0x2a, 0x14);
+    // 外焰（暗橙）
+    for (const [x, y] of [[6, 5], [6, 6], [9, 5], [9, 6], [7, 3], [8, 3], [6, 4], [9, 4]] as const) {
+      p.set(x, y, 0xc4, 0x5c, 0x0e);
+    }
+    // 内焰（橙黄）
+    for (const [x, y] of [[7, 4], [8, 4], [7, 6], [8, 6], [7, 2], [8, 2]] as const) {
+      p.set(x, y, 0xf2, 0xa8, 0x22);
+    }
+    // 焰心：最亮的两格，火把在暗处的"点光源"读感全靠它
+    p.set(7, 5, 0xff, 0xf0, 0xb4);
+    p.set(8, 5, 0xff, 0xe2, 0x8e);
   },
   tnt_top: (p) => { p.valueNoise(rgb(0xd03028), 10, 7, 7, 2); p.rect(2, 2, 12, 12, rgb(0xa02018)); inset(p, 2); p.edgeShade(9); },
   tnt_bottom: (p) => { p.valueNoise(rgb(0x7a6a5a), 11, 6, 6, 2); p.edgeShade(9); },
+  /**
+   * TNT 侧面。
+   *
+   * 原来白带上是"每 3 列一个 2×2 黑方块" —— 等距方点读作条形码/尺子，
+   * 不读作"箱子上写了字"。这里真的把 TNT 三个字母点出来（3×5 的位图），
+   * 红色部分也补上高频噪声（原来只有一层 10 振幅的低频，是一张红纸）。
+   */
   tnt_side: (p) => {
-    p.valueNoise(rgb(0xd03028), 10, 7, 7, 2);
-    p.rect(0, 5, 16, 6, rgb(0xf0f0f0));
-    // 中间那圈白带上写点东西的感觉
-    for (let x = 2; x < 14; x += 3) p.rect(x, 7, 2, 2, rgb(0x303030));
+    p.valueNoise(rgb(0xc22e24), 20, 5, 5, 3);
+    p.noiseOverlay(10, 13, 13, 1);
+    p.blobs(rgb(0xa32219), 8, 1.3, 10);
+    p.rect(0, 5, 16, 6, rgb(0xe6e4da));
+    for (let x = 0; x < 16; x++) {
+      for (let y = 5; y < 11; y++) p.shade(x, y, (p.rand() - 0.5) * 14);
+      p.shade(x, 5, -22);          // 纸带上下沿各压一道影，纸才贴在桶上
+      p.shade(x, 10, -16);
+    }
+    const GLYPH: readonly (readonly string[])[] = [
+      ['###', '.#.', '.#.', '.#.', '.#.'],
+      ['#.#', '##.', '###', '.##', '#.#'],
+      ['###', '.#.', '.#.', '.#.', '.#.'],
+    ];
+    GLYPH.forEach((g, gi) => {
+      g.forEach((row, ry) => {
+        for (let rx = 0; rx < 3; rx++) {
+          if (row[rx] !== '#') continue;
+          p.set(3 + gi * 4 + rx, 6 + ry, 0x2a, 0x22, 0x1e);
+        }
+      });
+    });
+    p.edgeShade(9);
   },
-  jukebox_top: (p) => { woodBase(p, rgb(0x8a6a45)); p.rect(4, 4, 8, 8, rgb(0x303030)); inset(p, 4, -18, -12); p.edgeShade(9); },
-  jukebox_side: (p) => { woodBase(p, rgb(0x8a6a45)); p.rect(0, 13, 16, 3, rgb(0x6a4f34)); p.edgeShade(9); },
-  note_block: (p) => { woodBase(p, rgb(0x7a5a3a)); p.blobs(rgb(0x4a3a2a), 7, 1.4, 10); p.edgeShade(9); },
   dispenser_front: (p) => {
     stoneBase(p, rgb(0x7a7a7a));
     p.rect(4, 4, 8, 8, rgb(0x3a3a3a));
@@ -199,52 +190,21 @@ export const RECIPES: Record<string, Recipe> = {
     const knob = rgb(0x9a9a9a);
     for (let y = 2; y < 5; y++) for (let x = 6; x <= 9; x++) p.set(x, y, knob.r, knob.g, knob.b);
   },
-  // 红石线：灰度的十字，颜色由 TintKind.REDSTONE 按信号强度决定深浅。
-  // 画成十字而不是单条线，是因为线的连接方向是每帧由邻居推出来的，
-  // 一张能同时当直线和拐角用的贴图省掉了十六种朝向的图
+  // 红石线画成十字：连接方向每帧由邻居推出来，一张图同时当直线和拐角用，
+  // 省掉十六种朝向的贴图
   redstone_wire: (p) => {
     p.clear();
+    // 横截面的明度剖面：两侧暗、中间亮。原来四列同亮度（235）+ 逐像素噪声，
+    // 出来是一条 4px 宽的白胶带 —— 没有粗细就没有"线"的感觉。
+    // 这张图会被 TintKind.REDSTONE 按信号强度整体相乘，所以剖面差会被放大
+    const PROFILE = [150, 236, 214, 156] as const;
     for (let i = 0; i < 16; i++) {
-      for (let w = 6; w <= 9; w++) {
-        const d = (p.rand() - 0.5) * 24;
-        p.set(i, w, 235 + d, 235 + d, 235 + d);
-        p.set(w, i, 235 + d, 235 + d, 235 + d);
+      for (let k = 0; k < 4; k++) {
+        const v = PROFILE[k]! + (p.rand() - 0.5) * 18;
+        p.set(i, 6 + k, v, v, v);
+        p.set(6 + k, i, v, v, v);
       }
     }
-  },
-  piston_side: (p) => {
-    woodBase(p, rgb(0x9a8a6a), true);
-    // 上下各一道深色包边，看着像一截木质的筒身
-    p.rect(0, 0, 16, 2, rgb(0x6a5a3a));
-    p.rect(0, 14, 16, 2, rgb(0x6a5a3a));
-    for (let x = 0; x < 16; x += 5) p.rect(x, 2, 1, 12, rgb(0x7a6a4a));
-  },
-  piston_top: (p) => {
-    p.valueNoise(rgb(0xb8a878), 9, 6, 6, 2);
-    p.rect(1, 1, 14, 14, rgb(0x8a7a5a));
-    p.rect(3, 3, 10, 10, rgb(0xb0a070));
-    inset(p, 3);
-    p.edgeShade(8);
-  },
-  piston_top_sticky: (p) => {
-    p.valueNoise(rgb(0xb8a878), 9, 6, 6, 2);
-    p.rect(1, 1, 14, 14, rgb(0x8a7a5a));
-    // 粘性活塞顶上那一圈绿 —— 唯一能一眼分辨两种活塞的地方。
-    // 斑点必须**只落在那一圈里**：原来的 speckles 撒满整块，
-    // 把外框也点绿了，两种活塞反而更难分
-    p.rect(3, 3, 10, 10, rgb(0x7aa03a));
-    for (let i = 0; i < 14; i++) {
-      const x = 3 + Math.floor(p.rand() * 10);
-      const y = 3 + Math.floor(p.rand() * 10);
-      p.set(x, y, 0x5a, 0x80, 0x20);
-    }
-    inset(p, 3);
-    p.edgeShade(8);
-  },
-  piston_bottom: (p) => {
-    woodBase(p, rgb(0x8a7a5a));
-    p.blobs(rgb(0x6a5a3a), 8, 1.5, 10);
-    p.edgeShade(9);
   },
 
   // 熄灭的红石火把：与亮着的同形，只是头上那点是暗红的
@@ -288,31 +248,6 @@ export const RECIPES: Record<string, Recipe> = {
     for (let y = 0; y < 16; y++) { p.shade(3, y, 20); p.shade(4, y, -18); p.shade(11, y, 20); p.shade(12, y, -18); }
     for (let x = 0; x < 16; x++) { p.shade(x, 0, 18); p.shade(x, 1, -16); p.shade(x, 14, 18); p.shade(x, 15, -16); }
   },
-  melon_top: (p) => { p.valueNoise(rgb(0x6f9c3a), 12, 6, 6, 2); p.blobs(rgb(0x4f7a28), 7, 1.6, 12); p.edgeShade(9); },
-  melon_side: (p) => {
-    p.grain(rgb(0x8ab04a), 13, true);
-    // 竖条纹，西瓜的招牌
-    for (let x = 1; x < 16; x += 4) p.rect(x, 0, 2, 16, rgb(0x4f7a28));
-  },
-  pumpkin_top: (p) => { p.valueNoise(rgb(0xc07818), 11, 6, 6, 2); p.rect(6, 6, 4, 4, rgb(0x6f8a30)); p.edgeShade(9); },
-  pumpkin_side: (p) => {
-    p.grain(rgb(0xc07818), 12, true);
-    for (let x = 1; x < 16; x += 5) p.rect(x, 0, 1, 16, rgb(0x9a5a10));
-  },
-  pumpkin_face: (p) => {
-    p.grain(rgb(0xc07818), 12, true);
-    for (let x = 1; x < 16; x += 5) p.rect(x, 0, 1, 16, rgb(0x9a5a10));
-    // 两只眼睛一张嘴
-    p.rect(3, 4, 3, 3, rgb(0x3a2408));
-    p.rect(10, 4, 3, 3, rgb(0x3a2408));
-    p.rect(4, 10, 8, 2, rgb(0x3a2408));
-  },
-  jack_o_lantern_face: (p) => {
-    p.grain(rgb(0xc07818), 12, true);
-    p.rect(3, 4, 3, 3, rgb(0xf8e070));
-    p.rect(10, 4, 3, 3, rgb(0xf8e070));
-    p.rect(4, 10, 8, 2, rgb(0xf8e070));
-  },
   brewing_stand: (p) => {
     p.clear();
     const m = rgb(0x9a9a9a);
@@ -325,64 +260,6 @@ export const RECIPES: Record<string, Recipe> = {
   cauldron_side: (p) => { metalBase(p, rgb(0x4a4a4a)); p.rect(0, 0, 16, 2, rgb(0x6a6a6a)); p.edgeShade(8); },
   enchanting_table_top: (p) => { p.valueNoise(rgb(0x2a1a3a), 10, 5, 5, 2); p.oreBlobs(rgb(0xc03060), rgb(0x5a1830), 5, 1.5); p.edgeShade(8); },
   enchanting_table_side: (p) => { p.valueNoise(rgb(0x2a1a3a), 10, 5, 5, 2); p.rect(0, 0, 16, 3, rgb(0x8a2a4a)); p.edgeShade(8); },
-  // 海绵的辨识度全在**孔**上。原来撒的是 18 个随机方点，读作"脏"；
-  // 成团的暗窝才读作"多孔"
-  sponge: (p) => {
-    p.valueNoise(rgb(0xc6c64a), 13, 6, 6, 2);
-    p.blobs(rgb(0x8a8a2a), 9, 1.8, 14);
-    p.blobs(rgb(0x6a6a1a), 6, 1.2, 10);
-    p.edgeShade(10);
-  },
-  cactus_top: (p) => { p.valueNoise(rgb(0x5a8a3a), 11, 6, 6, 2); p.blobs(rgb(0x3f6a28), 6, 1.5, 10); p.edgeShade(9); },
-  cactus_side: (p) => {
-    p.grain(rgb(0x4f7a30), 12, true);
-    for (let y = 0; y < 16; y += 4) for (let x = 2; x < 15; x += 5) p.set(x, y, 0xe0, 0xe0, 0xc0);
-  },
-  sugar_cane_block: (p) => plant(p, rgb(0x9ac46a), null, 10),
-  lily_pad: (p) => {
-    p.clear();
-    const c = rgb(0xd0d0d0);
-    for (let y = 1; y < 15; y++) {
-      for (let x = 1; x < 15; x++) {
-        const dx = x - 7.5;
-        const dy = y - 7.5;
-        if (dx * dx + dy * dy > 49) continue;
-        // 缺一个口，像睡莲叶
-        if (dx > 0 && Math.abs(dy) < 2) continue;
-        p.set(x, y, c.r, c.g, c.b);
-      }
-    }
-  },
-  vines: (p) => {
-    p.clear();
-    const c = rgb(0xd8d8d8);
-    for (let i = 0; i < 5; i++) {
-      let x = 1 + Math.floor(p.rand() * 14);
-      for (let y = 0; y < 16; y++) {
-        p.set(x, y, c.r, c.g, c.b);
-        if (p.rand() < 0.25) x += p.rand() < 0.5 ? -1 : 1;
-        x = Math.max(0, Math.min(15, x));
-      }
-    }
-  },
-  // 耕地：翻过的土，一道道垄沟。
-  // 原来是"泥土色 + 三条深线"，读起来像深色木板 —— 因为线是**纯色实线**，
-  // 而垄沟是有深浅的凹槽。沟底压暗、沟沿提亮才立得起来
-  farmland: (p) => {
-    p.valueNoise(rgb(0x6f4a2a), 16, 5, 5, 2);
-    p.blobs(rgb(0x59391f), 6, 1.7, 12);
-    for (let y = 2; y < 16; y += 5) {
-      for (let x = 0; x < 16; x++) {
-        const d = (p.rand() - 0.5) * 10;
-        p.set(x, y, 0x46 + d, 0x2d + d, 0x16 + d);       // 沟底
-        p.set(x, y + 1, 0x54 + d, 0x37 + d, 0x1c + d);
-        p.shade(x, y - 1, 12);                            // 沟沿提亮
-      }
-    }
-    p.edgeShade(11);
-  },
-  wheat_crop: (p) => plant(p, rgb(0xc8b048), rgb(0xe0c860), 11),
-  nether_wart_block: (p) => plant(p, rgb(0x8a1a2a), rgb(0xb02a3a), 10),
   // 经验球：一颗发亮的小球。它不是方块也不是物品，
   // 但走的是同一套图集，所以在这里画
   xp_orb: (p) => {
@@ -451,16 +328,24 @@ export const RECIPES: Record<string, Recipe> = {
   },
   furnace_front_lit: (p) => {
     stoneBase(p, rgb(0x7a7a7a));
-    p.rect(3, 7, 10, 6, rgb(0x30240f));
-    p.rect(4, 9, 8, 4, rgb(0xf0a020));
+    p.rect(3, 5, 10, 8, rgb(0x3b3733));
+    p.rect(4, 7, 8, 5, rgb(0x2a1c0a));
+    // 火焰堆在炉膛底部，往上收窄并变暗 —— 一整块橙色矩形不发光，
+    // 有梯度的火才发光
+    for (let y = 8; y < 12; y++) {
+      const inset0 = y === 8 ? 2 : y === 9 ? 1 : 0;
+      for (let x = 4 + inset0; x < 12 - inset0; x++) {
+        const t = (y - 8) / 3;
+        const d = (p.rand() - 0.5) * 30;
+        p.set(x, y, 0xc0 + t * 60 + d, 0x60 + t * 70 + d, 0x10 + t * 24 + d);
+      }
+    }
+    inset(p, 3, -20, -14);
+    p.edgeShade(9);
   },
 
-  // --- 挖掘裂纹，10 级 ---
-  //
-  // 白底黑纹，由渲染时的乘法混合把它压到方块表面上（见 overlay-renderer.ts）。
-  // 裂纹从中心向外生长：每一级都包含上一级的全部线条，再多几条分叉 ——
-  // 关键是**同一格方块的裂纹图案在 10 级之间必须是连续的**，
-  // 每级各画各的会让裂纹在挖掘过程中不停跳动，非常廉价。
+  // 挖掘裂纹 10 级：白底黑纹，渲染时乘法压到方块表面（见 overlay-renderer.ts）。
+  // 每一级都包含上一级的全部线条 —— 各画各的会让裂纹在挖掘中不停跳动
   ...destroyStages(),
   ...SKY_RECIPES,
   ...PARTICLE_RECIPES,
