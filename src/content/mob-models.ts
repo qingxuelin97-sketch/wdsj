@@ -67,6 +67,7 @@ const GHAST_EYE: readonly [number, number, number] = [0.75, 0.10, 0.10];
 const GHAST_MOUTH: readonly [number, number, number] = [0.15, 0.10, 0.12];
 const FIREBALL_CORE: readonly [number, number, number] = [1.0, 0.95, 0.55];
 const FIREBALL_GLOW: readonly [number, number, number] = [1.0, 0.48, 0.10];
+const ENDER_EYE_GREEN: readonly [number, number, number] = [0.35, 0.85, 0.55];
 const CHICKEN_BEAK: readonly [number, number, number] = [0.90, 0.65, 0.15];
 const CHICKEN_LEG: readonly [number, number, number] = [0.85, 0.55, 0.12];
 const EYE_DARK: readonly [number, number, number] = [0.05, 0.05, 0.06];
@@ -260,6 +261,11 @@ MODELS.set(MobType.FIREBALL, {
     b(-6, 2, -6, 12, 2, 12, FIREBALL_GLOW),
     b(-6, 10, -6, 12, 2, 12, FIREBALL_GLOW),
   ],
+});
+
+/** 末影之眼：一颗小小的绿色发光球 */
+MODELS.set(MobType.ENDER_EYE, {
+  boxes: [b(-3, 0, -3, 6, 6, 6, ENDER_EYE_GREEN)],
 });
 
 /** 羊毛的 16 种颜色。羊的第一个盒子（身体）用它染色 */

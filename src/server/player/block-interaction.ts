@@ -27,6 +27,7 @@ import { tillSoil, applyBoneMeal } from '../world/random-ticks.ts';
 import { ignitePortal } from '../world/portal-manager.ts';
 import { EnchantingEntity, BrewingEntity } from '../world/block-entity-craft.ts';
 import { refreshOffers, sendOffers } from './enchant-actions.ts';
+import { insertEye, tryActivateEndPortal, throwEnderEye } from '../world/end-portal.ts';
 
 /**
  * 吃一口。饥饿已经满了就不吃 —— 与 MC 一致，免得把珍贵的食物浪费掉。
@@ -149,6 +150,31 @@ function useSpecialItem(
         held.damage = 0;
       }
       syncInventory(core, player);
+    }
+    return true;
+  }
+
+  if (itemId === items.idOf('eye_of_ender')) {
+    // 点在框架上就嵌进去，点在别处就扔出去找要塞
+    if (insertEye(core, world, bx, by, bz)) {
+      held.count--;
+      if (held.count <= 0) { held.id = 0; held.damage = 0; }
+      syncInventory(core, player);
+      // 嵌完看看是不是十二块齐了
+      if (tryActivateEndPortal(core, world, bx, bz)) {
+        core.sendChat(player, '末地传送门被激活了');
+      }
+      return true;
+    }
+    if (throwEnderEye(core, player)) {
+      // MC 里扔出去的眼有 20% 概率摔碎。不做的话末影之眼是消耗品
+      // 这件事就不成立，而"要攒多少颗眼"是通往末地的主要成本
+      if (core.world.random.nextInt(5) === 0) {
+        held.count--;
+        if (held.count <= 0) { held.id = 0; held.damage = 0; }
+        syncInventory(core, player);
+      }
+      return true;
     }
     return true;
   }

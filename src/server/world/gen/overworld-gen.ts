@@ -21,6 +21,8 @@ import { CaveCarver, type CarveTarget } from './caves.ts';
 import { OreGen } from './ores.ts';
 import { SurfaceBuilder, type SurfaceStates } from './surface.ts';
 import { Decorator, type DecorAccess, type DecorStates } from './decorator.ts';
+import { carveStronghold, type StrongholdStates } from './stronghold.ts';
+import type { WorldGenerator } from './generator.ts';
 
 const COLUMN_VOLUME = CHUNK_SIZE * CHUNK_SIZE * WORLD_HEIGHT;
 
@@ -33,7 +35,7 @@ interface TerrainStage {
 /** 缓存多少个区块的地形阶段。3×3 邻域 + 余量 */
 const TERRAIN_CACHE_LIMIT = 96;
 
-export class OverworldGenerator {
+export class OverworldGenerator implements WorldGenerator {
   readonly seed: bigint;
   private readonly biomeSource: BiomeSource;
   private readonly biomeTables: BiomeTables;
@@ -48,6 +50,7 @@ export class OverworldGenerator {
   private spawnCache: { x: number; y: number; z: number } | null = null;
   private readonly surfaceStates: SurfaceStates;
   private readonly decorStates: DecorStates;
+  private readonly strongholdStates: StrongholdStates;
   private readonly st: Record<string, number>;
   /** 可被洞穴雕掉、可被矿脉替换的方块集合 */
   private readonly carvable = new Set<number>();
@@ -121,6 +124,15 @@ export class OverworldGenerator {
       brownMushroom: this.st['brownMushroom']!, redMushroom: this.st['redMushroom']!,
       deadBush: this.st['deadBush']!, snowLayer: this.st['snowBlock']!,
     };
+    this.strongholdStates = {
+      stoneBricks: s('stone_bricks'),
+      mossyStoneBricks: s('mossy_cobblestone'),
+      crackedStoneBricks: s('cobblestone'),
+      air: AIR_STATE,
+      portalFrame: s('end_portal_frame'),
+      lavaBelow: s('lava'),
+      torch: s('torch'),
+    };
   }
 
   /** 该列的群系 */
@@ -193,6 +205,12 @@ export class OverworldGenerator {
     };
 
     this.decorator.decorate(cx, cz, access, (wx, wz) => this.biomeAt(wx, wz), this.decorStates);
+
+    // 要塞**最后**写：它是硬结构，不该被树根或矿脉打断。
+    // 排在装饰之前的话，一棵长在要塞正上方的树会把屋顶捅穿
+    carveStronghold(this.seed, cx, cz, this.strongholdStates, (wx, wy, wz, state) => {
+      access.set(wx, wy, wz, state);
+    });
 
     return this.packChunk(cx, cz, center);
   }

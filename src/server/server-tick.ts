@@ -21,6 +21,7 @@ import { tickItems, broadcastItems } from './entity/item-manager.ts';
 import { tickArrows } from './entity/combat.ts';
 import { tickVitals } from './player/player-vitals.ts';
 import { tickPortal } from './world/portal-manager.ts';
+import { tickEndPortal } from './world/end-portal.ts';
 import type { ServerWorld } from './world/server-world.ts';
 
 export function runServerTick(core: ServerCore): void {
@@ -98,7 +99,10 @@ export function runServerTick(core: ServerCore): void {
 
   // 传送门：站够时间就走。排在生存之后 —— 传送会换掉玩家的世界，
   // 这一刻剩下的步骤都该看到新的那个
-  for (const player of core.eachPlayer()) tickPortal(core, player);
+  for (const player of core.eachPlayer()) {
+    tickPortal(core, player);
+    tickEndPortal(core, player);
+  }
 
   // 掉落物：物理、合并、拾取
   tickItems(core);

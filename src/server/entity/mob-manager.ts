@@ -15,6 +15,7 @@ import { MOBS, MobCategory, MobType, mobDefOf, type MobDef } from '../../content
 import type { ServerWorld } from '../world/server-world.ts';
 import { aimFireball, tickFireball } from './ghast.ts';
 import { trySpawn, standable } from './mob-spawning.ts';
+import { tickEnderEye } from '../world/end-portal.ts';
 import type { MobCtx, TargetRef } from './goal.ts';
 import { spawnBlockDrop, spawnXpOrbs } from './item-manager.ts';
 import { makeStack, isEmpty } from '../../core/item/item-def.ts';
@@ -144,6 +145,12 @@ export class MobManager {
       // 火球没有 AI，走自己的一条短路径：飞、撞、炸
       if (mob.def.type === MobType.FIREBALL) {
         this.tickFireball(mob, world);
+        continue;
+      }
+      // 扔出去的末影之眼：飞一段，然后消失
+      if (mob.def.type === MobType.ENDER_EYE) {
+        mob.tickPhysicsAndVitals(world.store, world.tables, 15, true);
+        if (mob.removed || tickEnderEye(mob)) this.forget(mob);
         continue;
       }
       // 区块卸载了就把生物也收走：留着的话它会在一个不存在的世界里

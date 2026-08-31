@@ -44,10 +44,18 @@ export const MobType = {
    * 客户端根本看不见。
    */
   FIREBALL: 10,
+  /**
+   * 扔出去的末影之眼。
+   *
+   * 与火球同理做成"生物"：玩家要**看着它飞**才知道要塞在哪边。
+   * 只发一条聊天消息说"要塞在东北方 843 格"也能用，
+   * 但那把一个探索动作变成了读数字。
+   */
+  ENDER_EYE: 11,
 } as const;
 export type MobType = (typeof MobType)[keyof typeof MobType];
 
-export const MOB_TYPE_COUNT = 11;
+export const MOB_TYPE_COUNT = 12;
 
 /** 一条掉落：物品、数量范围、概率 */
 export interface LootEntry {
@@ -222,6 +230,12 @@ export const MOBS: readonly MobDef[] = [
     // 因为玩家要能打到它
     type: MobType.FIREBALL, name: 'fireball', category: MobCategory.HOSTILE,
     width: 1, height: 1, eyeHeight: 0.5,
+    maxHealth: 1, attackDamage: 0, followRange: 0,
+    speed: 0, flying: true, xp: 0,
+  }),
+  defineMob({
+    type: MobType.ENDER_EYE, name: 'ender_eye', category: MobCategory.HOSTILE,
+    width: 0.4, height: 0.4, eyeHeight: 0.2,
     maxHealth: 1, attackDamage: 0, followRange: 0,
     speed: 0, flying: true, xp: 0,
   }),
