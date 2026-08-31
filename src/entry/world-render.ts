@@ -26,7 +26,8 @@ import type { Interaction } from '../client/player/interaction.ts';
 import type { EntityView } from './entity-view.ts';
 import type { SkyRenderer } from '../client/render/sky-renderer.ts';
 import type { WeatherRenderer } from '../client/render/weather-renderer.ts';
-import { skyColor, sunBrightness } from '../core/world/day-night.ts';
+import { skyColorFor, sunBrightnessFor } from '../core/world/day-night.ts';
+import { ambientLightFor } from '../core/world/dimension.ts';
 import { SECTION_SIZE } from '../core/constants.ts';
 import type { ChunkStore } from '../core/world/block-view.ts';
 import { drawDebugOverlay, type DebugInfo } from '../client/ui/debug-overlay.ts';
@@ -47,6 +48,8 @@ export interface FrameDeps {
   readonly anim: { start: number; groups: number };
   readonly renderDistance: number;
   readonly timeOfDay: number;
+  /** −1 下界 / 0 主世界 / 1 末地。天色、雾色、环境亮度都看它 */
+  readonly dimension: number;
   readonly entityView: EntityView;
   readonly itemEntityRenderer: ItemEntityRenderer;
   readonly mobRenderer: MobRenderer;
@@ -95,7 +98,7 @@ export function drawWorldFrame(d: FrameDeps): void {
   const flash = flashFrames >= 0 && flashFrames < LIGHTNING_FLASH_FRAMES
     ? 1 - flashFrames / LIGHTNING_FLASH_FRAMES
     : 0;
-  const base = skyColor(d.timeOfDay, d.rain, d.thunder);
+  const base = skyColorFor(d.dimension, d.timeOfDay, d.rain, d.thunder);
   const sky = flash > 0
     ? {
       r: base.r + (1 - base.r) * flash * 0.85,
@@ -125,13 +128,17 @@ export function drawWorldFrame(d: FrameDeps): void {
     moonLayers: d.skyLayers.moons,
     cloudLayer: d.skyLayers.clouds,
     renderDistance: d.renderDistance,
+    dimension: d.dimension,
   });
 
   d.shader.use();
   d.shader.setMat4('uViewProj', d.camera.viewProjection);
   // 世界的光照亮度也要跟着天气走 —— 天暗了地面却不暗的话，
   // 雨看起来像贴在画面上的一层滤镜
-  d.shader.setFloat('uSunBrightness', Math.min(1, sunBrightness(d.timeOfDay, d.rain, d.thunder) + flash * 0.7));
+  d.shader.setFloat('uSunBrightness',
+    Math.min(1, sunBrightnessFor(d.dimension, d.timeOfDay, d.rain, d.thunder) + flash * 0.7));
+  // 环境光底数：没有天光的维度靠它读出地形轮廓。见 block-shader.ts
+  d.shader.setFloat('uAmbientLight', ambientLightFor(d.dimension));
   d.shader.setVec3('uFogColor', sky.r, sky.g, sky.b);
   d.shader.setVec3('uCameraPos', d.camera.position[0]!, d.camera.position[1]!, d.camera.position[2]!);
   d.shader.setFloat('uFogStart', d.renderDistance * SECTION_SIZE * 0.65);
@@ -180,7 +187,7 @@ export function drawWorldFrame(d: FrameDeps): void {
     texture: d.texture,
     rainLayer: d.skyLayers.rain,
     snowLayer: d.skyLayers.snow,
-    brightness: Math.max(0.25, sunBrightness(d.timeOfDay, d.rain, d.thunder)),
+    brightness: Math.max(0.25, sunBrightnessFor(d.dimension, d.timeOfDay, d.rain, d.thunder)),
   });
 
   // 界面画在最后，且用**虚拟像素**坐标系（见 client/ui/ui-renderer.ts）

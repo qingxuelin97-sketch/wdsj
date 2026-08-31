@@ -133,7 +133,14 @@ async function main() {
     // 第二次读的是第一次留下的世界（含玩家走过的位置、挖掉的方块、
     // 甚至跑到第几 tick），全部截图哈希会集体漂移，而且第一次跑总是通过、
     // 之后每次都失败，看上去像"随机坏掉"。存档本身另有 persist-check.mjs 验。
-    page = await openPage(9333, `http://127.0.0.1:${PORT}/?test=smoke&seed=1234&radius=2&persist=0&mobs=0&randomTicks=0&particles=0`);
+    // cmdTimeout 给到 30 秒。默认的 8 秒在**换维度**那几条指令上不够：
+    // 那一下要新建一个世界、清空客户端整份镜像、再流送几十个区块，
+    // 而软件渲染的 CI 容器里渲染线程会把 CPU 吃光，服务端 worker
+    // 只分到很小一部分。实测同一条指令在空场景里 0.7 秒，
+    // 在跑完全部检查之后要好几秒且不稳定。
+    //
+    // 这不是放宽断言：超时只是"等多久算卡死"，指令本身该做的事一件不少。
+    page = await openPage(9333, `http://127.0.0.1:${PORT}/?test=smoke&seed=1234&radius=2&persist=0&mobs=0&randomTicks=0&particles=0&cmdTimeout=30000`);
 
     // --- 等游戏就绪 ---
     const boot = await page.evaluate(`

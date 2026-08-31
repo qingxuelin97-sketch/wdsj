@@ -22,6 +22,7 @@ import { tickArrows } from './entity/combat.ts';
 import { tickVitals } from './player/player-vitals.ts';
 import { tickPortal } from './world/portal-manager.ts';
 import { tickEndPortal } from './world/end-portal.ts';
+import { tickDragonFight } from './entity/dragon.ts';
 import type { ServerWorld } from './world/server-world.ts';
 
 export function runServerTick(core: ServerCore): void {
@@ -109,6 +110,9 @@ export function runServerTick(core: ServerCore): void {
 
   // 生物：AI、物理、生成、同步
   core.mobs.tick();
+  // 龙战排在生物之后：龙的位置这一刻已经算完了，
+  // 治疗与俯冲判定要看的是新位置
+  tickDragonFight(core);
   tickArrows(core);
 
   // 光照重算（M4 会换成局部增量）
@@ -228,12 +232,27 @@ function unloadDistantChunks(core: ServerCore): void {
     for (const chunk of w.store.chunkValues()) {
       if (!set.has(chunk.key)) doomed.push([chunk.cx, chunk.cz]);
     }
-    for (const [cx, cz] of doomed) w.unloadChunk(cx, cz);
+    // 每刻最多卸这么多。
+    //
+    // 加维度之前这个上限不需要：玩家一步只跨一个区块，一刻要卸的
+    // 从来不超过几十个。换维度之后**整个上一个维度**的几百个区块
+    // 会在同一刻全部到期，而卸载要走存档写入与方块实体清理 ——
+    // 实测那一下能让服务端停摆几秒，表现是"换到末地时指令超时"。
+    //
+    // 与 generationQuota 同一个道理：配额不改变总工作量，只决定它怎么摊。
+    const limit = Math.min(doomed.length, UNLOAD_PER_TICK);
+    for (let i = 0; i < limit; i++) {
+      const d = doomed[i]!;
+      w.unloadChunk(d[0], d[1]);
+    }
   }
 }
 
 /** 没有玩家的维度，保留集是空的 —— 里面的区块全部卸掉 */
 const EMPTY_KEYS: ReadonlySet<number> = new Set<number>();
+
+/** 每刻最多卸载几个区块。见 unloadDistantChunks 里的理由 */
+const UNLOAD_PER_TICK = 24;
 
 /**
  * 天气变了才广播。

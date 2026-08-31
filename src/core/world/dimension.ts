@@ -112,3 +112,19 @@ export function convertCoords(
  * 照抄这个数才能复现同样的行为。
  */
 export const PORTAL_SEARCH_RADIUS = 128;
+
+
+/**
+ * 渲染用的环境光底数（0..1）。
+ *
+ * 与 `DimensionDef.ambientLight`（0..15 的光照等级）是同一个意思的
+ * 两种量纲：那个给玩法用（刷怪判据），这个给着色器用。
+ * 换算不是简单的 /15 —— 光照等级到亮度是条曲线，而这里要的是
+ * "看得见轮廓"的最低亮度。实测 0.055×4=0.22 时下界还是太黑
+ * （截图里只有几点红），0.075×4=0.30 才读得出地形。
+ */
+export function ambientLightFor(dimension: number): number {
+  const d = DIMENSIONS[dimension as DimensionId];
+  if (d === undefined || d.ambientLight <= 0) return 0;
+  return 0.075 * d.ambientLight;
+}

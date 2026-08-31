@@ -1,3 +1,4 @@
+import { runCraftChain, buildGallery, buildShapeRow } from './debug/scene-commands.ts';
 /**
  * 服务端指令。
  *
@@ -10,14 +11,17 @@
  */
 import type { ServerCore } from './server-core.ts';
 import type { ServerPlayer } from './player/server-player.ts';
-import { S_CommandResult, S_TimeUpdate, S_Weather, WindowKind } from '../core/net/packets.ts';
+import { S_CommandResult, S_TimeUpdate, S_Weather } from '../core/net/packets.ts';
 import { packState, stateId } from '../core/world/chunk.ts';
 import { WORLD_HEIGHT } from '../core/constants.ts';
 import { ARMOR_SLOTS, MAIN_SLOTS, HOTBAR_SLOTS } from './player/player-inventory.ts';
-import { makeStack, type ItemStack } from '../core/item/item-def.ts';
-import { giveToPlayer, syncInventory, showWindow, closeWindow } from './player/inventory-actions.ts';
+import { makeStack } from '../core/item/item-def.ts';
+import { giveToPlayer, syncInventory } from './player/inventory-actions.ts';
 import { damagePlayer, respawnPlayer } from './entity/combat.ts';
 import { DamageKind } from './player/player-vitals.ts';
+import { Dimension, convertCoords } from '../core/world/dimension.ts';
+import { placeInDimension } from './world/portal-manager.ts';
+import { enterTheEnd } from './world/end-portal.ts';
 
 export function handleCommand(
 core: ServerCore,
@@ -32,18 +36,25 @@ value: Record<string, unknown>,
 
   const parts = text.trim().split(/\s+/);
   const cmd = parts[0] ?? '';
+  /**
+   * 指令一律作用在**发起者所在的**世界上。
+   *
+   * 固定用 world 的话，站在下界打 setblock 会往主世界放方块，
+   * 而玩家眼前什么都不会发生 —— 那是最难归因的一种"指令没反应"。
+   */
+  const world = core.worldOf(player.dimension);
   try {
     switch (cmd) {
       case 'setblock': {
         const [, sx, sy, sz, blockName] = parts;
         const state = packState(core.registry.idOf(String(blockName)));
-        const ok = core.world.setBlock(Number(sx), Number(sy), Number(sz), state);
+        const ok = world.setBlock(Number(sx), Number(sy), Number(sz), state);
         reply(ok, ok ? 'ok' : '区块未加载');
         return;
       }
       case 'getblock': {
         const [, sx, sy, sz] = parts;
-        const state = core.world.getBlock(Number(sx), Number(sy), Number(sz));
+        const state = world.getBlock(Number(sx), Number(sy), Number(sz));
         const id = state & 0xfff;
         reply(true, core.registry.get(id)?.name ?? `未知(${id})`);
         return;
@@ -57,27 +68,56 @@ value: Record<string, unknown>,
         reply(true, 'ok');
         return;
       }
+      /**
+       * `dimension <overworld|nether|end>` —— 直接换维度，供自动化验收。
+       *
+       * 不走传送门：截图回归要的是"到那边去"，而砌一座门、点火、
+       * 站够 4 秒这一串在无头浏览器里要跑一分多钟，且每一步都可能超时。
+       * 传送门本身由 tests/server/nether.test.ts 逐步验。
+       */
+      case 'dimension': {
+        const [, name] = parts;
+        const to = name === 'nether' ? Dimension.NETHER
+          : name === 'end' ? Dimension.END
+            : name === 'overworld' ? Dimension.OVERWORLD : null;
+        if (to === null) {
+          reply(false, '用法: dimension <overworld|nether|end>');
+          return;
+        }
+        if (to === Dimension.END) {
+          enterTheEnd(core, player);
+          reply(true, 'end');
+          return;
+        }
+        const dest = core.worldOf(to);
+        const target = convertCoords(player.dimension, to, player.x, player.z);
+        dest.forceChunk(target.x >> 4, target.z >> 4);
+        const y = dest.groundHeightAt(target.x, target.z);
+        placeInDimension(core, player, to, { x: target.x, y, z: target.z, axis: 'x' });
+        reply(true, `${name} ${target.x} ${y} ${target.z}`);
+        return;
+      }
       case 'time': {
         const [, sub, val] = parts;
         if (sub === 'set') {
-          core.world.timeOfDay = ((Number(val) % 24000) + 24000) % 24000;
+          world.timeOfDay = ((Number(val) % 24000) + 24000) % 24000;
         } else if (sub === 'hold') {
-          core.world.daylightCycle = val !== '1' && val !== 'true';
+          world.daylightCycle = val !== '1' && val !== 'true';
         }
         // 立刻回传一次，不等下一个同步周期 —— 自动化就是靠这个知道设定生效了
         for (const p of core.eachPlayer()) {
           p.channel.send(S_TimeUpdate, {
-            worldAge: BigInt(core.world.worldAge),
-            timeOfDay: BigInt(core.world.timeOfDay),
+            worldAge: BigInt(world.worldAge),
+            timeOfDay: BigInt(world.timeOfDay),
           });
         }
-        reply(true, String(core.world.timeOfDay));
+        reply(true, String(world.timeOfDay));
         return;
       }
       case 'light': {
         const [, sx, sy, sz] = parts;
         const x = Number(sx), y = Number(sy), z = Number(sz);
-        reply(true, `${core.world.store.getSkyLight(x, y, z)}/${core.world.store.getBlockLight(x, y, z)}`);
+        reply(true, `${world.store.getSkyLight(x, y, z)}/${world.store.getBlockLight(x, y, z)}`);
         return;
       }
       case 'hold': {
@@ -117,7 +157,7 @@ value: Record<string, unknown>,
         // 症状是"我明明站在岩浆里却不掉血"，而光看客户端永远查不出来。
         const fy = Math.floor(player.y);
         const nameAt = (x: number, y: number, z: number): string => {
-          const id = stateId(core.world.getBlock(x, y, z));
+          const id = stateId(world.getBlock(x, y, z));
           return id === 0 ? 'air' : (core.registry.get(id)?.name ?? `#${id}`);
         };
         const bx = Math.floor(player.x);
@@ -161,9 +201,9 @@ value: Record<string, unknown>,
         const ores: Record<string, { min: number; max: number; n: number }> = {};
         for (let x = x0; x <= x1; x++) {
           for (let z = z0; z <= z1; z++) {
-            if (!core.world.isLoaded(x >> 4, z >> 4)) continue;
+            if (!world.isLoaded(x >> 4, z >> 4)) continue;
             for (let y = 0; y < WORLD_HEIGHT; y++) {
-              const id = stateId(core.world.getBlock(x, y, z));
+              const id = stateId(world.getBlock(x, y, z));
               if (id === 0) continue;
               const name = core.registry.get(id)?.name ?? '';
               if (!name.endsWith('_ore')) continue;
@@ -187,7 +227,7 @@ value: Record<string, unknown>,
         // 自动化脚本设完天气紧接着就要截图，等淡入等不起，
         // 而且"等多久算够"又是一个会飘的判断
         const [, mode, ticks] = parts;
-        const w = core.world.weather;
+        const w = world.weather;
         const dur = ticks === undefined ? 12000 : Number(ticks);
         if (mode === 'clear') w.set(false, false, dur);
         else if (mode === 'rain') w.set(true, false, dur);
@@ -219,7 +259,7 @@ value: Record<string, unknown>,
         // 会读到"没有待推送区块"而误判世界已就绪，然后在截图中途
         // 才把新区块补上。指令走的是包队列，服务端处理它时
         // 必定已经处理完了之前的移动包，所以结果一定是新鲜的。
-        reply(true, `${player.pendingCount} ${player.subscribedCount} ${core.world.loadedCount}`);
+        reply(true, `${player.pendingCount} ${player.subscribedCount} ${world.loadedCount}`);
         return;
       }
       case 'gallery': {
@@ -250,7 +290,7 @@ value: Record<string, unknown>,
         for (let x = Math.min(Number(ax), Number(bx)); x <= Math.max(Number(ax), Number(bx)); x++) {
           for (let y = Math.min(Number(ay), Number(by)); y <= Math.max(Number(ay), Number(by)); y++) {
             for (let z = Math.min(Number(az), Number(bz)); z <= Math.max(Number(az), Number(bz)); z++) {
-              if (core.world.setBlock(x, y, z, state)) filled++;
+              if (world.setBlock(x, y, z, state)) filled++;
             }
           }
         }
@@ -264,7 +304,7 @@ value: Record<string, unknown>,
         for (let x = Math.min(Number(ax), Number(bx2)); x <= Math.max(Number(ax), Number(bx2)); x++) {
           for (let y = Math.min(Number(ay), Number(by2)); y <= Math.max(Number(ay), Number(by2)); y++) {
             for (let z = Math.min(Number(az), Number(bz2)); z <= Math.max(Number(az), Number(bz2)); z++) {
-              const id = core.world.getBlock(x, y, z) & 0xfff;
+              const id = world.getBlock(x, y, z) & 0xfff;
               if (id >= 8 && id <= 11) n++;
             }
           }
@@ -320,14 +360,14 @@ value: Record<string, unknown>,
         // 无缘无故地闪，而它自己什么都没做错，是上一个检查挖方块留下的。
         const [, kind] = parts;
         if (kind === 'items') {
-          const n = core.world.items.size;
-          core.world.items.clear();
+          const n = world.items.size;
+          world.items.clear();
           reply(true, String(n));
           return;
         }
         const n = core.mobs.removeAll(kind === undefined ? undefined : String(kind));
         if (kind === undefined) {
-          core.world.items.clear();
+          world.items.clear();
           core.arrows.clear();
         }
         reply(true, String(n));
@@ -386,7 +426,7 @@ value: Record<string, unknown>,
       }
       case 'height': {
         const [, sx, sz] = parts;
-        reply(true, String(core.world.store.getHeight(Number(sx), Number(sz))));
+        reply(true, String(world.store.getHeight(Number(sx), Number(sz))));
         return;
       }
       case 'stats':
@@ -415,180 +455,5 @@ value: Record<string, unknown>,
  * 每一步都开一个真的窗口、把材料摆进合成格、再从产物槽取走。
  * 返回成功做出来的东西的名字。
  */
-function runCraftChain(core: ServerCore, player: ServerPlayer): string[] {
-  const made: string[] = [];
-  const inv = player.inventory;
 
-  /** 背包里有多少个某物 */
-  const countOf = (name: string): number => {
-    const id = core.registry.hasBlock(name) ? core.registry.idOf(name) : core.items.idOf(name);
-    let n = 0;
-    for (const s of inv.slots) if (s.id === id && s.count > 0) n += s.count;
-    return n;
-  };
-
-  /**
-   * 在窗口里合一次。
-   * @param grid 合成格的内容（按窗口槽位顺序），null 表示空
-   * @param times 连续取几次产物
-   */
-  const craft = (kind: WindowKind, grid: (string | null)[], times: number): boolean => {
-    showWindow(core, player, kind);
-    const win = player.openWindow;
-    if (win === null) return false;
-    // 槽位 0 是产物，合成格从 1 开始
-    for (let i = 0; i < grid.length; i++) {
-      const name = grid[i] ?? null;
-      const slot = win.container.slots[1 + i];
-      if (slot === undefined) return false;
-      if (name === null) {
-        slot.id = 0;
-        slot.count = 0;
-        continue;
-      }
-      const id = core.registry.hasBlock(name) ? core.registry.idOf(name) : core.items.idOf(name);
-      // 材料从背包里扣，模拟玩家把东西拖进合成格
-      if (!takeFromInventory(inv.slots, id, 1)) return false;
-      slot.id = id;
-      slot.count = 1;
-      slot.damage = 0;
-    }
-    // 摆完材料要让窗口重算产物槽。
-    //
-    // 正常玩家是**点**进去的，每次点击后 click() 自己会调 refreshOutput；
-    // 这里为了省事直接写了格子，那条路就没走到 —— 产物槽还是空的，
-    // 接下来点它当然什么都拿不到。pullFromPlayer 会重算产物，
-    // 而合成格映射到 −1（窗口自己的临时格），不会被它覆盖
-    win.pullFromPlayer();
-
-    let got = false;
-    for (let t = 0; t < times; t++) {
-      // shift+左键产物槽 = 全部拿走并塞进背包
-      if (!win.click(0, 0, true)) break;
-      got = true;
-    }
-    closeWindow(core, player);
-    return got;
-  };
-
-  // 1. 原木 -> 木板。**合两次**：一根原木出 4 块板，而后面要用掉
-  // 2 块做木棍 + 4 块做工作台 + 3 块做镐 = 9 块，一次不够
-  let plankRuns = 0;
-  for (let i = 0; i < 3; i++) {
-    if (craft(WindowKind.INVENTORY, ['log', null, null, null], 1)) plankRuns++;
-  }
-  if (plankRuns > 0) made.push('planks');
-  // 2. 木板 -> 木棍（竖着两块，出 4 根）
-  if (craft(WindowKind.INVENTORY, ['planks', null, 'planks', null], 1)) made.push('stick');
-  // 3. 木板 ×4 -> 工作台
-  if (craft(WindowKind.INVENTORY, ['planks', 'planks', 'planks', 'planks'], 1)) made.push('crafting_table');
-  // 4. 工作台上合木镐：三块木板一横 + 两根木棍一竖
-  if (craft(WindowKind.CRAFTING, [
-    'planks', 'planks', 'planks',
-    null, 'stick', null,
-    null, 'stick', null,
-  ], 1)) made.push('wooden_pickaxe');
-
-  void countOf;
-  return made;
-}
-
-/** 从背包里扣掉若干个某物。不够返回 false */
-function takeFromInventory(slots: ItemStack[], id: number, count: number): boolean {
-  let left = count;
-  for (const s of slots) {
-    if (s.id !== id || s.count <= 0) continue;
-    const take = Math.min(s.count, left);
-    s.count -= take;
-    left -= take;
-    if (s.count <= 0) {
-      s.id = 0;
-      s.damage = 0;
-    }
-    if (left <= 0) return true;
-  }
-  return left <= 0;
-}
-
-function buildGallery(core: ServerCore, ox: number, oy: number, oz: number): number {
-  const ids: number[] = [];
-  for (let id = 1; id < core.world.tables.count; id++) {
-    if (core.world.tables.defs[id] == null) continue;
-    // 流体（8..11）与火（51）不进陈列阵：它们**会动**。
-    // 水会流开并盖掉旁边的展品，火会烧掉可燃的邻居再自己熄灭，
-    // 于是这张本该静止的回归截图每次都不一样。
-    // 它们由 tools/smoke-sim-checks.mjs 的瀑布场景单独验
-    if (id >= 8 && id <= 11) continue;
-    if (id === 51) continue;
-    ids.push(id);
-  }
-
-  // 需要展示多个状态的方块：id -> 要展示的元数据列表
-  const metaVariants = new Map<number, number[]>([
-    [44, [0, 1]],                 // 半砖：下/上
-    [53, [0, 1, 2, 3]],           // 木楼梯：四个朝向
-    [67, [0, 4]],                 // 石楼梯：正/倒
-    [85, [0, 0b0011, 0b1111]],    // 栅栏：孤立 / 两向 / 四向
-    [50, [0, 1, 3]],              // 火把：立地 / 贴两侧
-    [102, [0, 0b0011, 0b1111]],   // 玻璃板
-    [78, [0, 3, 7]],              // 雪层：薄 / 中 / 满
-    [92, [0, 2, 5]],              // 蛋糕：完整 / 吃两口 / 吃五口
-    [64, [0, 4]],                 // 门：关 / 开
-    [96, [0, 4]],                 // 活板门：平放 / 竖起
-    [65, [0, 1, 2, 3]],           // 梯子：四面
-  ]);
-
-  const columns = 10;
-  let placed = 0;
-  let slot = 0;
-  for (const id of ids) {
-    const metas = metaVariants.get(id) ?? [0];
-    const cx = ox + (slot % columns) * 2;
-    const cz = oz + Math.floor(slot / columns) * 2;
-    for (let i = 0; i < metas.length; i++) {
-      // 每个状态往上叠一格，同一列从下往上是同一种方块的不同状态
-      const base = oy + i * 2;
-      // 脚下垫一块石头，非整格的方块才有个明确的参照
-      core.world.setBlock(cx, base - 1, cz, packState(1));
-      if (core.world.setBlock(cx, base, cz, packState(id, metas[i]!))) placed++;
-    }
-    slot++;
-  }
-  return placed;
-}
-
-/**
- * 把所有非立方体形状排成一行，脚下垫石头。
- *
- * 这一行是 M7 真正要盯的东西：楼梯朝向、半砖上下、栅栏连接、
- * 雪层厚度、蛋糕缺口 —— 错了在近景图里一眼可见，在大阵列图里看不出来。
- */
-function buildShapeRow(core: ServerCore, ox: number, oy: number, oz: number): number {
-  const row: [number, number][] = [
-    [44, 0], [44, 1],                       // 半砖 下 / 上
-    [53, 0], [53, 1], [53, 2], [53, 3],     // 木楼梯 四朝向
-    [53, 4],                                // 木楼梯 倒置
-    [85, 0], [85, 0b0011], [85, 0b1111],    // 栅栏 孤立 / 两向 / 四向
-    [50, 0], [50, 1],                       // 火把 立地 / 贴墙
-    [102, 0], [102, 0b0011],                // 玻璃板
-    [78, 0], [78, 3], [78, 7],              // 雪层
-    [92, 0], [92, 3],                       // 蛋糕
-    [64, 0], [64, 4],                       // 门 关 / 开
-    [96, 0], [96, 4],                       // 活板门
-    [26, 0],                                // 床
-    [66, 0],                                // 铁轨
-    [65, 0],                                // 梯子
-  ];
-  // 摆成 7 列的网格而不是一条长队：26 个方块排成一行有 52 格长，
-  // 想拍全就得退到二十多格外，每个方块只剩十几像素，等于白拍
-  const COLS = 7;
-  let placed = 0;
-  for (let i = 0; i < row.length; i++) {
-    const [id, meta] = row[i]!;
-    const x = ox + (i % COLS) * 2;
-    const z = oz + Math.floor(i / COLS) * 2;
-    core.world.setBlock(x, oy - 1, z, packState(1));
-    if (core.world.setBlock(x, oy, z, packState(id, meta))) placed++;
-  }
-  return placed;
-}
+// 场景搭建（合成链 / 陈列阵 / 形状行）搬到了 debug/scene-commands.ts —— 见那里的注释

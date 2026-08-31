@@ -16,6 +16,7 @@ import { nearestStronghold, portalFrameCells, PORTAL_ROOM_Y } from './gen/strong
 import { Dimension } from '../../core/world/dimension.ts';
 import { placeInDimension } from './portal-manager.ts';
 import { END_ARRIVAL } from './gen/end-gen.ts';
+import { beginDragonFight } from '../entity/dragon.ts';
 import { WORLD_HEIGHT } from '../../core/constants.ts';
 
 /** 框架元数据里"嵌了眼"的位 */
@@ -160,6 +161,9 @@ export function enterTheEnd(core: ServerCore, player: ServerPlayer): void {
   placeInDimension(core, player, Dimension.END, {
     x: Math.floor(END_ARRIVAL.x), y, z: Math.floor(END_ARRIVAL.z), axis: 'x',
   });
+  // 人到了才摆龙和水晶。提前摆的话，一个从没去过末地的世界
+  // 也会有一条龙在那里绕圈，白烧 CPU 且把区块一直钉在内存里
+  beginDragonFight(core);
 }
 
 /** 从末地回主世界的出生点 */

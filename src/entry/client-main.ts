@@ -261,6 +261,7 @@ installPacketHandlers(net, {
     camera.yaw = yaw;
     camera.pitch = pitch;
   },
+  dropPendingMeshes: () => { meshing.clearUploads(); },
   onChangeDimension: (dim, x, y, z, yaw) => {
     // 镜像已经在 net-handlers 里清过了，这里只放人 + 记维度。
     // 记维度是给天空渲染用的：下界没有太阳月亮，末地是自己的紫色天
@@ -338,6 +339,9 @@ function sendPlayerPosition(sneak = false, sprint = false): void {
 function pumpWorld(): void {
   sendPlayerPosition();
   meshing.dispatch();
+  // 上传也要推。waitForIdle 靠 pumpWorld 推进世界，
+  // 不推的话冻结状态下网格永远传不上去，截图会拍到一片空世界
+  meshing.flushUploads();
 }
 
 /**
@@ -347,7 +351,7 @@ function pumpWorld(): void {
 function renderOnce(): void {
   drawWorldFrame({
     gl, canvas: canvas!, camera, frustum, shader, renderer, tintColors,
-    texture, renderDistance, timeOfDay: session.timeOfDay,
+    texture, renderDistance, timeOfDay: session.timeOfDay, dimension: session.dimension,
     entityView, itemEntityRenderer, mobRenderer, particles, interaction,
     overlay, ui, uiRenderer, uiCtx, entityPartialTick,
     sky, skyLayers, worldAge: session.worldAge, renderTick: clock.renderTick,
@@ -494,6 +498,9 @@ function frame(nowMs: number): void {
   sendPlayerPosition(snap.sneak, snap.sprint);
 
   meshing.dispatch();
+  // 上传排队做，不在结果回调里当场传 —— 换维度那一下会有几百个
+  // 子区块同时回来，当场传会把主线程占死（见 client-meshing.ts）
+  meshing.flushUploads();
   renderOnce();
 
   if (!firstFrameDone) {

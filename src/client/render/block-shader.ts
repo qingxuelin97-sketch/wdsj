@@ -102,6 +102,15 @@ uniform vec3 uSectionOrigin;
  */
 uniform float uSunBrightness;
 /**
+ * 环境光底数（0..1）。下界给一个不为 0 的值，其余维度是 0。
+ *
+ * 下界没有天光，地表之下的天光值一律是 0 —— 只靠岩浆和萤石的话，
+ * 走两步就是一片纯黑，连地形轮廓都读不出来（第一版就是这样，
+ * 截图里整个屏幕只有几点红）。MC 的下界有一个明显的环境亮度，
+ * 那正是它"到处都有点暗红的光"的来源。
+ */
+uniform float uAmbientLight;
+/**
  * 群系染色表，按 TintKind 索引：NONE / GRASS / FOLIAGE / WATER。
  * 草和树叶的贴图本身画成灰度，颜色全靠这里乘上去 —— 与 MC 的做法一致，
  * 这样不同群系可以共用同一张贴图。
@@ -194,7 +203,10 @@ void main() {
   float bl = lightBrightness(block) * 1.5;
   vec3 blockCol = vec3(bl, bl * (bl * 0.6 + 0.4), bl * (bl * bl * 0.6 + 0.4));
 
-  vec3 lightCol = min(vec3(1.0), skyCol + blockCol) * 0.96 + 0.03;
+  // 环境光加在最后，且**带一点暖色**：下界的底光是暗红的，
+  // 中性灰会让它看起来像雾天而不是地狱
+  vec3 ambient = vec3(uAmbientLight, uAmbientLight * 0.72, uAmbientLight * 0.62);
+  vec3 lightCol = min(vec3(1.0), skyCol + blockCol + ambient) * 0.96 + 0.03;
 
   // AO 0..3 映射到 0.55..1.0
   float aoFactor = 0.55 + ao * 0.15;

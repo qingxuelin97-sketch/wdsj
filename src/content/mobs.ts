@@ -52,10 +52,14 @@ export const MobType = {
    * 但那把一个探索动作变成了读数字。
    */
   ENDER_EYE: 11,
+  /** 末影龙。整个游戏唯一的 BOSS */
+  ENDER_DRAGON: 12,
+  /** 末影水晶。龙靠它回血 */
+  ENDER_CRYSTAL: 13,
 } as const;
 export type MobType = (typeof MobType)[keyof typeof MobType];
 
-export const MOB_TYPE_COUNT = 12;
+export const MOB_TYPE_COUNT = 14;
 
 /** 一条掉落：物品、数量范围、概率 */
 export interface LootEntry {
@@ -85,6 +89,15 @@ export interface MobDef {
   readonly speed: number;
   /** 白天在天光下会烧起来 */
   readonly burnsInSunlight: boolean;
+  /**
+   * 常驻：不会因为"所在区块没加载"而被收走，也不会超距消失。
+   *
+   * BOSS 战的部件必须是常驻的。水晶站在半径 43 格的柱顶上，
+   * 玩家刚进末地时那几个区块还没推过来 —— 不常驻的话它们会在
+   * 玩家看见之前就被清掉，于是龙永远回不了血也永远不掉血，
+   * 而没有任何报错。
+   */
+  readonly persistent: boolean;
   /**
    * 会飞：不受重力，也不吃摔落伤害。
    *
@@ -116,6 +129,7 @@ function defineMob(input: MobInput): MobDef {
     speed: input.speed ?? 3.0,
     burnsInSunlight: input.burnsInSunlight ?? false,
     flying: input.flying ?? false,
+    persistent: input.persistent ?? false,
     xp: input.xp ?? 0,
     loot: input.loot ?? [],
     temptedBy: input.temptedBy ?? null,
@@ -238,6 +252,31 @@ export const MOBS: readonly MobDef[] = [
     width: 0.4, height: 0.4, eyeHeight: 0.2,
     maxHealth: 1, attackDamage: 0, followRange: 0,
     speed: 0, flying: true, xp: 0,
+  }),
+
+  // --- 末地 ---
+  defineMob({
+    /**
+     * 末影龙。200 血是 MC 的数 —— 它不是"很难打"，而是**很难够着**：
+     * 龙一直在飞，玩家大部分时间在追它，而它会去水晶那里回血。
+     * 血量给低了这场战斗会变成"射两箭就完了"，而它是整个游戏的结局。
+     */
+    type: MobType.ENDER_DRAGON, name: 'ender_dragon', category: MobCategory.HOSTILE,
+    width: 8, height: 4, eyeHeight: 3,
+    maxHealth: 200, attackDamage: 10, followRange: 128,
+    speed: 0, flying: true, persistent: true, xp: 12000,
+  }),
+  defineMob({
+    /**
+     * 末影水晶。一打就炸，炸掉之后龙就少一个回血点。
+     *
+     * 它有 5 点血而不是 1 点：1 点的话流矢会误炸，
+     * 而"要专门去拆水晶"是这场战斗的第一阶段。
+     */
+    type: MobType.ENDER_CRYSTAL, name: 'ender_crystal', category: MobCategory.HOSTILE,
+    width: 2, height: 2, eyeHeight: 1,
+    maxHealth: 5, attackDamage: 0, followRange: 0,
+    speed: 0, flying: true, persistent: true, xp: 0,
   }),
 ];
 

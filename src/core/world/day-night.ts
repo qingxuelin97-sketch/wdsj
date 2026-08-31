@@ -123,3 +123,36 @@ export function sunAngleRadians(timeOfDay: number): number {
 export function isDaytime(timeOfDay: number, rain = 0, thunder = 0): boolean {
   return skyLightSubtracted(timeOfDay, rain, thunder) <= 3;
 }
+
+/**
+ * 下界与末地的天色。
+ *
+ * 这两个维度没有昼夜，天色是**常量** —— 而"常量"正是它们压抑感的来源：
+ * 主世界的天一直在变，你知道熬过夜就会天亮；下界的天永远是那个颜色，
+ * 没有任何东西会好转。
+ *
+ * 下界取暗红雾色（MC 的下界雾是 0x330707 一带），末地取深紫。
+ * 亮度都压得很低：这两处的可见距离本来就短，天亮了雾就假了。
+ */
+export const NETHER_SKY = { r: 0.20, g: 0.03, b: 0.03 } as const;
+export const END_SKY = { r: 0.06, g: 0.04, b: 0.09 } as const;
+
+/** 某个维度此刻的天色。主世界按时间算，其余两个是常量 */
+export function skyColorFor(
+  dimension: number, timeOfDay: number, rain = 0, thunder = 0,
+): { r: number; g: number; b: number } {
+  if (dimension === -1) return { ...NETHER_SKY };
+  if (dimension === 1) return { ...END_SKY };
+  return skyColor(timeOfDay, rain, thunder);
+}
+
+/** 某个维度的地表亮度。下界与末地没有太阳，用一个固定的中间值 */
+export function sunBrightnessFor(
+  dimension: number, timeOfDay: number, rain = 0, thunder = 0,
+): number {
+  // 下界给 0.55：全黑的话地形读不出来，而下界在 MC 里确实是"半亮"的。
+  // 末地给 0.5，比下界略暗一点
+  if (dimension === -1) return 0.55;
+  if (dimension === 1) return 0.5;
+  return sunBrightness(timeOfDay, rain, thunder);
+}

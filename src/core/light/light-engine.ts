@@ -412,7 +412,14 @@ export class LightEngine {
   }
 
   /** 标记这片区域的光照已经建立，此后新分配的子区块按隐含值预置天光 */
-  private markLightReady(x0: number, z0: number, x1: number, z1: number): void {
+  /**
+   * 只标"这片区域的光照已建立"，不播任何种。
+   *
+   * 没有天光的维度（下界、末地）用它代替 seedSky —— 那里读到的
+   * 隐含天光（地表以上 15、以下 0）本来就是对的，而真去跑一遍
+   * 播种会在末地那种"薄板悬在虚空里"的地形上炸开（见 ServerWorld）。
+   */
+  markLightReady(x0: number, z0: number, x1: number, z1: number): void {
     for (let z = z0; z <= z1; z += 16) {
       for (let x = x0; x <= x1; x += 16) this.world.markLightReady(x, z);
     }

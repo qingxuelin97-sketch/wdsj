@@ -28,6 +28,7 @@ import {
   onWindowClick, closeWindow,
 } from './player/inventory-actions.ts';
 import { EnchantingEntity, BrewingEntity } from './world/block-entity-craft.ts';
+import { DragonFight } from './entity/dragon.ts';
 import { refreshOffers, sendOffers, selectEnchantment } from './player/enchant-actions.ts';
 import { ServerPlayer } from './player/server-player.ts';
 import type { BlockRegistry } from '../core/registry/block-registry.ts';
@@ -89,6 +90,14 @@ export class ServerCore {
   readonly mobs: MobManager;
   /** 飞在空中的箭 */
   readonly arrows = new Map<number, Arrow>();
+  /**
+   * 末影龙战的状态。
+   *
+   * 挂在 core 上而不是龙身上：龙死了之后还要放出口传送门、龙蛋与经验，
+   * 那些事发生在"龙已经不存在"之后。而且它要跨存档保留 ——
+   * 一个已经通关的世界不该在下次进末地时又长出一条龙。
+   */
+  readonly dragonFight = new DragonFight();
   private readonly players = new Map<number, ServerPlayer>();
 
   /**

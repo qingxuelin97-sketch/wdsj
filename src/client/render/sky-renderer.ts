@@ -13,7 +13,7 @@
  * 太阳都在同一个方向 —— 这正是真实天体的观感。
  */
 import { Shader } from '../gl/shader.ts';
-import { skyColor, celestialAngle, sunBrightness } from '../../core/world/day-night.ts';
+import { skyColorFor, celestialAngle, sunBrightness } from '../../core/world/day-night.ts';
 import { buildStarField, starBrightness, moonPhase, cloudOffset, STAR_COUNT } from '../../core/world/sky.ts';
 
 /** 云所在的高度。MC 是 108（海平面 62 之上 46 格） */
@@ -211,6 +211,13 @@ export interface SkyFrame {
   readonly moonLayers: readonly number[];
   readonly cloudLayer: number;
   readonly renderDistance: number;
+  /**
+   * −1 下界 / 0 主世界 / 1 末地。
+   *
+   * 下界与末地**不画太阳、月亮、云**，只留一个常色的穹顶 ——
+   * 那两个地方抬头看见太阳是一眼假，比什么都出戏。
+   */
+  readonly dimension: number;
 }
 
 export class SkyRenderer {
@@ -266,7 +273,9 @@ export class SkyRenderer {
     const gl = this.gl;
     // 必须把 rain 传进去。只改 clearColor 是不够的 —— 穹顶整个盖在清屏色
     // 上面，玩家看到的是穹顶。第一版就是这么"下着雨天却still是蓝的"
-    const sky = skyColor(f.timeOfDay, f.rain);
+    const sky = skyColorFor(f.dimension, f.timeOfDay, f.rain);
+    // 没有天光的维度：画完穹顶就收工。星星、日月、云一概不画
+    const celestial = f.dimension === 0;
     // 天顶比地平线稍深、稍蓝。这个差值就是"天空有层次"的全部来源 ——
     // 单一颜色的天空看起来像一块背景板，而不是一片天
     const topR = sky.r * 0.78;
@@ -283,6 +292,13 @@ export class SkyRenderer {
     this.domeShader.setVec3('uHorizonColor', sky.r, sky.g, sky.b);
     gl.bindVertexArray(this.domeVao);
     gl.drawArrays(gl.TRIANGLES, 0, this.domeVerts);
+
+    if (!celestial) {
+      // 状态要还原，不然下一次画世界时深度写入还是关着的
+      gl.depthMask(true);
+      gl.enable(gl.CULL_FACE);
+      return;
+    }
 
     // 天体角度：0 tick（日出）时太阳在东方地平线上
     const angle = celestialAngle(f.timeOfDay) * Math.PI * 2;

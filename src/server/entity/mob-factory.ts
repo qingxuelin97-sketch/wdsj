@@ -28,9 +28,16 @@ export function installGoals(mob: Mob, itemIdOf: (name: string) => number): void
     return;
   }
 
-  // 火球没有 AI —— 它由 MobManager 直接推进（飞、撞、炸）。
-  // 给它装目标的话，它会试着"走"向玩家，而它压根没有腿
-  if (def.type === MobType.FIREBALL) return;
+  // 这几个没有 AI 目标 —— 它们的行为写在别处（火球与末影之眼在
+  // MobManager 里直接推进，龙与水晶在 entity/dragon.ts 的状态机里）。
+  //
+  // 给龙装 MeleeAttackGoal 是个很贵的错误：那会让寻路器去给一个
+  // 8 格宽、speed 为 0 的实体找一条走得通的路，而它在末地任何地方
+  // 都站不下 —— 表现是服务端整个卡住，指令全部超时。
+  if (def.type === MobType.FIREBALL || def.type === MobType.ENDER_EYE
+    || def.type === MobType.ENDER_DRAGON || def.type === MobType.ENDER_CRYSTAL) {
+    return;
+  }
 
   // 恶魂只悬停和开火，不追人。追人的话它会贴到脸上，
   // 而恶魂的威胁感恰恰来自"够不着"

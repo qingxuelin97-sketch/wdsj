@@ -154,8 +154,10 @@ export class MobManager {
         continue;
       }
       // 区块卸载了就把生物也收走：留着的话它会在一个不存在的世界里
-      // 一路掉到 y<-8 然后"摔死"，掉落物撒在没人看得见的地方
-      if (!world.isLoaded(Math.floor(mob.x) >> 4, Math.floor(mob.z) >> 4)) {
+      // 一路掉到 y<-8 然后"摔死"，掉落物撒在没人看得见的地方。
+      // 常驻的（BOSS 战部件）除外 —— 见 MobDef.persistent
+      if (!mob.def.persistent
+        && !world.isLoaded(Math.floor(mob.x) >> 4, Math.floor(mob.z) >> 4)) {
         this.forget(mob);
         continue;
       }
@@ -181,6 +183,17 @@ export class MobManager {
     this.mobs.delete(mob.entityId);
     this.lastSent.delete(mob.entityId);
     this.destroyed.push(mob.entityId);
+  }
+
+  /**
+   * 龙死时撒的那一大堆经验。
+   *
+   * 单独一个入口是因为龙死在 dragon.ts 里处理（它死后还要放传送门），
+   * 走不到 dropLoot 那条路；而 12000 点经验要拆成几十个球，
+   * 那段拆分逻辑只此一份。
+   */
+  giveDragonXp(x: number, y: number, z: number, amount: number): void {
+    spawnXpOrbs(this.core, x, y, z, amount);
   }
 
   /** 死亡掉落 */
@@ -457,7 +470,7 @@ export class MobManager {
         const d = Math.hypot(p.x - mob.x, p.y - mob.y, p.z - mob.z);
         if (d < nearest) nearest = d;
       }
-      if (nearest > DESPAWN_DISTANCE) this.forget(mob);
+      if (!mob.def.persistent && nearest > DESPAWN_DISTANCE) this.forget(mob);
     }
   }
 }

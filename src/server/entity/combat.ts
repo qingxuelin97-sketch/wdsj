@@ -102,6 +102,12 @@ export function onAttackEntity(core: ServerCore, player: ServerPlayer, value: Re
   const held = player.inventory.held;
   const damage = isEmpty(held) ? 1 : (core.items.get(held.id)?.attackDamage ?? 1);
   if (!mob.hurt(damage)) return;
+
+  // 末影水晶被打死就炸。爆炸是它唯一的存在感 ——
+  // 悄无声息地消失的话，玩家不会把"拆水晶"和"龙不再回血"联系起来
+  if (mob.def.type === MobType.ENDER_CRYSTAL && !mob.alive) {
+    core.explode(mob.x, mob.y + 1, mob.z, 6, mob.entityId, core.worldOf(player.dimension));
+  }
   mob.knockback(dx, dz);
   // 打了它就会还手；被动生物则会逃跑，那由 PanicGoal 负责
   if (mob.def.attackDamage > 0) mob.targetId = player.entityId;

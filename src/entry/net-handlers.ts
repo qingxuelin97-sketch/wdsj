@@ -46,6 +46,8 @@ export interface PacketContext {
    *                  雾色与环境光 —— 下界不该有太阳
    */
   onChangeDimension(dimension: number, x: number, y: number, z: number, yaw: number): void;
+  /** 丢掉所有还没上传的网格结果。换维度时用 */
+  dropPendingMeshes(): void;
   /** 世界时间更新 */
   onTime(worldAge: number, timeOfDay: number): void;
   /** 天气变了。rain/thunder 是 0..1，服务端已经平滑过，客户端照用即可 */
@@ -96,6 +98,8 @@ export function installPacketHandlers(net: PacketChannel, ctx: PacketContext): v
         // 顺序要紧：**先**清镜像再放人。反过来的话，落点那一帧
         // 用的还是上一个维度的方块，玩家会被卡在旧地形里
         ctx.world.clearAll();
+        // 在飞的网格结果也要作废 —— 它们画的是上一个维度
+        ctx.dropPendingMeshes();
         ctx.renderer.dispose();
         ctx.onChangeDimension(
           dim, value['x'] as number, value['y'] as number, value['z'] as number,

@@ -424,7 +424,21 @@ export class ServerWorld {
         if (chunk.sections[sy] != null) { topSection = sy; break; }
       }
       const topY = (topSection + 1) * CHUNK_SIZE;
-      this.light.seedSky(x0, z0, x0 + CHUNK_SIZE - 1, z0 + CHUNK_SIZE - 1, topY, true);
+      if (this.dim.hasSkyLight) {
+        this.light.seedSky(x0, z0, x0 + CHUNK_SIZE - 1, z0 + CHUNK_SIZE - 1, topY, true);
+      } else {
+        // 没有天光的维度**根本不跑天光播种**。
+        //
+        // 不只是"省一点"：末地的岛是一块悬在虚空里的薄板，绝大多数列的
+        // 地表高度是 0 而邻居高达 120 —— seedSky 的判据（邻居比自己高
+        // 就入队）在那里会让几乎每一格都成为传播源，一个区块三万条，
+        // 六十个区块就够把服务端卡死几十秒。实测就是这样卡的：
+        // "dimension end 指令超时"。
+        //
+        // 不播的话读到的是隐含值（地表以上 15、以下 0），
+        // 那正好就是下界与末地该有的样子：洞里全黑，只有岩浆和萤石照亮。
+        this.light.markLightReady(x0, z0, x0 + CHUNK_SIZE - 1, z0 + CHUNK_SIZE - 1);
+      }
       this.light.seedBlockLight(
         x0, 0, z0, x0 + CHUNK_SIZE - 1, Math.max(0, topY - 1), z0 + CHUNK_SIZE - 1, true,
       );

@@ -68,6 +68,13 @@ const GHAST_MOUTH: readonly [number, number, number] = [0.15, 0.10, 0.12];
 const FIREBALL_CORE: readonly [number, number, number] = [1.0, 0.95, 0.55];
 const FIREBALL_GLOW: readonly [number, number, number] = [1.0, 0.48, 0.10];
 const ENDER_EYE_GREEN: readonly [number, number, number] = [0.35, 0.85, 0.55];
+/** 龙身是**近黑的紫**，不是纯黑：纯黑在末地的黑色天空里没有轮廓 */
+const DRAGON_BODY: readonly [number, number, number] = [0.11, 0.09, 0.14];
+const DRAGON_WING: readonly [number, number, number] = [0.16, 0.13, 0.20];
+const DRAGON_EYE: readonly [number, number, number] = [0.85, 0.25, 0.95];
+const CRYSTAL_PINK: readonly [number, number, number] = [0.90, 0.45, 0.85];
+const CRYSTAL_CORE: readonly [number, number, number] = [1.0, 0.92, 0.55];
+const CRYSTAL_BASE: readonly [number, number, number] = [0.20, 0.20, 0.24];
 const CHICKEN_BEAK: readonly [number, number, number] = [0.90, 0.65, 0.15];
 const CHICKEN_LEG: readonly [number, number, number] = [0.85, 0.55, 0.12];
 const EYE_DARK: readonly [number, number, number] = [0.05, 0.05, 0.06];
@@ -266,6 +273,56 @@ MODELS.set(MobType.FIREBALL, {
 /** 末影之眼：一颗小小的绿色发光球 */
 MODELS.set(MobType.ENDER_EYE, {
   boxes: [b(-3, 0, -3, 6, 6, 6, ENDER_EYE_GREEN)],
+});
+
+/**
+ * 末影龙。
+ *
+ * 8 格翼展、4 格高。它的辨识度全在**轮廓**上：长脖子、长尾巴、
+ * 一对铺开的翅膀。做成一个大方块加两片翅膀是不够的 ——
+ * 那看起来像一只蝙蝠。
+ *
+ * 一格 = 16 单位。
+ */
+MODELS.set(MobType.ENDER_DRAGON, {
+  boxes: [
+    // 躯干
+    b(-12, 26, -16, 24, 20, 40, DRAGON_BODY),
+    // 脖子三节，逐节变细、向前上方伸
+    b(-8, 34, -32, 16, 14, 18, DRAGON_BODY),
+    b(-6, 38, -46, 12, 12, 16, DRAGON_BODY),
+    // 头 + 吻 + 两只紫眼
+    b(-8, 40, -62, 16, 16, 18, DRAGON_BODY, { head: true }),
+    b(-5, 40, -70, 10, 8, 10, DRAGON_BODY, { head: true }),
+    b(-9, 50, -58, 4, 3, 4, DRAGON_EYE, { head: true }),
+    b(5, 50, -58, 4, 3, 4, DRAGON_EYE, { head: true }),
+    // 尾巴三节
+    b(-6, 30, 24, 12, 12, 20, DRAGON_BODY),
+    b(-4, 30, 44, 8, 8, 20, DRAGON_BODY),
+    b(-3, 30, 64, 6, 6, 20, DRAGON_BODY),
+    // 翅膀：靠 swing 让它们上下扇
+    b(-56, 40, -8, 44, 4, 32, DRAGON_WING, { swing: 1 }),
+    b(12, 40, -8, 44, 4, 32, DRAGON_WING, { swing: -1 }),
+    // 四条短腿
+    b(-14, 14, -8, 8, 14, 8, DRAGON_BODY, { swing: 1 }),
+    b(6, 14, -8, 8, 14, 8, DRAGON_BODY, { swing: -1 }),
+    b(-14, 14, 12, 8, 14, 8, DRAGON_BODY, { swing: -1 }),
+    b(6, 14, 12, 8, 14, 8, DRAGON_BODY, { swing: 1 }),
+  ],
+});
+
+/**
+ * 末影水晶：一个悬空的菱形加下面的基座。
+ *
+ * 它必须**显眼**：整场战斗的第一步是"看见塔顶上那些亮点"，
+ * 看不见的话玩家会一直在打一条永远打不死的龙。
+ */
+MODELS.set(MobType.ENDER_CRYSTAL, {
+  boxes: [
+    b(-8, 4, -8, 16, 16, 16, CRYSTAL_PINK),
+    b(-10, 0, -10, 20, 4, 20, CRYSTAL_BASE),
+    b(-4, 20, -4, 8, 8, 8, CRYSTAL_CORE),
+  ],
 });
 
 /** 羊毛的 16 种颜色。羊的第一个盒子（身体）用它染色 */

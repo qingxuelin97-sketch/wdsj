@@ -19,6 +19,7 @@
  */
 import { runSimChecks } from './smoke-sim-checks.mjs';
 import { runVisualChecks } from './smoke-visual-checks.mjs';
+import { runDimensionChecks } from './smoke-dimension-checks.mjs';
 
 export async function runSceneChecks(ctx) {
   const { page, ensureHook, spawnPos, log, failures, actual, golden, saveShot } = ctx;
@@ -537,4 +538,8 @@ export async function runSceneChecks(ctx) {
   }
 
   await runSimChecks(ctx);
+
+  // 维度检查放在**最后**：换一次维度要重建整个世界，之后服务端要
+  // 好几秒才重新安定。夹在中间跑会让后面每一项都跟着不稳
+  await runDimensionChecks(ctx);
 }

@@ -100,7 +100,7 @@ export function wireTestHook(d: TestHookDeps): void {
     setSizeLock: d.setSizeLock,
     idleStats: () => ({
       // 在飞的网格化任务也算"未安定"——否则会在结果还没回来时就判定世界已就绪
-      dirty: world.dirtyCount + meshing.pool.pendingJobs,
+      dirty: world.dirtyCount + meshing.pool.pendingJobs + meshing.pendingUploads,
       chunks: world.chunkCount,
       serverPending: stats.pendingChunks,
     }),
