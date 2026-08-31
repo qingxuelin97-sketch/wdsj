@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import {
   Container, SlotKind, ClickButton, type SlotRegion,
 } from '../../src/core/inventory/container.ts';
-import { makeStack, isEmpty, type ItemStack } from '../../src/core/item/item-def.ts';
+import { makeStack, isEmpty, copyStack, type ItemStack } from '../../src/core/item/item-def.ts';
 
 const STONE = 1;
 const DIRT = 3;
@@ -254,4 +254,107 @@ test('addItem 塞得下就全塞，塞不下返回剩余', () => {
   for (let i = 0; i < 9; i++) set(full, i, DIRT, 64);
   const left = full.addItem(makeStack(STONE, 10), 0);
   assert.equal(left, 10, '区域塞满时应原样退回');
+});
+
+// ---------------------------------------------------------------------------
+// 附魔要跟着物品走
+//
+// 这一组盯的是同一类 bug：copyStack 只搬 id/count/damage，
+// 附魔那个可选字段被漏在原地。表现是玩家在物品栏里把附了魔的剑
+// **挪一下位置**，附魔就没了 —— 剑还在，图标一模一样，只是不再发光，
+// 伤害也掉回基础值。没有任何报错，玩家只会觉得"我记错了吧"。
+// ---------------------------------------------------------------------------
+
+/** 一把锋利 V + 火焰附加 II 的剑 */
+function enchantedSword(): ItemStack {
+  const s = makeStack(SWORD, 1, 12);
+  s.enchantments = [{ id: 16, level: 5 }, { id: 20, level: 2 }];
+  return s;
+}
+
+const putEnchanted = (c: Container, slot: number): void => {
+  copyStack(enchantedSword(), c.slots[slot]!);
+};
+
+const enchOf = (s: ItemStack): string => (s.enchantments ?? []).map((e) => `${e.id}/${e.level}`).join(',');
+
+test('左键拿起再放下附了魔的剑：附魔还在', () => {
+  const c = makeContainer();
+  putEnchanted(c, 0);
+
+  c.click(0, ClickButton.LEFT, false);
+  assert.equal(enchOf(c.cursor), '16/5,20/2', '拿在手上时附魔就得跟过来');
+
+  c.click(5, ClickButton.LEFT, false);
+  assert.equal(enchOf(c.slots[5]!), '16/5,20/2', '放到新格子里附魔要还在');
+  assert.equal(c.slots[5]!.damage, 12, '耐久也别丢');
+  assert.equal(enchOf(c.cursor), '', '手上应该空了');
+});
+
+test('右键拿单件附魔剑：整件带走，附魔跟着', () => {
+  const c = makeContainer();
+  putEnchanted(c, 0);
+  c.click(0, ClickButton.RIGHT, false);
+  assert.ok(isEmpty(c.slots[0]!), '单件右键是整件拿走');
+  assert.equal(enchOf(c.cursor), '16/5,20/2');
+});
+
+test('右键往空格里放一件附魔剑：附魔跟着', () => {
+  const c = makeContainer();
+  copyStack(enchantedSword(), c.cursor);
+  c.click(3, ClickButton.RIGHT, false);
+  assert.equal(enchOf(c.slots[3]!), '16/5,20/2');
+});
+
+test('附魔剑与普通物品交换位置：两边都不串味', () => {
+  const c = makeContainer();
+  putEnchanted(c, 0);
+  set(c, 4, STONE, 20);
+
+  c.click(0, ClickButton.LEFT, false);   // 拿起剑
+  c.click(4, ClickButton.LEFT, false);   // 点石头 -> 异类交换
+  assert.equal(enchOf(c.slots[4]!), '16/5,20/2', '剑落到 4 号格，附魔还在');
+  assert.equal(c.cursor.id, STONE, '手上换成了石头');
+  assert.equal(enchOf(c.cursor), '', '石头身上不该沾到附魔');
+});
+
+test('搬走附魔剑后原格子不留幽灵附魔', () => {
+  const c = makeContainer();
+  // 这里**直接**给槽位挂上附魔，不经过 copyStack ——
+  // 要测的是 clearStack 有没有把这个字段一起清掉
+  const slot = c.slots[0]!;
+  slot.id = SWORD; slot.count = 1; slot.damage = 0;
+  slot.enchantments = [{ id: 16, level: 5 }];
+
+  c.click(0, ClickButton.LEFT, false);   // 拿走，0 号格走 clearStack
+  assert.equal(enchOf(c.slots[0]!), '', '清空过的格子身上不该还挂着附魔');
+
+  // 而这个"幽灵"最伤人的地方是它会被下一件普通物品捡走
+  c.cursor.id = 0; c.cursor.count = 0; delete c.cursor.enchantments;
+  set(c, 0, STONE, 1);
+  c.click(0, ClickButton.LEFT, false);
+  assert.equal(enchOf(c.cursor), '', '一堆石头不该凭空带上锋利');
+});
+
+test('两把附魔剑不会合并 —— 合并等于烧掉一份附魔', () => {
+  const c = makeContainer();
+  putEnchanted(c, 0);
+  putEnchanted(c, 1);
+  c.click(0, ClickButton.LEFT, false);
+  c.click(1, ClickButton.LEFT, false);
+  // 不能合并，只能交换：两把剑仍然是两把
+  assert.equal(c.slots[1]!.count, 1);
+  assert.equal(enchOf(c.slots[1]!), '16/5,20/2');
+  assert.equal(c.cursor.count, 1);
+  assert.equal(enchOf(c.cursor), '16/5,20/2');
+});
+
+test('附魔是深拷：改了一处不会动到另一处', () => {
+  const c = makeContainer();
+  putEnchanted(c, 0);
+  c.click(0, ClickButton.LEFT, false);
+  c.click(5, ClickButton.LEFT, false);
+  putEnchanted(c, 0);
+  c.slots[0]!.enchantments![0]!.level = 1;
+  assert.equal(c.slots[5]!.enchantments![0]!.level, 5, '两个格子不该共用同一个数组');
 });

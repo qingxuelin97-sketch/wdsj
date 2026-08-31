@@ -228,12 +228,24 @@ export function stacksToNbt(slots: readonly ItemStack[]): NbtValue {
   for (let i = 0; i < slots.length; i++) {
     const s = slots[i]!;
     if (isEmpty(s)) continue;
-    items.push(nbt.compound({
+    const fields: Record<string, NbtValue> = {
       Slot: nbt.byte(i),
       id: nbt.short(s.id),
       Count: nbt.byte(s.count),
       Damage: nbt.short(s.damage),
-    }));
+    };
+    // 附魔。没附过魔的物品**不写这一项** —— 箱子里绝大多数格子都没附魔，
+    // 给每一格写一个空列表会让存档白白胀一圈。
+    //
+    // 不写的话玩家花三十级换来的锋利 V 会在退出重进时消失，
+    // 而且没有任何提示：剑还在，附魔没了
+    if (s.enchantments !== undefined && s.enchantments.length > 0) {
+      fields['ench'] = nbt.list(TagType.COMPOUND, s.enchantments.map((e) => nbt.compound({
+        id: nbt.short(e.id),
+        lvl: nbt.short(e.level),
+      })));
+    }
+    items.push(nbt.compound(fields));
   }
   return nbt.list(TagType.COMPOUND, items);
 }
@@ -252,6 +264,14 @@ export function nbtToStacks(list: readonly NbtValue[], out: ItemStack[]): void {
     dst.id = getInt(item, 'id');
     dst.count = getInt(item, 'Count');
     dst.damage = getInt(item, 'Damage');
+    const ench = getList(item, 'ench');
+    if (ench.length > 0) {
+      dst.enchantments = ench.map((e) => ({ id: getInt(e, 'id'), level: getInt(e, 'lvl') }));
+    } else {
+      // 上面那个循环只清了 id/count/damage —— 这个数组是复用的，
+      // 不删的话上一次读进来的附魔会挂在一件空物品上
+      delete dst.enchantments;
+    }
   }
 }
 
@@ -280,9 +300,29 @@ export function blockEntityFromNbt(tag: NbtValue): BlockEntity | null {
       for (let i = 0; i < 4; i++) e.lines[i] = getString(tag, `Text${i + 1}`);
       return e;
     }
+    // 附魔台与酿造台在 block-entity-craft.ts。与 createBlockEntity 同理，
+    // 直接 import 会成环，所以走注入的工厂。
+    //
+    // 漏了这两条的后果不只是"内容丢了"：读回来的方块**没有方块实体**，
+    // 右键它会开出一个空窗口，而放在里面的药水与装备无声无息地没了
+    case BlockEntityKind.ENCHANTING:
+    case BlockEntityKind.BREWING: {
+      if (craftFromNbt === null) return null;
+      return craftFromNbt(kind, x, y, z, tag);
+    }
     default:
       return null;
   }
+}
+
+/** 附魔台/酿造台的 NBT 还原器，由 block-entity-craft.ts 注册 */
+let craftFromNbt:
+  ((k: BlockEntityKind, x: number, y: number, z: number, tag: NbtValue) => BlockEntity) | null = null;
+
+export function registerCraftBlockEntityLoader(
+  f: (k: BlockEntityKind, x: number, y: number, z: number, tag: NbtValue) => BlockEntity,
+): void {
+  craftFromNbt = f;
 }
 
 /** 某个方块 id 对应哪种方块实体，null 表示不需要 */

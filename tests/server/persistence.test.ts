@@ -25,7 +25,10 @@ import { spawnItem } from '../../src/server/entity/item-manager.ts';
 import { LoopbackTransport, PacketChannel } from '../../src/core/net/transport.ts';
 import { S2C, C_Handshake, C_SetViewDistance, PROTOCOL_VERSION } from '../../src/core/net/packets.ts';
 import { packState, stateId } from '../../src/core/world/chunk.ts';
-import { makeStack } from '../../src/core/item/item-def.ts';
+import { makeStack, copyStack, isEmpty } from '../../src/core/item/item-def.ts';
+import { Enchantment } from '../../src/core/item/enchantment.ts';
+import { AWKWARD_POTION } from '../../src/core/craft/brewing.ts';
+import { EnchantingEntity, BrewingEntity } from '../../src/server/world/block-entity-craft.ts';
 import { FurnaceEntity, ChestEntity } from '../../src/server/world/block-entity.ts';
 import type { ServerPlayer } from '../../src/server/player/server-player.ts';
 
@@ -313,4 +316,84 @@ test('生物跟着区块一起存读，血量与羊的颜色都还原', async ()
   assert.equal(back.health, 5, '血量要还原');
   // AI 目标是**这一次运行**的状态，读档时重新装，不该跟着存
   assert.ok(back.goals.runningNames().length >= 0);
+});
+
+test('附魔与附魔台/酿造台跟着存档一起来回', async () => {
+  const storage = new MemoryStorage();
+  const a = await makeRig(storage);
+  await tickAsync(a.core, 20);
+
+  const bx = Math.floor(a.player.x);
+  const bz = Math.floor(a.player.z);
+  const by = Math.floor(a.player.y) + 1;
+
+  // 一把锋利 V + 耐久 III 的钻石剑，放进箱子
+  a.core.world.setBlock(bx + 3, by, bz, packState(registry.idOf(Blocks.CHEST)));
+  const chest = a.core.world.blockEntities.get(bx + 3, by, bz) as ChestEntity;
+  const sword = makeStack(items.idOf(Items.DIAMOND_SWORD), 1, 42);
+  sword.enchantments = [
+    { id: Enchantment.SHARPNESS, level: 5 },
+    { id: Enchantment.UNBREAKING, level: 3 },
+  ];
+  copyStack(sword, chest.slots[2]!);
+
+  // 同一把剑的另一份放在玩家身上 —— 两条存档路径不一样（region vs player.dat）
+  copyStack(sword, a.player.inventory.slots[7]!);
+
+  // 附魔台。1.0.0 的附魔台只有一格（青金石是 1.8 才加的），
+  // 台面上摆一把剑 + 一个已经报过价的种子
+  a.core.world.setBlock(bx + 5, by, bz, packState(registry.idOf(Blocks.ENCHANTING_TABLE)));
+  const table = a.core.world.blockEntities.get(bx + 5, by, bz) as EnchantingEntity;
+  assert.ok(table instanceof EnchantingEntity, '放下去就该有附魔台的方块实体');
+  table.slots[0] = makeStack(items.idOf(Items.DIAMOND_SWORD), 1, 7);
+  table.seed = 987654;
+
+  // 酿造台，三个瓶位 + 一份材料
+  a.core.world.setBlock(bx + 6, by, bz, packState(registry.idOf(Blocks.BREWING_STAND)));
+  const stand = a.core.world.blockEntities.get(bx + 6, by, bz) as BrewingEntity;
+  assert.ok(stand instanceof BrewingEntity, '放下去就该有酿造台的方块实体');
+  const POTION = items.idOf(Items.POTION);
+  stand.slots[0] = makeStack(POTION, 1, AWKWARD_POTION);
+  stand.slots[1] = makeStack(POTION, 1, AWKWARD_POTION);
+  stand.slots[3] = makeStack(items.idOf(Items.NETHER_WART), 1);
+
+  await a.controller.saveNow();
+
+  // --- 重开 ---
+  const b = await makeRig(storage);
+  assert.ok(b.controller.restorePlayer(b.player), '应该读到 player.dat');
+  assert.ok(b.core.world.forceChunk((bx + 3) >> 4, bz >> 4) !== null);
+  assert.ok(b.core.world.forceChunk((bx + 6) >> 4, bz >> 4) !== null);
+
+  const enchOf = (s: { enchantments?: { id: number; level: number }[] }): string =>
+    (s.enchantments ?? []).map((e) => `${e.id}/${e.level}`).join(',');
+  const WANT = `${Enchantment.SHARPNESS}/5,${Enchantment.UNBREAKING}/3`;
+
+  // 箱子里那把
+  const chest2 = b.core.world.blockEntities.get(bx + 3, by, bz);
+  assert.ok(chest2 instanceof ChestEntity, '箱子没还原');
+  assert.equal(chest2.slots[2]!.damage, 42, '耐久要还原');
+  assert.equal(enchOf(chest2.slots[2]!), WANT, '箱子里的剑不该把附魔弄丢');
+
+  // 身上那把 —— 走的是 player.dat 加 copyStack 还原，另一条路
+  assert.equal(enchOf(b.player.inventory.slots[7]!), WANT, '背包里的剑不该把附魔弄丢');
+
+  // 没附魔的格子不该凭空长出附魔来
+  assert.equal(enchOf(chest2.slots[0]!), '', '空格子不该带附魔');
+
+  // 附魔台：漏注册的话这里是 null —— 方块还在，右键开出一个空窗口
+  const table2 = b.core.world.blockEntities.get(bx + 5, by, bz);
+  assert.ok(table2 instanceof EnchantingEntity, '附魔台的方块实体没还原');
+  assert.equal(table2.slots[0]!.id, items.idOf(Items.DIAMOND_SWORD), '台面上的剑还在');
+  assert.equal(table2.slots[0]!.damage, 7, '台面上那把剑的耐久要还原');
+  assert.equal(table2.seed, 987654, '报价种子要还原，否则读档后三条附魔会全变');
+
+  // 酿造台
+  const stand2 = b.core.world.blockEntities.get(bx + 6, by, bz);
+  assert.ok(stand2 instanceof BrewingEntity, '酿造台的方块实体没还原');
+  assert.equal(stand2.slots[0]!.id, POTION);
+  assert.equal(stand2.slots[0]!.damage, AWKWARD_POTION, '药水的种类写在 damage 里，丢了就变成清水');
+  assert.equal(stand2.slots[1]!.id, POTION);
+  assert.ok(isEmpty(stand2.slots[2]!), '空着的瓶位读回来还得是空的');
+  assert.equal(stand2.slots[3]!.id, items.idOf(Items.NETHER_WART), '材料格要还原');
 });

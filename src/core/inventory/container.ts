@@ -122,10 +122,11 @@ export class Container {
         copyStack(target, cursor);
         clearStack(target);
       } else {
-        // 右键拿一半，向上取整 —— 单个物品右键会整个拿走，这是 MC 的行为
+        // 右键拿一半，向上取整 —— 单个物品右键会整个拿走，这是 MC 的行为。
+        // 走 copyStack 而不是逐字段抄，是为了把附魔一起带上：
+        // 附了魔的东西只有一件，右键就是整件拿走
         const half = Math.ceil(target.count / 2);
-        cursor.id = target.id;
-        cursor.damage = target.damage;
+        copyStack(target, cursor);
         cursor.count = half;
         target.count -= half;
         if (target.count <= 0) clearStack(target);
@@ -137,8 +138,7 @@ export class Container {
     if (button === ClickButton.RIGHT) {
       // 放一个
       if (isEmpty(target)) {
-        target.id = cursor.id;
-        target.damage = cursor.damage;
+        copyStack(cursor, target);
         target.count = 1;
         cursor.count--;
         if (cursor.count <= 0) clearStack(cursor);

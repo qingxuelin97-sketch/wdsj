@@ -126,12 +126,24 @@ export function clearStack(s: ItemStack): void {
   s.id = 0;
   s.count = 0;
   s.damage = 0;
+  // 附魔也要清掉。留着的话这个空格子身上挂着一份"幽灵附魔"，
+  // 而下一件搬进来的普通物品会白捡到它
+  delete s.enchantments;
 }
 
+/**
+ * 把 from 的内容写进 to（复用 to 这个对象，不新建）。
+ *
+ * 附魔必须跟着搬，而且要**深拷** —— 这是 cloneStack 里那条注释的同一个理由，
+ * 只是这里更容易漏：物品栏点击、开关箱子、读档还原三条路都走这个函数，
+ * 少搬一个字段的表现是"剑还在，附魔没了"，没有任何报错。
+ */
 export function copyStack(from: ItemStack, to: ItemStack): void {
   to.id = from.id;
   to.count = from.count;
   to.damage = from.damage;
+  if (from.enchantments === undefined) delete to.enchantments;
+  else to.enchantments = from.enchantments.map((e) => ({ ...e }));
 }
 
 export function cloneStack(s: ItemStack): ItemStack {

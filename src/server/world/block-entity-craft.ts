@@ -11,7 +11,7 @@
  * 这里只做"把算法接到物品栏上"。
  */
 import {
-  BlockEntity, BlockEntityKind, registerCraftBlockEntities,
+  BlockEntity, BlockEntityKind, registerCraftBlockEntities, registerCraftBlockEntityLoader,
   type BlockEntityContext,
 } from './block-entity.ts';
 import {
@@ -186,4 +186,12 @@ registerCraftBlockEntities((kind, x, y, z) => (
   kind === BlockEntityKind.ENCHANTING
     ? new EnchantingEntity(x, y, z)
     : new BrewingEntity(x, y, z)
+));
+
+// 存档还原同理。不注册的话读回来是 null —— 方块还在但**没有方块实体**，
+// 右键开出一个空窗口，里面的药水与装备无声无息地没了
+registerCraftBlockEntityLoader((kind, x, y, z, tag) => (
+  kind === BlockEntityKind.ENCHANTING
+    ? EnchantingEntity.fromNbt(x, y, z, tag)
+    : BrewingEntity.fromNbt(x, y, z, tag)
 ));
