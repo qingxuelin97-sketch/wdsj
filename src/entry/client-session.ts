@@ -11,7 +11,7 @@
  * 时间、天气都不许在这一侧推进 —— 自己推进的话，客户端会和服务端慢慢分叉，
  * 而症状是"天黑的时刻不对"这种没人查得动的问题。
  */
-import { startServerHost, type SaveResult } from './server-host.ts';
+import { startServerHost, connectRemoteServer, type SaveResult } from './server-host.ts';
 import { C_Command } from '../core/net/packets.ts';
 import type { PacketChannel } from '../core/net/transport.ts';
 
@@ -50,6 +50,8 @@ export class ClientSession {
   readonly weather: WeatherState = { rain: 0, thunder: 0 };
   /** 玩家的登录包到了没有 */
   spawned = false;
+  /** 连的是独立服务端（多人）还是内置 worker（单人） */
+  readonly multiplayer: boolean;
   /**
    * 玩家在哪个维度：-1 下界 / 0 主世界 / 1 末地。
    *
@@ -65,7 +67,14 @@ export class ClientSession {
   constructor(o: SessionOptions) {
     const { params } = o;
     this.commandTimeoutMs = Number(params.get('cmdTimeout') ?? 8000);
-    this.host = startServerHost({
+    // `?server=ws://…` 连独立多人服务端；不给就在 worker 里起一个内置的。
+    //
+    // 客户端这边的差别到此为止 —— 下面所有代码拿到的都是同一个
+    // ServerHost 接口。这正是 Transport 那层抽象的回报
+    const remote = params.get('server');
+    this.host = remote !== null && remote !== ''
+      ? connectRemoteServer(remote)
+      : startServerHost({
       seed: o.seed,
       // 截图回归必须关掉存档：存了的话"同一个种子跑两次"会得到不同的世界 ——
       // 第二次读的是第一次留下的状态，包括玩家走过的位置与挖掉的方块
@@ -79,6 +88,7 @@ export class ClientSession {
       recordError: o.recordError,
       recordLog: o.recordLog,
     });
+    this.multiplayer = remote !== null && remote !== '';
     this.net = this.host.net;
 
     /** 页面关闭时叫停心跳线程 —— 它睡在 futex 上，不主动叫醒就会一直跑 */
@@ -140,6 +150,14 @@ export class ClientSession {
         resolve(r);
       });
       this.net.send(C_Command, { requestId, text });
+      // **立刻 flush**，不等下一帧。
+      //
+      // 原来靠主循环的 sendPlayerPosition 顺带 flush，那有两个问题：
+      // 一是白搭上一帧的延迟（多人的往返预算只有 100ms，而一帧
+      // 在慢机器上就有 250ms）；二是主循环有若干条提前返回的分支
+      // （开着菜单、死亡界面、还没 spawn），走到那些分支时指令
+      // 会一直躺在出缓冲里，表现是"指令超时"而服务端根本没收到。
+      this.net.flush();
     });
   }
 

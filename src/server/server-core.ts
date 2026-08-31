@@ -29,6 +29,7 @@ import {
 } from './player/inventory-actions.ts';
 import { EnchantingEntity, BrewingEntity } from './world/block-entity-craft.ts';
 import { DragonFight } from './entity/dragon.ts';
+import { forgetPlayer } from './player/player-sync.ts';
 import { refreshOffers, sendOffers, selectEnchantment } from './player/enchant-actions.ts';
 import { ServerPlayer } from './player/server-player.ts';
 import type { BlockRegistry } from '../core/registry/block-registry.ts';
@@ -332,6 +333,9 @@ export class ServerCore {
 
   removePlayer(player: ServerPlayer): void {
     this.players.delete(player.entityId);
+    // 认识他的人要收到销毁包。不发的话，别人屏幕上会留下一具
+    // 站着不动的躯壳，而且永远不会消失
+    forgetPlayer(this, player);
   }
 
   /**
@@ -503,6 +507,17 @@ export class ServerCore {
 
   sendChat(player: ServerPlayer, text: string): void {
     player.channel.send(S_Chat, { text });
+  }
+
+  /**
+   * 发给**所有人**。加入/离开、聊天、龙被击败都走它。
+   *
+   * 与 sendChat 分开而不是加一个布尔参数：单人时 sendChat 是最常见的
+   * 用法（"你死了"只该自己看见），而广播是明确的另一件事 ——
+   * 传错布尔值的后果是所有人都看到别人的死亡提示。
+   */
+  broadcastChat(text: string): void {
+    for (const p of this.players.values()) p.channel.send(S_Chat, { text });
   }
 
   playerById(id: number): ServerPlayer | undefined {

@@ -68,6 +68,9 @@ const GHAST_MOUTH: readonly [number, number, number] = [0.15, 0.10, 0.12];
 const FIREBALL_CORE: readonly [number, number, number] = [1.0, 0.95, 0.55];
 const FIREBALL_GLOW: readonly [number, number, number] = [1.0, 0.48, 0.10];
 const ENDER_EYE_GREEN: readonly [number, number, number] = [0.35, 0.85, 0.55];
+const STEVE_SKIN: readonly [number, number, number] = [0.78, 0.60, 0.45];
+const STEVE_SHIRT: readonly [number, number, number] = [0.20, 0.65, 0.62];
+const STEVE_PANTS: readonly [number, number, number] = [0.28, 0.30, 0.55];
 /** 龙身是**近黑的紫**，不是纯黑：纯黑在末地的黑色天空里没有轮廓 */
 const DRAGON_BODY: readonly [number, number, number] = [0.11, 0.09, 0.14];
 const DRAGON_WING: readonly [number, number, number] = [0.16, 0.13, 0.20];
@@ -324,6 +327,13 @@ MODELS.set(MobType.ENDER_CRYSTAL, {
     b(-4, 20, -4, 8, 8, 8, CRYSTAL_CORE),
   ],
 });
+
+/**
+ * 别的玩家。用与僵尸同一个 humanoid 模板，换成 Steve 的配色。
+ *
+ * 手臂**不**像僵尸那样平举（那是僵尸的标志），也不像骷髅那样细。
+ */
+MODELS.set(MobType.PLAYER, humanoid(STEVE_SKIN, STEVE_SHIRT, STEVE_PANTS, false, false));
 
 /** 羊毛的 16 种颜色。羊的第一个盒子（身体）用它染色 */
 export const WOOL_COLORS: readonly (readonly [number, number, number])[] = [

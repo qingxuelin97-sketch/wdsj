@@ -123,6 +123,11 @@ export class ServerPlayer {
   readonly knownItems = new Set<number>();
   readonly knownMobs = new Set<number>();
   /**
+   * 已经收到过出生包的**别的玩家**。第三个集合，与上面两个同理：
+   * 三边各算各的差集，共用一个的话后跑的会把前面刚加的判成该销毁。
+   */
+  readonly knownPlayers = new Set<number>();
+  /**
    * 当前窗口背后的方块实体（箱子/熔炉），没有则为 null。
    * 熔炉进度要靠它判断"这个玩家是不是正看着这个熔炉"。
    */

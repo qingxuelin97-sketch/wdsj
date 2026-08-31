@@ -20,6 +20,7 @@ import { runWeatherTick } from './world/weather-tick.ts';
 import { tickItems, broadcastItems } from './entity/item-manager.ts';
 import { tickArrows } from './entity/combat.ts';
 import { tickVitals } from './player/player-vitals.ts';
+import { broadcastPlayers } from './player/player-sync.ts';
 import { tickPortal } from './world/portal-manager.ts';
 import { tickEndPortal } from './world/end-portal.ts';
 import { tickDragonFight } from './entity/dragon.ts';
@@ -114,6 +115,8 @@ export function runServerTick(core: ServerCore): void {
   // 治疗与俯冲判定要看的是新位置
   tickDragonFight(core);
   tickArrows(core);
+  // 别的玩家。与生物同一条链路，但单独走一遍差集（见 player-sync.ts）
+  broadcastPlayers(core);
 
   // 光照重算（M4 会换成局部增量）
   for (const w of core.loadedWorlds()) w.updateLighting();

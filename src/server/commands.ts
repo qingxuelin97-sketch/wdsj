@@ -97,6 +97,17 @@ value: Record<string, unknown>,
         reply(true, `${name} ${target.x} ${y} ${target.z}`);
         return;
       }
+      /** `say <文本>` —— 发给所有人。多人模式下唯一的交流手段 */
+      case 'say': {
+        const said = parts.slice(1).join(' ');
+        if (said === '') {
+          reply(false, '用法: say <文本>');
+          return;
+        }
+        core.broadcastChat(`<${player.name}> ${said}`);
+        reply(true, 'ok');
+        return;
+      }
       case 'time': {
         const [, sub, val] = parts;
         if (sub === 'set') {

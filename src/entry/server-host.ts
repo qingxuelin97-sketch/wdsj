@@ -8,7 +8,7 @@
  * client-main 拿到的只是一个 PacketChannel 和几个函数 ——
  * 它不需要知道服务端是在 worker 里、在 node 上还是在同一条线程上。
  */
-import { MessagePortTransport, PacketChannel } from '../core/net/transport.ts';
+import { MessagePortTransport, PacketChannel, WebSocketTransport } from '../core/net/transport.ts';
 import { S2C } from '../core/net/packets.ts';
 import { STAT_BYTES, StatSlot, readStat, writeStat } from '../core/shared-stats.ts';
 
@@ -41,6 +41,29 @@ export interface ServerHostOptions {
   /** 出错时往哪报 */
   recordError(msg: string): void;
   recordLog(msg: string): void;
+}
+
+/**
+ * 连一个**独立的**多人服务端（`?server=ws://…`）。
+ *
+ * 返回的东西和 startServerHost 完全同型 —— client-main 不需要知道
+ * 服务端是在 worker 里还是在网线那头。这正是 Transport 这层抽象的回报：
+ * "多人"在客户端这边只是换一个 Transport 实现，别的一行不动。
+ *
+ * 存盘与共享统计在多人模式下**不可用**：存档由服务端自己管
+ * （玩家没有权力叫服务端存盘），而 SharedArrayBuffer 跨不了网络。
+ * 两者都返回失败/null 而不是抛异常 —— 调用方（测试钩子、F3）
+ * 本来就要处理"没有"这种情况。
+ */
+export function connectRemoteServer(url: string): ServerHost {
+  const net = new PacketChannel(new WebSocketTransport(url), S2C);
+  return {
+    net,
+    persist: true,
+    requestSave: () => Promise.resolve({ ok: false, chunks: 0 }),
+    sharedStats: () => null,
+    shutdown: () => { net.transport.close(); },
+  };
 }
 
 export function startServerHost(opts: ServerHostOptions): ServerHost {

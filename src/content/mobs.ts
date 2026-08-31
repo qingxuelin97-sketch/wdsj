@@ -56,10 +56,22 @@ export const MobType = {
   ENDER_DRAGON: 12,
   /** 末影水晶。龙靠它回血 */
   ENDER_CRYSTAL: 13,
+  /**
+   * **别的玩家**。
+   *
+   * 复用生物那条同步链路（出生包/移动包/销毁包 + 订阅差集），
+   * 而不是另开一套玩家实体协议。理由很实际：那条链路已经处理好了
+   * "谁看得见谁"这个最容易出边界 bug 的问题，而玩家和生物在这件事上
+   * 的规则**一模一样** —— 在我订阅的区块里就看得见。
+   *
+   * 它不进 MobManager 的生物表（那会让别的玩家被 AI tick、被刷怪上限
+   * 计数、被 killall 清掉），只借用包格式。
+   */
+  PLAYER: 14,
 } as const;
 export type MobType = (typeof MobType)[keyof typeof MobType];
 
-export const MOB_TYPE_COUNT = 14;
+export const MOB_TYPE_COUNT = 15;
 
 /** 一条掉落：物品、数量范围、概率 */
 export interface LootEntry {
@@ -277,6 +289,12 @@ export const MOBS: readonly MobDef[] = [
     width: 2, height: 2, eyeHeight: 1,
     maxHealth: 5, attackDamage: 0, followRange: 0,
     speed: 0, flying: true, persistent: true, xp: 0,
+  }),
+  defineMob({
+    // 别的玩家。只用来查体型与模型，永远不会被 spawn 进生物表
+    type: MobType.PLAYER, name: 'player', category: MobCategory.HOSTILE,
+    width: 0.6, height: 1.8, eyeHeight: 1.62,
+    maxHealth: 20, attackDamage: 0, followRange: 0, speed: 4.317, xp: 0,
   }),
 ];
 

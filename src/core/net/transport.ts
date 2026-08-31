@@ -133,7 +133,11 @@ export class MessagePortTransport implements Transport {
  * 长度字段静默截断，整条流从此错位。
  */
 export class PacketChannel {
-  private readonly transport: Transport;
+  /**
+   * 底层传输。公开是为了让宿主能主动关掉连接（页面卸载、切服）——
+   * 只读，谁也换不掉它
+   */
+  readonly transport: Transport;
   private readonly incoming: PacketRegistry;
   private readonly out = new ByteWriter(8192);
   private handler: ((name: string, value: Record<string, unknown>) => void) | null = null;
@@ -201,5 +205,71 @@ export class PacketChannel {
 
   close(): void {
     this.transport.close();
+  }
+}
+
+
+/**
+ * 浏览器 WebSocket 传输。多人模式下客户端用它连独立服务端。
+ *
+ * ## 为什么要排队
+ *
+ * WebSocket 在 `readyState === CONNECTING` 时 `send` 会抛异常，而
+ * 握手要一个往返。客户端在 `onopen` 之前就会发握手包（那是登录流程的
+ * 第一步），不排队的话第一个包必丢 —— 而丢的正好是握手包，
+ * 表现是"连上了但永远进不去世界"。
+ */
+export class WebSocketTransport implements Transport {
+  private readonly ws: WebSocket;
+  private readonly pending: Uint8Array[] = [];
+  private messageCb: ((data: Uint8Array) => void) | null = null;
+  private closeCb: (() => void) | null = null;
+  private _closed = false;
+
+  constructor(url: string) {
+    this.ws = new WebSocket(url);
+    this.ws.binaryType = 'arraybuffer';
+    this.ws.addEventListener('open', () => {
+      for (const d of this.pending) this.ws.send(d);
+      this.pending.length = 0;
+    });
+    this.ws.addEventListener('message', (ev) => {
+      const data = (ev as MessageEvent).data as ArrayBuffer;
+      this.messageCb?.(new Uint8Array(data));
+    });
+    const finish = (): void => {
+      if (this._closed) return;
+      this._closed = true;
+      this.closeCb?.();
+    };
+    this.ws.addEventListener('close', finish);
+    this.ws.addEventListener('error', finish);
+  }
+
+  send(data: Uint8Array): void {
+    if (this._closed) return;
+    if (this.ws.readyState !== WebSocket.OPEN) {
+      // 拷一份再排队：调用方可能复用这块缓冲
+      this.pending.push(data.slice());
+      return;
+    }
+    this.ws.send(data);
+  }
+
+  onMessage(cb: (data: Uint8Array) => void): void {
+    this.messageCb = cb;
+  }
+
+  onClose(cb: () => void): void {
+    this.closeCb = cb;
+  }
+
+  close(): void {
+    this._closed = true;
+    this.ws.close();
+  }
+
+  get closed(): boolean {
+    return this._closed;
   }
 }
