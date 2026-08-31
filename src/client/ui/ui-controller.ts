@@ -14,6 +14,7 @@ import {
 } from './inventory-screen.ts';
 import { WindowKind } from '../../core/net/packets.ts';
 import { emptyStack, cloneStack, type ItemStack } from '../../core/item/item-def.ts';
+import { MenuState, drawVersionTag, type MenuAction } from './menu-screen.ts';
 
 /** 玩家永久持有的槽位数，与服务端一致 */
 const PERSISTENT_SLOTS = 40;
@@ -37,9 +38,47 @@ export class UiController {
   readonly vitals = { health: 20, maxHealth: 20, hunger: 20, air: 20, xpLevel: 0, xpProgress: 0 };
   /** 死了没。死了就画死亡界面并挡住输入 */
   dead = false;
+  /**
+   * 全屏菜单（主菜单 / 世界列表 / 设置 / 暂停）。
+   *
+   * 与容器窗口是**两套东西**：容器窗口盖在世界上、世界照常跑；
+   * 菜单则要挡住全部输入。合成一个状态机的话，
+   * "开着箱子时按 Esc 该关箱子还是该开暂停"这类判断会散到各处。
+   */
+  readonly menu = new MenuState();
+  /** 版本水印，主菜单右下角 */
+  versionTag = '';
 
   get open(): boolean {
     return this.windowKind !== null;
+  }
+
+  /** 菜单开着时，世界输入（走路、挖方块）全部屏蔽 */
+  get menuOpen(): boolean {
+    return this.menu.open;
+  }
+
+  /**
+   * 按 Esc。返回 true 表示这一下被界面吃掉了。
+   *
+   * 顺序有讲究：先关容器窗口，再开暂停菜单。反过来的话
+   * "开着箱子按 Esc" 会直接弹出暂停菜单，而箱子还开着盖在下面。
+   */
+  onEscape(): boolean {
+    if (this.menu.open) {
+      if (this.menu.screen === 'pause') { this.menu.show('none'); return true; }
+      if (this.menu.screen === 'settings') { this.menu.press('back'); return true; }
+      if (this.menu.screen === 'worlds') { this.menu.show('main'); return true; }
+      return true;  // 主菜单：Esc 不做事，但也不能穿透到世界
+    }
+    if (this.open) return false;  // 让调用方走关窗口那条路
+    this.menu.show('pause');
+    return true;
+  }
+
+  /** 菜单里点一下 */
+  menuClick(): MenuAction {
+    return this.menu.click();
   }
 
   get cursorStack(): ItemStack {
@@ -90,6 +129,7 @@ export class UiController {
     this.mouseX = (clientX - offX) / scale;
     this.mouseY = (clientY - offY) / scale;
     this.hovered = this.open ? slotAt(this.layout, this.mouseX, this.mouseY) : -1;
+    this.menu.onMouseMove(this.mouseX, this.mouseY);
   }
 
   /** 界面里点了一下。返回要发给服务端的包内容，没点中返回 null */
@@ -111,11 +151,23 @@ export class UiController {
     } else {
       drawCrosshair(ui);
     }
-    drawHotbar(ui, this.slots, this.hotbarStart, this.selectedHotbar, ctx);
-    // 生存状态画在快捷栏之上。开着容器界面时不画 —— 那时候面板已经
-    // 盖住了那一片，两者叠在一起会糊成一团
-    if (!this.open) drawVitals(ui, this.vitals);
-    if (this.dead) drawDeathScreen(ui);
+    // 菜单开着时不画 HUD。暂停界面的背景是半透明的（要让人看见
+    // 自己没退出游戏），快捷栏会从底下透出来，看着像界面画漏了。
+    // MC 也是暂停时收起 HUD 的
+    if (!this.menu.open) {
+      drawHotbar(ui, this.slots, this.hotbarStart, this.selectedHotbar, ctx);
+      // 生存状态画在快捷栏之上。开着容器界面时不画 —— 那时候面板已经
+      // 盖住了那一片，两者叠在一起会糊成一团
+      if (!this.open) drawVitals(ui, this.vitals);
+      if (this.dead) drawDeathScreen(ui);
+    }
+    // 菜单画在**最后**：它要盖住包括快捷栏与死亡界面在内的一切
+    if (this.menu.open) {
+      this.menu.draw(ui);
+      if (this.menu.screen === 'main' && this.versionTag !== '') {
+        drawVersionTag(ui, this.versionTag);
+      }
+    }
   }
 
   /** 界面缩放：把设计分辨率整数倍地放到画布上，像素才不会糊 */

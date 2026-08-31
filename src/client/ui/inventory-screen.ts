@@ -8,7 +8,7 @@
  * 槽位编号与服务端窗口一一对应，见 server/player/player-inventory.ts 顶部。
  */
 import { UiRenderer, UI_WIDTH, UI_HEIGHT } from './ui-renderer.ts';
-import { GLYPH_ADVANCE } from './font.ts';
+import { C, panelRaised, centeredText } from './ui-widgets.ts';
 import { WindowKind } from '../../core/net/packets.ts';
 import { isEmpty, type ItemStack } from '../../core/item/item-def.ts';
 
@@ -21,30 +21,6 @@ export interface SlotRect {
 
 export const SLOT = 18;
 
-/**
- * MC 的界面配色。**照抄不估** —— 与 `docs/RULES.md` 第 6 条同一条道理。
- *
- * 原来这里写的是 0.78 / 0.86 / 0.55 / 0.66 这类拍脑袋的灰度，
- * 画出来是两层平板。MC 的界面之所以一眼认得出，靠的不是灰度值本身，
- * 而是 **Windows-95 式的斜面**：外凸的面板左上白、右下深灰；
- * 内凹的槽位反过来。少了这一层，多准的灰度也还是草图。
- */
-const C = {
-  white: 1,
-  panel: 198 / 255, // #C6C6C6 面板底
-  slot: 139 / 255, // #8B8B8B 槽位底
-  shadow: 85 / 255, // #555555 面板右下阴影
-  slotDark: 55 / 255, // #373737 槽位左上暗边
-};
-
-/** 外凸面板：黑外框 + 左上白高光 + 右下深灰阴影 + 面板底 */
-function panelRaised(ui: UiRenderer, x: number, y: number, w: number, h: number): void {
-  ui.rect(x, y, w, h, 0, 0, 0, 1);
-  ui.rect(x + 1, y + 1, w - 2, h - 2, C.shadow, C.shadow, C.shadow, 1);
-  // 高光只铺左上两条，右下留着露出上一层的深灰
-  ui.rect(x + 1, y + 1, w - 3, h - 3, C.white, C.white, C.white, 1);
-  ui.rect(x + 2, y + 2, w - 4, h - 4, C.panel, C.panel, C.panel, 1);
-}
 
 /**
  * 内凹槽位，18×18。
@@ -369,12 +345,4 @@ export function drawDeathScreen(ui: UiRenderer): void {
   // attack / use / inventory 三个键，不是某个专用的重生键。
   // 写"PRESS R"就是假的 —— 玩家按 R 不会有任何反应
   centeredText(ui, 'CLICK TO RESPAWN', by + 5, 1, 0.92, 0.92, 0.92);
-}
-
-/** 按设计分辨率把一行字居中。字宽 = 字数 × 步进 − 末尾那一格间隙 */
-function centeredText(
-  ui: UiRenderer, str: string, y: number, scale: number, r: number, g: number, b: number,
-): void {
-  const w = str.length * GLYPH_ADVANCE * scale - scale;
-  ui.text(str, Math.round((UI_WIDTH - w) / 2), y, scale, r, g, b);
 }

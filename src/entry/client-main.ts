@@ -26,13 +26,12 @@ import { XP_ORB_ITEM_ID } from '../core/item/item-def.ts';
 
 import { BLOCK_VERT_SRC, BLOCK_FRAG_SRC } from '../client/render/block-shader.ts';
 import { tintColorArray } from '../client/render/block-textures.ts';
-import { buildRenderResources } from '../client/render/resources.ts';
-import { loadResourcePack } from '../client/render/resource-pack.ts';
+import { bootRenderResources } from '../client/render/resources.ts';
+import type { MenuAction } from '../client/ui/menu-screen.ts';
+import { runMenuAction } from './menu-actions.ts';
 import { SkyRenderer } from '../client/render/sky-renderer.ts';
 import { WeatherRenderer } from '../client/render/weather-renderer.ts';
 import { ParticleEmitters } from '../client/particle/emitters.ts';
-import { PARTICLE_TEXTURE_NAMES } from '../content/particles.ts';
-import { SKY_TILE_NAMES } from '../client/render/tile-recipes-sky.ts';
 import { ChunkRenderer } from '../client/render/chunk-renderer.ts';
 import { OverlayRenderer } from '../client/render/overlay-renderer.ts';
 import { ParticleRenderer } from '../client/render/particle-renderer.ts';
@@ -72,37 +71,22 @@ console.log(`[gl] ${caps.rendererName}`);
 const params = new URLSearchParams(location.search);
 
 const registry = createBlockRegistry();
-const tables = registry.getTables();
-// 贴图集与 GPU 纹理。物品图标也一并烘进去 —— UI 与世界共用一个 sampler
 const itemRegistry = createItemRegistry();
-// 经验球的图标既不属于方块也不属于物品，要显式塞进图集
-const extraTextures = [
-  ...itemRegistry.all().map((d) => d.texture), 'xp_orb', ...SKY_TILE_NAMES, ...PARTICLE_TEXTURE_NAMES,
-];
-
-// 资源包覆盖层。`?pack=<url>` 指向一个解开的 MC 资源包（见 docs/ART-PLAN.md）；
-// 不给就全部程序化生成。**仓库自身不含任何外部素材**，这只是留给使用者
-// 指向本地素材的口子 —— 素材一个字节都不进 git。
-//
-// 这里用了顶层 await：贴图必须在建 GL 纹理之前就位，而纹理又是后面
-// 所有东西的地基。加载器自带超时，最坏情况是等 15 秒后全用程序化的，
-// 不会卡死在这。
-const packUrl = params.get('pack') ?? '';
-const pack = packUrl === ''
-  ? null
-  : await loadResourcePack(packUrl, [...tables.collectTextureNames(), ...extraTextures]);
-if (pack !== null) for (const n of pack.notes) recordLog(n);
-
-const { atlas, faceLayer, mesherTables, texture } = buildRenderResources(
-  gl, tables, caps, anisoExt, extraTextures, pack?.tiles,
-);
+const tables = registry.getTables();
+// 贴图集、资源包覆盖层、GPU 纹理 —— 三步是一条必须按顺序发生的链，
+// 收在 client/render/resources.ts 里，见那里的注释
+const { atlas, faceLayer, mesherTables, texture } = await bootRenderResources({
+  gl, registry, items: itemRegistry, caps, anisoExt,
+  packUrl: params.get('pack') ?? '', log: recordLog,
+});
 recordLog(`方块 ${registry.size} 种 · 物品 ${itemRegistry.size} 件 · 贴图 ${atlas.layers} 张`);
 
 // ---------------------------------------------------------------------------
 // 运行时对象
 // ---------------------------------------------------------------------------
 const seed = Number(params.get('seed') ?? 1234);
-const renderDistance = Number(params.get('rd') ?? DEFAULT_RENDER_DISTANCE);
+// let 而不是 const：设置界面能改视距（见 applyMenuAction）
+let renderDistance = Number(params.get('rd') ?? DEFAULT_RENDER_DISTANCE);
 
 const renderer = new ChunkRenderer(gl);
 const frustum = new Frustum();
@@ -175,7 +159,8 @@ const player = new LocalPlayer(0.5, 70, 0.5);
  * 环境粒子的开关。默认开，截图回归关。
  * 和 persist / mobs / randomTicks 是同一类东西：它们都让世界自己变。
  */
-const ambientParticles = params.get('particles') !== '0';
+// let 而不是 const：设置界面能关环境粒子
+let ambientParticles = params.get('particles') !== '0';
 
 const emitters = new ParticleEmitters({
   particles,
@@ -459,6 +444,10 @@ installTestHook({
   },
   uiQuads: () => uiRenderer.lastQuads,
   uiOpen: () => ui.open,
+  showMenu: (screen: string) => { ui.menu.show(screen as 'none'); },
+  menuScreen: () => ui.menu.screen,
+  menuButtons: () => ui.menu.buttonIds(),
+  pressMenu: (id: string) => { applyMenuAction(ui.menu.press(id)); },
   pixelAt: (x: number, y: number) => {
     const buf = new Uint8Array(4);
     // readPixels 的原点在**左下角**，和屏幕坐标相反
@@ -493,13 +482,31 @@ let prevDebugKey = false;
 const frameInput = new FrameInput({
   net, ui,
   pointer: () => ({ x: input.pointerX, y: input.pointerY, w: canvas!.width, h: canvas!.height }),
+  onMenuAction: (action) => { applyMenuAction(action); },
 });
+
+/** 菜单按钮的执行搬到了 entry/menu-actions.ts，见那里的注释 */
+function applyMenuAction(action: MenuAction): void {
+  runMenuAction(action, {
+    ui, camera, net, audio, session,
+    setRenderDistance: (n) => { renderDistance = n; },
+    setAmbientParticles: (on) => { ambientParticles = on; },
+  });
+}
 
 function frame(nowMs: number): void {
   clock.advance(nowMs);
   if (!sizeLocked) resizeToDisplay(canvas!, Math.min(window.devicePixelRatio || 1, 2));
 
   const snap = input.sample();
+
+  // 菜单吃掉一切输入，这一帧只渲染。放在死亡界面**之前** ——
+  // 死着的时候也该能按 Esc 打开暂停菜单退回标题
+  if (frameInput.handleMenu(snap)) {
+    renderOnce();
+    scheduleFrame(frame);
+    return;
+  }
 
   // 死亡界面吃掉一切输入，这一帧只渲染
   if (frameInput.handleDeath(snap)) {

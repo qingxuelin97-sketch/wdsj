@@ -116,6 +116,21 @@ export interface HostBridge {
   uiQuads(): number;
   /** 当前是否开着某个容器界面 */
   uiOpen(): boolean;
+  showMenu(screen: string): void;
+  menuScreen(): string;
+  menuButtons(): string[];
+  pressMenu(id: string): void;
+  /**
+   * 打开某个全屏菜单（'main' / 'worlds' / 'settings' / 'pause' / 'none'）。
+   * 截图回归靠它 —— 不必去模拟"按 Esc、再点第几个按钮"那一串。
+   */
+  showMenu(screen: string): void;
+  /** 当前菜单，'none' 表示没开 */
+  menuScreen(): string;
+  /** 当前菜单上所有按钮的 id */
+  menuButtons(): string[];
+  /** 按 id 触发一个菜单按钮，不必算像素坐标 */
+  pressMenu(id: string): void;
   /** 读一个像素，排查用 */
   pixelAt(x: number, y: number): number[];
   /** 玩家身体状态，物理验收用 */
@@ -448,6 +463,10 @@ export function installTestHook(host: HostBridge): void {
     },
     uiQuads: (): number => host.uiQuads(),
     uiOpen: (): boolean => host.uiOpen(),
+    showMenu: (screen: string): void => host.showMenu(screen),
+    menuScreen: (): string => host.menuScreen(),
+    menuButtons: (): string[] => host.menuButtons(),
+    pressMenu: (id: string): void => host.pressMenu(id),
     _pixelAt: (x: number, y: number): number[] => host.pixelAt(x, y),
 
     /**

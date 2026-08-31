@@ -202,6 +202,60 @@ export async function runVisualChecks(ctx) {
   }
   saveShot('f3', dbg.png);
   actual['f3'] = dbg.hash;
+
+  // --- 全屏菜单：主菜单 / 世界列表 / 设置 / 暂停 ---
+  //
+  // 四张都要拍。它们共用同一套布局与按钮绘制，但**背景规则不同**
+  // （主菜单与世界列表是不透明的，暂停与设置是半透明的），
+  // 只拍一张的话另一条路上的回归看不见。
+  //
+  // 不调 waitForIdle：菜单是纯 UI，与世界加载无关。
+  for (const screen of ['main', 'worlds', 'settings', 'pause']) {
+    const shot = await page.evaluate(`
+      ${ensureHook}
+      const m = window.__mc;
+      m.setCanvasSize(640, 480);
+      m.showMenu(${JSON.stringify(screen)});
+      m.freeze(true);
+      const hash = await m.screenshotHash();
+      const png = await m.screenshot();
+      const ids = m.menuButtons();
+      m.showMenu('none');
+      m.freeze(false);
+      return { hash, png, ids };
+    `);
+    const name = `menu-${screen}`;
+    actual[name] = shot.hash;
+    saveShot(name, shot.png);
+    if (shot.ids.length === 0) {
+      failures.push(`${name} 一个按钮都没有 —— 布局表空了`);
+    }
+    if (UPDATE) {
+      log(`${name}: ${shot.hash} (已记录)`);
+    } else if (golden[name] !== undefined && golden[name] !== shot.hash) {
+      failures.push(`${name} 截图哈希不匹配: 期望 ${golden[name]}，实得 ${shot.hash}`);
+    } else {
+      log(`${name}: ${shot.hash} ok（按钮 ${shot.ids.join(',')}）`);
+    }
+  }
+
+  // 按钮真的接线了：主菜单点 SINGLEPLAYER 该跳到世界列表。
+  // 只拍图不点的话，一堆画得很像按钮的矩形也能过 —— 那正是"画了 ≠ 能用"
+  const nav = await page.evaluate(`
+    ${ensureHook}
+    const m = window.__mc;
+    m.showMenu('main');
+    m.pressMenu('singleplayer');
+    const after = m.menuScreen();
+    m.showMenu('none');
+    return after;
+  `);
+  if (nav !== 'worlds') {
+    failures.push(`主菜单点 SINGLEPLAYER 应该进世界列表，实得 '${nav}'`);
+  } else {
+    log('菜单导航：main -> SINGLEPLAYER -> worlds ok');
+  }
+
   if (!UPDATE && golden['f3'] !== undefined && golden['f3'] !== dbg.hash) {
     failures.push(`f3 截图哈希不匹配: 期望 ${golden['f3']}，实得 ${dbg.hash}`);
   } else {

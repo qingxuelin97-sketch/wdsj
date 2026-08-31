@@ -14,6 +14,7 @@
 import type { PacketChannel } from '../core/net/transport.ts';
 import type { InputSnapshot } from '../client/input/input.ts';
 import type { UiController } from '../client/ui/ui-controller.ts';
+import type { MenuAction } from '../client/ui/menu-screen.ts';
 import {
   C_PlayerAction, C_WindowClick, C_CloseWindow, C_HeldSlot, C_Respawn,
   PlayerActionKind,
@@ -24,11 +25,14 @@ export interface FrameInputDeps {
   readonly ui: UiController;
   /** 指针在画布上的位置与画布尺寸，每帧现取（画布会被 setCanvasSize 改） */
   pointer(): { x: number; y: number; w: number; h: number };
+  /** 菜单里点了按钮。宿主负责真正执行（改视距、退回标题、退出……） */
+  onMenuAction(action: MenuAction): void;
 }
 
 export class FrameInput {
   /** 上一帧的按键状态，用来做边沿触发 */
   private prevInventory = false;
+  private prevEscape = false;
   private prevAttack = false;
   private prevUse = false;
   /** 上一帧世界交互里的左键状态。和 prevAttack 是两个：界面开着时
@@ -58,6 +62,36 @@ export class FrameInput {
     return true;
   }
 
+  /**
+   * 菜单（主菜单 / 暂停 / 设置 / 世界列表）。
+   *
+   * 返回 true 表示这一帧被菜单吃掉了，调用方应该只渲染然后返回 ——
+   * 与 `handleDeath` 同一个约定。菜单开着时走路、挖方块、开背包
+   * 全部不该生效，而这一条不放在这里的话，会散成十几处 `if (!menu.open)`。
+   */
+  handleMenu(snap: InputSnapshot): boolean {
+    const { ui } = this.d;
+    // Esc 的处理顺序：容器窗口优先于菜单，见 UiController.onEscape
+    if (snap.escape && !this.prevEscape) {
+      if (ui.open) {
+        this.d.net.send(C_CloseWindow, { windowId: ui.windowId });
+        ui.onCloseWindow();
+      } else {
+        ui.onEscape();
+      }
+    }
+    this.prevEscape = snap.escape;
+    if (!ui.menuOpen) return false;
+
+    const p = this.d.pointer();
+    ui.onMouseMove(p.x, p.y, p.w, p.h);
+    if (snap.attack && !this.prevAttack) this.d.onMenuAction(ui.menuClick());
+    this.prevAttack = snap.attack;
+    this.prevUse = snap.use;
+    this.prevInventory = snap.inventory;
+    return true;
+  }
+
   /** 界面开关、快捷栏、以及界面开着时的格子点击 */
   handleUi(snap: InputSnapshot): void {
     const { net, ui } = this.d;
@@ -73,11 +107,6 @@ export class FrameInput {
       }
     }
     this.prevInventory = snap.inventory;
-
-    if (snap.escape && ui.open) {
-      net.send(C_CloseWindow, { windowId: ui.windowId });
-      ui.onCloseWindow();
-    }
 
     // 数字键切快捷栏
     if (snap.hotbarKey >= 0 && snap.hotbarKey !== ui.selectedHotbar) {
