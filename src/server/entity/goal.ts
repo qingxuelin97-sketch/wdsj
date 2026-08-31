@@ -45,6 +45,8 @@ export interface MobCtx {
   explode(mob: Mob, power: number): void;
   /** 骷髅射箭 */
   shootArrow(mob: Mob, target: TargetRef): void;
+  /** 恶魂吐火球 */
+  shootFireball(mob: Mob, target: TargetRef): void;
   /** 末影人传送到某处，返回是否成功 */
   teleportRandomly(mob: Mob): boolean;
 }

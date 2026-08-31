@@ -16,7 +16,7 @@ import type { InputSnapshot } from '../client/input/input.ts';
 import type { UiController } from '../client/ui/ui-controller.ts';
 import type { MenuAction } from '../client/ui/menu-screen.ts';
 import {
-  C_PlayerAction, C_WindowClick, C_CloseWindow, C_HeldSlot, C_Respawn,
+  C_PlayerAction, C_WindowClick, C_CloseWindow, C_HeldSlot, C_Respawn, C_EnchantSelect,
   PlayerActionKind,
 } from '../core/net/packets.ts';
 
@@ -119,8 +119,15 @@ export class FrameInput {
       const p = this.d.pointer();
       ui.onMouseMove(p.x, p.y, p.w, p.h);
       if (snap.attack && !this.prevAttack) {
-        const click = ui.click(0, snap.sneak);
-        if (click !== null) net.send(C_WindowClick, click);
+        // 附魔台的报价行先判：它盖在面板上、不是槽位，
+        // 后判的话点上去会被当成"点了空白处"而丢掉
+        const row = ui.clickEnchantRow();
+        if (row >= 0) {
+          net.send(C_EnchantSelect, { windowId: ui.windowId, slot: row });
+        } else {
+          const click = ui.click(0, snap.sneak);
+          if (click !== null) net.send(C_WindowClick, click);
+        }
       }
       if (snap.use && !this.prevUse) {
         const click = ui.click(1, snap.sneak);

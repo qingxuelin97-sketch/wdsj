@@ -32,10 +32,22 @@ export const MobType = {
   CREEPER: 6,
   SPIDER: 7,
   ENDERMAN: 8,
+  /** 恶魂。只在下界生成 */
+  GHAST: 9,
+  /**
+   * 恶魂的火球。
+   *
+   * 做成"生物"而不是像箭那样的独立实体，是为了**能被看见和被打**：
+   * 生物那条链路（出生包/移动包/销毁包/C_AttackEntity）已经完整，
+   * 火球需要的正好是这一整套 —— 而"击回火球"这件事的全部前提
+   * 就是玩家能瞄准它、打到它。箭走的是另一条路，服务端算完就完，
+   * 客户端根本看不见。
+   */
+  FIREBALL: 10,
 } as const;
 export type MobType = (typeof MobType)[keyof typeof MobType];
 
-export const MOB_TYPE_COUNT = 9;
+export const MOB_TYPE_COUNT = 11;
 
 /** 一条掉落：物品、数量范围、概率 */
 export interface LootEntry {
@@ -65,6 +77,13 @@ export interface MobDef {
   readonly speed: number;
   /** 白天在天光下会烧起来 */
   readonly burnsInSunlight: boolean;
+  /**
+   * 会飞：不受重力，也不吃摔落伤害。
+   *
+   * 恶魂与火球都要它。没有这一条的话，恶魂一出生就往下掉，
+   * 而"悬在半空"恰恰是恶魂全部的威胁感来源
+   */
+  readonly flying: boolean;
   /** 死亡给多少经验 */
   readonly xp: number;
   readonly loot: readonly LootEntry[];
@@ -88,6 +107,7 @@ function defineMob(input: MobInput): MobDef {
     followRange: input.followRange ?? 16,
     speed: input.speed ?? 3.0,
     burnsInSunlight: input.burnsInSunlight ?? false,
+    flying: input.flying ?? false,
     xp: input.xp ?? 0,
     loot: input.loot ?? [],
     temptedBy: input.temptedBy ?? null,
@@ -181,6 +201,29 @@ export const MOBS: readonly MobDef[] = [
     maxHealth: 40, attackDamage: 4, followRange: 64,
     speed: 4.3, xp: 5,
     loot: [{ item: Items.ENDER_PEARL, min: 0, max: 1, chance: 1 }],
+  }),
+
+  // --- 下界 ---
+  defineMob({
+    // 恶魂很大（4×4）而血很薄（10）。这个组合是它设计的核心：
+    // 好打中，但它在天上、够不着 —— 于是玩家必须用弓，
+    // 或者把它自己的火球打回去
+    type: MobType.GHAST, name: 'ghast', category: MobCategory.HOSTILE,
+    width: 4, height: 4, eyeHeight: 2.6,
+    maxHealth: 10, attackDamage: 0, followRange: 64,
+    speed: 1.6, flying: true, xp: 5,
+    loot: [
+      { item: Items.GUNPOWDER, min: 0, max: 2, chance: 1 },
+      { item: Items.GHAST_TEAR, min: 0, max: 1, chance: 1 },
+    ],
+  }),
+  defineMob({
+    // 火球本身：一格见方、一点血、没有 AI。它是"实体"而不是"子弹"，
+    // 因为玩家要能打到它
+    type: MobType.FIREBALL, name: 'fireball', category: MobCategory.HOSTILE,
+    width: 1, height: 1, eyeHeight: 0.5,
+    maxHealth: 1, attackDamage: 0, followRange: 0,
+    speed: 0, flying: true, xp: 0,
   }),
 ];
 

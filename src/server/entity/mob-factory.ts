@@ -13,6 +13,7 @@ import {
   TargetNearestPlayerGoal, MeleeAttackGoal, CreeperSwellGoal, RangedAttackGoal,
   EndermanTeleportGoal, WanderGoal, TemptGoal, PanicGoal, LookAtPlayerGoal,
 } from './goals.ts';
+import { GhastShootGoal } from './ghast.ts';
 
 /** 装目标。itemIdOf 用来解析"被什么吸引" */
 export function installGoals(mob: Mob, itemIdOf: (name: string) => number): void {
@@ -24,6 +25,17 @@ export function installGoals(mob: Mob, itemIdOf: (name: string) => number): void
     if (def.temptedBy !== null) goals.add(new TemptGoal(2, itemIdOf(def.temptedBy)));
     goals.add(new WanderGoal(5));
     goals.add(new LookAtPlayerGoal(6));
+    return;
+  }
+
+  // 火球没有 AI —— 它由 MobManager 直接推进（飞、撞、炸）。
+  // 给它装目标的话，它会试着"走"向玩家，而它压根没有腿
+  if (def.type === MobType.FIREBALL) return;
+
+  // 恶魂只悬停和开火，不追人。追人的话它会贴到脸上，
+  // 而恶魂的威胁感恰恰来自"够不着"
+  if (def.type === MobType.GHAST) {
+    goals.add(new GhastShootGoal(1));
     return;
   }
 

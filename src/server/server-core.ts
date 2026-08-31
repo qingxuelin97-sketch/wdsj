@@ -27,6 +27,8 @@ import {
   syncInventory,
   onWindowClick, closeWindow,
 } from './player/inventory-actions.ts';
+import { EnchantingEntity, BrewingEntity } from './world/block-entity-craft.ts';
+import { refreshOffers, sendOffers, selectEnchantment } from './player/enchant-actions.ts';
 import { ServerPlayer } from './player/server-player.ts';
 import type { BlockRegistry } from '../core/registry/block-registry.ts';
 import { AIR_STATE } from '../core/world/chunk.ts';
@@ -268,6 +270,13 @@ export class ServerCore {
           burnTotal: furnace.burnTotal,
           cookTime: furnace.cookTime,
         });
+      } else if (entity instanceof BrewingEntity) {
+        // 酿造台借 cookTime 那一格发倒计时。它不烧煤，
+        // burnTime/burnTotal 在这个窗口里没有意义，一律 0
+        player.channel.send(S_WindowProgress, {
+          windowId: player.windowId,
+          burnTime: 0, burnTotal: 0, cookTime: entity.brewTime,
+        });
       }
     }
   }
@@ -337,7 +346,20 @@ export class ServerCore {
       case 'C_PlayerAction': return onPlayerAction(this, player, value);
       case 'C_UseBlock': return onUseBlock(this, player, value);
       case 'C_AttackEntity': return onAttackEntity(this, player, value);
-      case 'C_WindowClick': return onWindowClick(this, player, value);
+      case 'C_WindowClick': {
+        onWindowClick(this, player, value);
+        // 附魔台上的东西可能被换掉了 —— 换了就要重新报价，
+        // 不然玩家会拿旧装备的报价给新装备附魔
+        const e = player.openBlockEntity;
+        if (e instanceof EnchantingEntity) {
+          refreshOffers(this, this.worldOf(player.dimension), e);
+          sendOffers(player, e);
+        }
+        return;
+      }
+      case 'C_EnchantSelect':
+        selectEnchantment(this, player, value['slot'] as number);
+        return;
       case 'C_CloseWindow': return closeWindow(this, player);
       case 'C_Respawn': {
         if (player.awaitingRespawn) respawnPlayer(this, player);

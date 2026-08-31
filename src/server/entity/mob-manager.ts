@@ -11,7 +11,10 @@ import type { ServerPlayer } from '../player/server-player.ts';
 import { Mob } from './mob.ts';
 import { installGoals } from './mob-factory.ts';
 import { PathFinder } from './pathfind.ts';
-import { MOBS, MobCategory, mobDefOf, type MobDef } from '../../content/mobs.ts';
+import { MOBS, MobCategory, MobType, mobDefOf, type MobDef } from '../../content/mobs.ts';
+import type { ServerWorld } from '../world/server-world.ts';
+import { aimFireball, tickFireball } from './ghast.ts';
+import { trySpawn, standable } from './mob-spawning.ts';
 import type { MobCtx, TargetRef } from './goal.ts';
 import { spawnBlockDrop, spawnXpOrbs } from './item-manager.ts';
 import { makeStack, isEmpty } from '../../core/item/item-def.ts';
@@ -23,25 +26,16 @@ import {
 import { isDaytime } from '../../core/world/day-night.ts';
 import { WORLD_HEIGHT } from '../../core/constants.ts';
 
-/** 一个世界里最多几只敌对生物 */
-export const HOSTILE_CAP = 70;
-/** 最多几只动物 */
-export const PASSIVE_CAP = 15;
-/** 敌对生物要离玩家多远才能刷 */
-const MIN_SPAWN_DISTANCE = 24;
 /** 超过这个距离就直接消失（MC 是 128） */
 const DESPAWN_DISTANCE = 128;
-/** 敌对生物能在多暗的地方刷 */
-const MAX_SPAWN_LIGHT = 7;
 /** 每多少刻尝试一次生成 */
 const SPAWN_INTERVAL = 20;
-/** 一轮最多尝试几个位置 */
-const SPAWN_ATTEMPTS = 24;
 /** 角色转向的最大距离平方，用于视线检查 */
 const SIGHT_RANGE = 64;
 
 export class MobManager {
-  private readonly core: ServerCore;
+  /** 公开给 mob-spawning：生成逻辑要问世界、注册表与在线玩家 */
+  readonly core: ServerCore;
   readonly mobs = new Map<number, Mob>();
   private readonly pathfinder = new PathFinder();
   /** 上一刻广播过位置的生物，用来只发动了的那些 */
@@ -73,9 +67,10 @@ export class MobManager {
   }
 
   /** 造一只生物并放进世界 */
-  spawn(def: MobDef, x: number, y: number, z: number): Mob {
+  spawn(def: MobDef, x: number, y: number, z: number, dimension = 0): Mob {
     const mob = new Mob(this.core.world.allocEntityId(), def, x, y, z,
       this.core.world.random.nextDouble() * Math.PI * 2);
+    mob.dimension = dimension;
     installGoals(mob, (name) => this.core.items.idOf(name));
     if (def.name === 'sheep') mob.variant = this.core.world.random.nextInt(16);
     this.mobs.set(mob.entityId, mob);
@@ -83,10 +78,10 @@ export class MobManager {
   }
 
   /** 按名字生成，供指令与测试使用 */
-  spawnByName(name: string, x: number, y: number, z: number): Mob | null {
+  spawnByName(name: string, x: number, y: number, z: number, dimension = 0): Mob | null {
     const def = MOBS.find((m) => m.name === name);
     if (def === undefined) return null;
-    return this.spawn(def, x, y, z);
+    return this.spawn(def, x, y, z, dimension);
   }
 
   /** 某个区块里的生物，存盘用 */
@@ -130,16 +125,27 @@ export class MobManager {
   // -------------------------------------------------------------------------
 
   tick(): void {
-    const world = this.core.world;
+    for (const world of this.core.loadedWorlds()) this.tickWorld(world);
+    this.broadcast();
+  }
+
+  /** 一个维度里的生物。按维度分开跑：拿错世界会让下界的怪读主世界的方块 */
+  private tickWorld(world: ServerWorld): void {
     // 天气要参与判据：雷暴天的白天天光低到能刷怪、僵尸也不烧。
     // 这是 MC 的行为，也是雷暴之所以让人紧张的全部原因 ——
     // 少传这两个参数，天气就只剩画面效果
     const w = world.weather.snapshot();
     const day = isDaytime(world.timeOfDay, w.rainStrength, w.thunderStrength);
 
-    if (this.naturalSpawning && world.worldAge % SPAWN_INTERVAL === 0) this.trySpawn(day);
+    if (this.naturalSpawning && world.worldAge % SPAWN_INTERVAL === 0) trySpawn(this, day, world);
 
     for (const mob of [...this.mobs.values()]) {
+      if (mob.dimension !== world.dimension) continue;
+      // 火球没有 AI，走自己的一条短路径：飞、撞、炸
+      if (mob.def.type === MobType.FIREBALL) {
+        this.tickFireball(mob, world);
+        continue;
+      }
       // 区块卸载了就把生物也收走：留着的话它会在一个不存在的世界里
       // 一路掉到 y<-8 然后"摔死"，掉落物撒在没人看得见的地方
       if (!world.isLoaded(Math.floor(mob.x) >> 4, Math.floor(mob.z) >> 4)) {
@@ -148,7 +154,7 @@ export class MobManager {
       }
 
       if (mob.alive) {
-        const ctx = this.makeCtx(mob, day);
+        const ctx = this.makeCtx(mob, day, world);
         mob.goals.tick(ctx);
       }
 
@@ -161,8 +167,6 @@ export class MobManager {
         this.forget(mob);
       }
     }
-
-    this.broadcast();
   }
 
   /** 把一只生物从世界里拿掉（不掉落） */
@@ -202,12 +206,46 @@ export class MobManager {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // AI 上下文
-  // -------------------------------------------------------------------------
+  /** 火球的一刻：飞、撞、炸。实现在 entity/ghast.ts */
+  private tickFireball(mob: Mob, world: ServerWorld): void {
+    if (tickFireball(this.core, mob, world, this.mobs.values())) this.forget(mob);
+  }
 
-  private makeCtx(mob: Mob, day: boolean): MobCtx {
-    const world = this.core.world;
+  /**
+   * 玩家打了一颗火球：按玩家的视线方向重新瞄准，并换主人。
+   *
+   * @returns 是不是真的击回了一颗火球
+   */
+  deflectFireball(entityId: number, dirX: number, dirY: number, dirZ: number, byId: number): boolean {
+    const mob = this.mobs.get(entityId);
+    if (mob === undefined || mob.def.type !== MobType.FIREBALL) return false;
+    aimFireball(mob, byId, dirX, dirY, dirZ);
+    // 年龄清零：不清的话一颗快到寿命的火球刚打回去就自己没了
+    mob.age = 0;
+    return true;
+  }
+
+  /** 恶魂开火 */
+  shootFireball(ghast: Mob, target: TargetRef): void {
+    const def = mobDefOf(MobType.FIREBALL);
+    if (def === null) return;
+    // 从恶魂前方一点出生，别在自己身体里
+    const dx = target.x - ghast.x;
+    const dy = target.eyeY - (ghast.y + ghast.def.eyeHeight);
+    const dz = target.z - ghast.z;
+    const len = Math.hypot(dx, dy, dz) || 1;
+    const d = ghast.def.width / 2 + 1;
+    const ball = this.spawn(
+      def,
+      ghast.x + (dx / len) * d,
+      ghast.y + ghast.def.eyeHeight + (dy / len) * d,
+      ghast.z + (dz / len) * d,
+      ghast.dimension,
+    );
+    aimFireball(ball, ghast.entityId, dx, dy, dz);
+  }
+
+  private makeCtx(mob: Mob, day: boolean, world = this.core.world): MobCtx {
     return {
       mob,
       world: world.store,
@@ -222,6 +260,7 @@ export class MobManager {
       attack: (target, damage) => this.attackPlayer(mob, target, damage),
       explode: (m, power) => this.core.explode(m.x, m.y, m.z, power, m.entityId),
       shootArrow: (m, target) => this.core.shootArrow(m, target),
+      shootFireball: (m, target) => this.shootFireball(m, target),
       teleportRandomly: (m) => this.teleportRandomly(m),
     };
   }
@@ -299,7 +338,7 @@ export class MobManager {
       const z = Math.floor(mob.z) + rng.nextInt(65) - 32;
       if (!world.isLoaded(x >> 4, z >> 4)) continue;
       for (let y = Math.min(WORLD_HEIGHT - 3, Math.floor(mob.y) + 16); y > 1; y--) {
-        if (!this.standable(x, y, z, mob.def)) continue;
+        if (!standable(this, x, y, z, mob.def)) continue;
         mob.body.x = x + 0.5;
         mob.body.y = y;
         mob.body.z = z + 0.5;
@@ -310,117 +349,6 @@ export class MobManager {
       }
     }
     return false;
-  }
-
-  /** 这一格能不能站一只这么大的生物 */
-  private standable(x: number, y: number, z: number, def: MobDef): boolean {
-    const world = this.core.world;
-    const tables = world.tables;
-    const solidAt = (bx: number, by: number, bz: number): boolean => {
-      const id = world.getBlock(bx, by, bz) & 0xfff;
-      return id !== 0 && (tables.solid[id] ?? 0) !== 0;
-    };
-    if (!solidAt(x, y - 1, z)) return false;
-    const top = Math.ceil(def.height);
-    for (let oy = 0; oy < top; oy++) {
-      if (y + oy >= WORLD_HEIGHT) return false;
-      if (solidAt(x, y + oy, z)) return false;
-    }
-    return true;
-  }
-
-  // -------------------------------------------------------------------------
-  // 生成
-  // -------------------------------------------------------------------------
-
-  /**
-   * 试着刷一批生物。
-   *
-   * 规则照抄 1.0 的可观察部分：敌对生物要方块光 ≤7、离玩家 >24 格、
-   * 在已加载区块里、脚下站得住；动物只在白天的草地上刷。
-   * 上限分开算（敌对 70 / 动物 15）—— 合在一起算的话，天黑之后动物会被
-   * 挤得刷不出来，而 MC 里两者互不影响。
-   */
-  private trySpawn(day: boolean): void {
-    const world = this.core.world;
-    const rng = world.random;
-    const players = [...this.core.eachPlayer()];
-    if (players.length === 0) return;
-
-    let hostiles = this.countOf(MobCategory.HOSTILE);
-    let passives = this.countOf(MobCategory.PASSIVE);
-    if (hostiles >= HOSTILE_CAP && passives >= PASSIVE_CAP) return;
-
-    for (let attempt = 0; attempt < SPAWN_ATTEMPTS; attempt++) {
-      // 上限要在**循环里**复查。只在进循环前查一次的话，一轮 24 次尝试
-      // 全成功就会一次性超出上限 24 只，而且越接近上限超得越多
-      const wantHostile = hostiles < HOSTILE_CAP;
-      const wantPassive = passives < PASSIVE_CAP;
-      if (!wantHostile && !wantPassive) return;
-      const anchor = players[rng.nextInt(players.length)]!;
-      // 在玩家周围 24..48 格的环带里挑点。太近了会当着面刷出来，
-      // 太远了在视距外白刷一批然后立刻超距消失
-      const angle = rng.nextDouble() * Math.PI * 2;
-      const dist = MIN_SPAWN_DISTANCE + rng.nextInt(24);
-      const x = Math.floor(anchor.x + Math.cos(angle) * dist);
-      const z = Math.floor(anchor.z + Math.sin(angle) * dist);
-      if (!world.isLoaded(x >> 4, z >> 4)) continue;
-
-      const surface = world.store.getHeight(x, z);
-      if (surface <= 0 || surface >= WORLD_HEIGHT - 2) continue;
-
-      // 敌对：从地表往下找一个够暗的落脚点（洞里也能刷）
-      if (wantHostile) {
-        const y = this.findHostileSpot(x, z, surface, rng.nextInt(Math.max(1, surface)));
-        if (y > 0 && this.farEnough(x, y, z, players)) {
-          const def = HOSTILE_POOL[rng.nextInt(HOSTILE_POOL.length)]!;
-          if (this.standable(x, y, z, def)) {
-            this.spawn(def, x + 0.5, y, z + 0.5);
-            hostiles++;
-            continue;
-          }
-        }
-      }
-
-      // 动物：白天、地表、草方块上
-      if (wantPassive && day) {
-        const y = surface;
-        const below = world.getBlock(x, y - 1, z) & 0xfff;
-        if (below === this.core.registry.idOf('grass_block') && this.farEnough(x, y, z, players)) {
-          const def = PASSIVE_POOL[rng.nextInt(PASSIVE_POOL.length)]!;
-          if (this.standable(x, y, z, def)) {
-            this.spawn(def, x + 0.5, y, z + 0.5);
-            passives++;
-          }
-        }
-      }
-    }
-  }
-
-  /** 从某个高度往下找第一个够暗、站得住的位置 */
-  private findHostileSpot(x: number, z: number, surface: number, startOffset: number): number {
-    const world = this.core.world;
-    const from = Math.min(surface, Math.max(2, startOffset + 2));
-    for (let y = from; y > 1; y--) {
-      if (world.store.getBlockLight(x, y, z) > MAX_SPAWN_LIGHT) continue;
-      if (world.store.getSkyLight(x, y, z) > MAX_SPAWN_LIGHT) continue;
-      const below = world.getBlock(x, y - 1, z) & 0xfff;
-      if (below === 0) continue;
-      if ((world.getBlock(x, y, z) & 0xfff) !== 0) continue;
-      if ((world.getBlock(x, y + 1, z) & 0xfff) !== 0) continue;
-      return y;
-    }
-    return -1;
-  }
-
-  private farEnough(x: number, y: number, z: number, players: readonly ServerPlayer[]): boolean {
-    for (const p of players) {
-      const dx = p.x - x;
-      const dy = p.y - y;
-      const dz = p.z - z;
-      if (dx * dx + dy * dy + dz * dz < MIN_SPAWN_DISTANCE * MIN_SPAWN_DISTANCE) return false;
-    }
-    return true;
   }
 
   // -------------------------------------------------------------------------
@@ -526,16 +454,3 @@ export class MobManager {
     }
   }
 }
-
-/** 敌对生物的生成池。末影人在 1.0 里比较少见，这里靠重复次数控制比例 */
-const HOSTILE_POOL: readonly MobDef[] = [
-  mobDefOf(4)!, mobDefOf(4)!, mobDefOf(4)!,   // 僵尸 ×3
-  mobDefOf(5)!, mobDefOf(5)!, mobDefOf(5)!,   // 骷髅 ×3
-  mobDefOf(6)!, mobDefOf(6)!,                 // 苦力怕 ×2
-  mobDefOf(7)!, mobDefOf(7)!,                 // 蜘蛛 ×2
-  mobDefOf(8)!,                               // 末影人 ×1
-];
-
-const PASSIVE_POOL: readonly MobDef[] = [
-  mobDefOf(0)!, mobDefOf(1)!, mobDefOf(2)!, mobDefOf(3)!,
-];

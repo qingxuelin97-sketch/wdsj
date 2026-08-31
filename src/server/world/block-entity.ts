@@ -23,6 +23,8 @@ export const BlockEntityKind = {
   CHEST: 'chest',
   FURNACE: 'furnace',
   SIGN: 'sign',
+  ENCHANTING: 'enchanting',
+  BREWING: 'brewing',
 } as const;
 export type BlockEntityKind = (typeof BlockEntityKind)[keyof typeof BlockEntityKind];
 
@@ -289,6 +291,8 @@ export function blockEntityKindFor(blockId: number): BlockEntityKind | null {
     case 54: return BlockEntityKind.CHEST;
     case 61: case 62: return BlockEntityKind.FURNACE;
     case 63: case 68: return BlockEntityKind.SIGN;
+    case 116: return BlockEntityKind.ENCHANTING;
+    case 117: return BlockEntityKind.BREWING;
     default: return null;
   }
 }
@@ -299,5 +303,25 @@ export function createBlockEntity(kind: BlockEntityKind, x: number, y: number, z
     case BlockEntityKind.CHEST: return new ChestEntity(x, y, z);
     case BlockEntityKind.FURNACE: return new FurnaceEntity(x, y, z);
     case BlockEntityKind.SIGN: return new SignEntity(x, y, z);
+    // 这两个在 block-entity-craft.ts —— 反过来 import 会成环
+    // （那个文件要用本文件的 BlockEntity 基类），所以由工厂注入
+    case BlockEntityKind.ENCHANTING: return craftFactory!(kind, x, y, z);
+    case BlockEntityKind.BREWING: return craftFactory!(kind, x, y, z);
   }
+}
+
+/**
+ * 附魔台/酿造台的构造器。由 block-entity-craft.ts 在模块加载时注册。
+ *
+ * 用注入而不是直接 import，是为了避免两个文件互相 import 成环：
+ * craft 那边要继承本文件的 BlockEntity，本文件又要能造出它们。
+ * 环在 Node 的类型剥离下会得到一个 undefined 的基类，
+ * 而报错信息是"Class extends value undefined"，与真正的原因隔得很远。
+ */
+let craftFactory: ((k: BlockEntityKind, x: number, y: number, z: number) => BlockEntity) | null = null;
+
+export function registerCraftBlockEntities(
+  f: (k: BlockEntityKind, x: number, y: number, z: number) => BlockEntity,
+): void {
+  craftFactory = f;
 }

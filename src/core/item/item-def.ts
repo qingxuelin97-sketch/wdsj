@@ -100,6 +100,14 @@ export interface ItemStack {
   count: number;
   /** 工具的已用耐久，或方块的元数据 */
   damage: number;
+  /**
+   * 附魔。没附过魔的物品**不带这个字段**（而不是空数组）——
+   * 物品栏里绝大多数格子都没附魔，给每一格挂一个空数组
+   * 会在每次同步时多出几十个对象。
+   *
+   * 不复用 damage：damage 是耐久，砍两下就会把附魔"砍掉"。
+   */
+  enchantments?: { id: number; level: number }[];
 }
 
 export function emptyStack(): ItemStack {
@@ -127,7 +135,18 @@ export function copyStack(from: ItemStack, to: ItemStack): void {
 }
 
 export function cloneStack(s: ItemStack): ItemStack {
-  return { id: s.id, count: s.count, damage: s.damage };
+  // 附魔要**深拷**：浅拷的话玩家把剑从物品栏挪到箱子里，
+  // 两处会共用同一个数组，改一边动两边
+  return s.enchantments === undefined
+    ? { id: s.id, count: s.count, damage: s.damage }
+    : { id: s.id, count: s.count, damage: s.damage, enchantments: s.enchantments.map((e) => ({ ...e })) };
+}
+
+/** 一件物品身上某个附魔的等级，没有则 0 */
+export function enchantLevel(s: ItemStack, id: number): number {
+  if (s.enchantments === undefined) return 0;
+  for (const e of s.enchantments) if (e.id === id) return e.level;
+  return 0;
 }
 
 /**
@@ -139,5 +158,8 @@ export function cloneStack(s: ItemStack): ItemStack {
  */
 export function canMerge(a: ItemStack, b: ItemStack): boolean {
   if (isEmpty(a) || isEmpty(b)) return true;
+  // 附了魔的东西一律不与任何东西合并 —— 合并会丢掉其中一份的附魔，
+  // 而那是玩家花了三十级换来的
+  if (a.enchantments !== undefined || b.enchantments !== undefined) return false;
   return a.id === b.id && a.damage === b.damage;
 }

@@ -13,6 +13,7 @@ import { ArrowEntity, ARROW_SPEED, type ArrowEntity as Arrow } from './arrow.ts'
 import { explode } from './explosion.ts';
 import { REACH_LIMIT_SQ } from '../player/block-interaction.ts';
 import { isEmpty, cloneStack } from '../../core/item/item-def.ts';
+import { MobType } from '../../content/mobs.ts';
 import { applyArmor, DamageKind } from '../player/player-vitals.ts';
 import { xpToNextLevel } from '../player/experience.ts';
 import { tossFromPlayer, spawnXpOrbs } from './item-manager.ts';
@@ -81,6 +82,23 @@ export function onAttackEntity(core: ServerCore, player: ServerPlayer, value: Re
   const dz = mob.z - player.z;
   if (dx * dx + dy * dy + dz * dz > REACH_LIMIT_SQ) return;
 
+  // 火球：打中不是"造成伤害"而是**击回**。
+  //
+  // 方向取玩家的**视线**而不是"火球到玩家的反向"：反向的话
+  // 玩家侧身一挥就能把火球送向谁也没瞄的方向，看起来像随机。
+  // MC 也是按攻击者朝向重设速度的
+  if (mob.def.type === MobType.FIREBALL) {
+    const look = lookVector(player);
+    if (core.mobs.deflectFireball(mob.entityId, look.x, look.y, look.z, player.entityId)) {
+      for (const p of core.eachPlayer()) {
+        if (p.dimension !== player.dimension) continue;
+        if (!p.isSubscribed(Math.floor(mob.x) >> 4, Math.floor(mob.z) >> 4)) continue;
+        p.channel.send(S_EntityEvent, { entityId: mob.entityId, event: 0 });
+      }
+    }
+    return;
+  }
+
   const held = player.inventory.held;
   const damage = isEmpty(held) ? 1 : (core.items.get(held.id)?.attackDamage ?? 1);
   if (!mob.hurt(damage)) return;
@@ -91,6 +109,22 @@ export function onAttackEntity(core: ServerCore, player: ServerPlayer, value: Re
     if (!p.isSubscribed(Math.floor(mob.x) >> 4, Math.floor(mob.z) >> 4)) continue;
     p.channel.send(S_EntityEvent, { entityId: mob.entityId, event: mob.alive ? 0 : 1 });
   }
+}
+
+/**
+ * 玩家的视线单位向量。
+ *
+ * yaw 0 朝 +Z（与 client/camera.ts 一致），pitch 正值朝下 ——
+ * 两个约定任一处搞反，击回的火球都会飞向天花板，
+ * 而那看起来像"打回去了但没打中"。
+ */
+function lookVector(player: ServerPlayer): { x: number; y: number; z: number } {
+  const cp = Math.cos(player.pitch);
+  return {
+    x: Math.sin(player.yaw) * cp,
+    y: -Math.sin(player.pitch),
+    z: Math.cos(player.yaw) * cp,
+  };
 }
 
 /**

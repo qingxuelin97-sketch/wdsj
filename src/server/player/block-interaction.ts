@@ -25,6 +25,8 @@ import { MAX_HUNGER } from '../../core/constants.ts';
 import { igniteAt, primeTnt } from '../world/block-ticks.ts';
 import { tillSoil, applyBoneMeal } from '../world/random-ticks.ts';
 import { ignitePortal } from '../world/portal-manager.ts';
+import { EnchantingEntity, BrewingEntity } from '../world/block-entity-craft.ts';
+import { refreshOffers, sendOffers } from './enchant-actions.ts';
 
 /**
  * 吃一口。饥饿已经满了就不吃 —— 与 MC 一致，免得把珍贵的食物浪费掉。
@@ -206,6 +208,8 @@ const OPENS_WINDOW: Record<number, WindowKind> = {
   54: WindowKind.CHEST,
   61: WindowKind.FURNACE,
   62: WindowKind.FURNACE,
+  116: WindowKind.ENCHANTING,
+  117: WindowKind.BREWING,
 };
 
 export function onPlayerAction(core: ServerCore, player: ServerPlayer, value: Record<string, unknown>): void {
@@ -309,9 +313,16 @@ export function onUseBlock(core: ServerCore, player: ServerPlayer, value: Record
     // 于是玩家的点击会就地改到方块实体上，不需要任何回写步骤
     const entity = world.blockEntities.get(x, y, z);
     const external = entity instanceof ChestEntity || entity instanceof FurnaceEntity
+      || entity instanceof EnchantingEntity || entity instanceof BrewingEntity
       ? entity.slots : null;
     showWindow(core, player, opens, external);
     player.openBlockEntity = entity;
+    if (entity instanceof EnchantingEntity) {
+      // 开界面时先报一次价。台子上空着的话报价是三个 0，
+      // 客户端据此把三行画成灰的
+      refreshOffers(core, world, entity);
+      sendOffers(player, entity);
+    }
     return;
   }
 

@@ -41,8 +41,11 @@ export class BlockEntityStore {
     const old = chunk.get(idx);
     if (old !== undefined) this.ticking.delete(old);
     chunk.set(idx, entity);
-    // 只有熔炉需要每 tick 跑。箱子与告示牌是纯存储，进了 ticking 就是白烧 CPU
-    if (entity.kind === BlockEntityKind.FURNACE) this.ticking.add(entity);
+    // 只有熔炉与酿造台需要每 tick 跑。箱子、告示牌、附魔台是纯存储，
+    // 进了 ticking 就是白烧 CPU
+    if (entity.kind === BlockEntityKind.FURNACE || entity.kind === BlockEntityKind.BREWING) {
+      this.ticking.add(entity);
+    }
   }
 
   remove(x: number, y: number, z: number): BlockEntity | null {

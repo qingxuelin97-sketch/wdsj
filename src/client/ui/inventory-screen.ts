@@ -8,7 +8,7 @@
  * 槽位编号与服务端窗口一一对应，见 server/player/player-inventory.ts 顶部。
  */
 import { UiRenderer, UI_WIDTH, UI_HEIGHT } from './ui-renderer.ts';
-import { C, panelRaised, centeredText } from './ui-widgets.ts';
+import { C, panelRaised, centeredText, inset } from './ui-widgets.ts';
 import { WindowKind } from '../../core/net/packets.ts';
 import { isEmpty, type ItemStack } from '../../core/item/item-def.ts';
 
@@ -75,6 +75,23 @@ export function layoutFor(kind: WindowKind, externalCount = 0): SlotRect[] {
       out.push({ index: 1 + i, x: cx + (i % 3) * SLOT, y: cy + Math.floor(i / 3) * SLOT });
     }
     out.push(...playerGrid(10, px, 118));
+    return out;
+  }
+
+  if (kind === WindowKind.ENCHANTING) {
+    // 一格装备靠左，右边空出三行给报价
+    const out: SlotRect[] = [{ index: 0, x: px + SLOT, y: 52 }];
+    out.push(...playerGrid(1, px, 118));
+    return out;
+  }
+
+  if (kind === WindowKind.BREWING) {
+    // 三个瓶位排成一横排，材料格在它们上方居中 —— 与 MC 的三角布局同意思：
+    // 一份材料往下滴进三个瓶子
+    const out: SlotRect[] = [];
+    for (let i = 0; i < 3; i++) out.push({ index: i, x: px + (2 + i) * SLOT, y: 66 });
+    out.push({ index: 3, x: px + 3 * SLOT, y: 34 });
+    out.push(...playerGrid(4, px, 118));
     return out;
   }
 
@@ -345,4 +362,81 @@ export function drawDeathScreen(ui: UiRenderer): void {
   // attack / use / inventory 三个键，不是某个专用的重生键。
   // 写"PRESS R"就是假的 —— 玩家按 R 不会有任何反应
   centeredText(ui, 'CLICK TO RESPAWN', by + 5, 1, 0.92, 0.92, 0.92);
+}
+
+
+/**
+ * 附魔台的三行报价。
+ *
+ * 每一行画成一条可点的横条：左边一个罗马数字的等级牌，右边一条
+ * 看不懂的"标准银河字母"。看不懂是**故意**的 —— MC 用它把
+ * "我要花多少级"和"我会得到什么"分开，玩家只能赌。
+ * 画成看得懂的英文会毁掉整个机制。
+ *
+ * @param offers  三个槽各花多少级，0 表示不可选
+ * @param xpLevel 玩家当前等级，用来把买不起的行画灰
+ */
+export function drawEnchantOffers(
+  ui: UiRenderer,
+  offers: readonly [number, number, number],
+  xpLevel: number,
+  hoveredRow: number,
+): void {
+  const px = (UI_WIDTH - 9 * SLOT) / 2;
+  const x = px + 3 * SLOT;
+  const w = 5 * SLOT + 8;
+  for (let i = 0; i < 3; i++) {
+    const y = 40 + i * 20;
+    const cost = offers[i] ?? 0;
+    const affordable = cost > 0 && xpLevel >= cost;
+    // 三档底色：可买（亮）、买不起（暗红）、没得选（灰）
+    if (cost <= 0) ui.rect(x, y, w, 18, 0.15, 0.15, 0.15, 0.85);
+    else if (!affordable) ui.rect(x, y, w, 18, 0.28, 0.10, 0.10, 0.9);
+    else if (hoveredRow === i) ui.rect(x, y, w, 18, 0.32, 0.34, 0.22, 1);
+    else ui.rect(x, y, w, 18, 0.20, 0.22, 0.14, 1);
+    inset(ui, x, y, w, 18);
+    if (cost <= 0) continue;
+    // 等级牌
+    ui.rect(x + 2, y + 2, 14, 14, 0.05, 0.05, 0.05, 1);
+    ui.text(String(cost), x + (cost >= 10 ? 3 : 6), y + 6, affordable ? 0x80ff20 : 0xff5555);
+    // "看不懂的符文"：一串随位置确定的短竖条。
+    // 用行号与等级当种子，同一份报价每帧画出来一样 —— 否则它会闪
+    let seed = (i * 1103515245 + cost * 12345) >>> 0;
+    let rx = x + 20;
+    while (rx < x + w - 6) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      const h = 3 + (seed >>> 28);
+      const dy = (seed >>> 24) & 3;
+      ui.rect(rx, y + 5 + dy, 2, h, 0.55, 0.55, 0.45, affordable ? 1 : 0.5);
+      rx += 3 + ((seed >>> 20) & 3);
+    }
+  }
+}
+
+/** 命中测试：鼠标在第几行报价上。不在任何一行返回 -1 */
+export function enchantRowAt(x: number, y: number): number {
+  const px = (UI_WIDTH - 9 * SLOT) / 2;
+  const bx = px + 3 * SLOT;
+  const w = 5 * SLOT + 8;
+  if (x < bx || x >= bx + w) return -1;
+  for (let i = 0; i < 3; i++) {
+    const ry = 40 + i * 20;
+    if (y >= ry && y < ry + 18) return i;
+  }
+  return -1;
+}
+
+/** 酿造台的进度：材料格往下滴向三个瓶子的一条竖线 */
+export function drawBrewProgress(
+  ui: UiRenderer, layout: readonly SlotRect[], brewTime: number, brewTotal: number,
+): void {
+  const ingredient = layout.find((s) => s.index === 3);
+  if (ingredient === undefined) return;
+  // brewTime 是**倒计时**，所以进度是 1 - t/total
+  const p = brewTotal > 0 ? Math.max(0, Math.min(1, 1 - brewTime / brewTotal)) : 0;
+  const bx = ingredient.x + SLOT / 2 - 2;
+  const by = ingredient.y + SLOT + 2;
+  const h = 26;
+  ui.rect(bx, by, 4, h, 0.2, 0.2, 0.2, 0.7);
+  if (p > 0) ui.rect(bx, by, 4, Math.round(h * p), 0.85, 0.35, 0.95, 1);
 }

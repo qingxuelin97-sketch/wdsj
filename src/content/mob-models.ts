@@ -61,6 +61,12 @@ const COW_WHITE: readonly [number, number, number] = [0.85, 0.85, 0.85];
 const SHEEP_WOOL: readonly [number, number, number] = [0.93, 0.93, 0.90];
 const SHEEP_SKIN: readonly [number, number, number] = [0.85, 0.70, 0.62];
 const CHICKEN_WHITE: readonly [number, number, number] = [0.93, 0.93, 0.93];
+/** 恶魂是**灰白**不是纯白：纯白在下界的暗红背景里会糊成一团光斑 */
+const GHAST_WHITE: readonly [number, number, number] = [0.86, 0.86, 0.88];
+const GHAST_EYE: readonly [number, number, number] = [0.75, 0.10, 0.10];
+const GHAST_MOUTH: readonly [number, number, number] = [0.15, 0.10, 0.12];
+const FIREBALL_CORE: readonly [number, number, number] = [1.0, 0.95, 0.55];
+const FIREBALL_GLOW: readonly [number, number, number] = [1.0, 0.48, 0.10];
 const CHICKEN_BEAK: readonly [number, number, number] = [0.90, 0.65, 0.15];
 const CHICKEN_LEG: readonly [number, number, number] = [0.85, 0.55, 0.12];
 const EYE_DARK: readonly [number, number, number] = [0.05, 0.05, 0.06];
@@ -211,6 +217,48 @@ MODELS.set(MobType.CHICKEN, {
     b(3, 6, -2, 1, 4, 6, CHICKEN_WHITE),
     b(-2, 0, -1, 1.5, 5, 3, CHICKEN_LEG, { swing: 1 }),
     b(0.5, 0, -1, 1.5, 5, 3, CHICKEN_LEG, { swing: -1 }),
+  ],
+});
+
+/**
+ * 恶魂：一个大方块 + 九条垂下来的触手。
+ *
+ * 比例很要紧 —— 恶魂在 MC 里是 4×4×4，比玩家大得多，而**看上去大**
+ * 正是它让人紧张的原因。做小了它就只是一只会喷火的水母。
+ *
+ * 一格 = 16 单位，所以 4 格 = 64 单位。
+ */
+MODELS.set(MobType.GHAST, {
+  boxes: [
+    b(-32, 32, -32, 64, 32, 64, GHAST_WHITE),
+    // 两只眯着的红眼睛与一张嘴，都贴在正面（−Z）
+    b(-18, 48, -33, 10, 4, 1, GHAST_EYE, { head: true }),
+    b(8, 48, -33, 10, 4, 1, GHAST_EYE, { head: true }),
+    b(-8, 38, -33, 16, 4, 1, GHAST_MOUTH, { head: true }),
+    // 九条触手，3×3 排开，长短不一 —— 等长的话像一把梳子
+    b(-24, 8, -24, 6, 24, 6, GHAST_WHITE, { swing: 1 }),
+    b(-3, 4, -24, 6, 28, 6, GHAST_WHITE, { swing: -1 }),
+    b(18, 10, -24, 6, 22, 6, GHAST_WHITE, { swing: 1 }),
+    b(-24, 2, -3, 6, 30, 6, GHAST_WHITE, { swing: -1 }),
+    b(-3, 6, -3, 6, 26, 6, GHAST_WHITE, { swing: 1 }),
+    b(18, 4, -3, 6, 28, 6, GHAST_WHITE, { swing: -1 }),
+    b(-24, 8, 18, 6, 24, 6, GHAST_WHITE, { swing: 1 }),
+    b(-3, 12, 18, 6, 20, 6, GHAST_WHITE, { swing: -1 }),
+    b(18, 6, 18, 6, 26, 6, GHAST_WHITE, { swing: 1 }),
+  ],
+});
+
+/**
+ * 火球：一个会转的小方块，外面套一层更亮的壳。
+ *
+ * 两层是为了在下界那种整片暗红的背景里读得出来 ——
+ * 单色的小方块在地狱岩前面几乎看不见，而"看得见"是击回它的前提。
+ */
+MODELS.set(MobType.FIREBALL, {
+  boxes: [
+    b(-4, 4, -4, 8, 8, 8, FIREBALL_CORE),
+    b(-6, 2, -6, 12, 2, 12, FIREBALL_GLOW),
+    b(-6, 10, -6, 12, 2, 12, FIREBALL_GLOW),
   ],
 });
 

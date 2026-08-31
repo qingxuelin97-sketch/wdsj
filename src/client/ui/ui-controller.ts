@@ -9,7 +9,7 @@
 import { UiRenderer, UI_WIDTH, UI_HEIGHT } from './ui-renderer.ts';
 import {
   layoutFor, slotAt, drawWindow, drawHotbar, drawCrosshair, drawFurnaceProgress,
-  drawVitals, drawDeathScreen,
+  drawVitals, drawDeathScreen, drawEnchantOffers, enchantRowAt, drawBrewProgress,
   type SlotRect, type DrawContext,
 } from './inventory-screen.ts';
 import { WindowKind } from '../../core/net/packets.ts';
@@ -34,6 +34,16 @@ export class UiController {
   selectedHotbar = 0;
   /** 熔炉的火焰与箭头进度。只有熔炉窗口用得上 */
   readonly progress = { burnTime: 0, burnTotal: 0, cookTime: 0 };
+  /**
+   * 附魔台的三个报价。服务端权威 —— 客户端**不自己算**，
+   * 与物品栏同一条规矩：算两遍必然漂移，而漂移的表现是
+   * "点了 30 级那一行，扣的是 27 级"
+   */
+  enchantOffers: [number, number, number] = [0, 0, 0];
+  /** 鼠标停在第几行报价上。-1 = 不在任何一行 */
+  enchantHover = -1;
+  /** 酿造进度（倒计时）与总时长 */
+  readonly brew = { time: 0, total: 400 };
   /** 生存状态。服务端权威，客户端只画 */
   readonly vitals = { health: 20, maxHealth: 20, hunger: 20, air: 20, xpLevel: 0, xpProgress: 0 };
   /** 死了没。死了就画死亡界面并挡住输入 */
@@ -129,6 +139,8 @@ export class UiController {
     this.mouseX = (clientX - offX) / scale;
     this.mouseY = (clientY - offY) / scale;
     this.hovered = this.open ? slotAt(this.layout, this.mouseX, this.mouseY) : -1;
+    this.enchantHover = this.windowKind === WindowKind.ENCHANTING
+      ? enchantRowAt(this.mouseX, this.mouseY) : -1;
     this.menu.onMouseMove(this.mouseX, this.mouseY);
   }
 
@@ -136,6 +148,23 @@ export class UiController {
   click(button: 0 | 1, shift: boolean): { windowId: number; slot: number; button: number; shift: boolean } | null {
     if (!this.open || this.hovered < 0) return null;
     return { windowId: this.windowId, slot: this.hovered, button, shift };
+  }
+
+  /**
+   * 点在附魔台的某一行报价上了吗。返回行号，没点中返回 -1。
+   *
+   * 与 click() 分开：报价不是槽位，走的是另一个包（C_EnchantSelect）。
+   * 塞进 click 的返回值里的话，"slot" 这个字段会同时表示两种东西
+   */
+  clickEnchantRow(): number {
+    if (this.windowKind !== WindowKind.ENCHANTING) return -1;
+    return this.enchantHover;
+  }
+
+  /** 服务端发来的附魔报价 */
+  onEnchantOffers(windowId: number, a: number, b: number, c: number): void {
+    if (windowId !== this.windowId) return;
+    this.enchantOffers = [a, b, c];
   }
 
   draw(ui: UiRenderer, ctx: DrawContext): void {
@@ -147,6 +176,12 @@ export class UiController {
       );
       if (this.windowKind === WindowKind.FURNACE) {
         drawFurnaceProgress(ui, this.layout, this.progress);
+      } else if (this.windowKind === WindowKind.ENCHANTING) {
+        drawEnchantOffers(ui, this.enchantOffers, this.vitals.xpLevel, this.enchantHover);
+      } else if (this.windowKind === WindowKind.BREWING) {
+        // 酿造进度借用 cookTime 那一格 —— 酿造台不烧煤，
+        // burnTime/burnTotal 在这个窗口里没有意义
+        drawBrewProgress(ui, this.layout, this.progress.cookTime, this.brew.total);
       }
     } else {
       drawCrosshair(ui);
@@ -180,8 +215,15 @@ export class UiController {
 export function decodeSlots(bytes: Uint8Array): ItemStack[] {
   const view = new Int32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
   const out: ItemStack[] = [];
-  for (let i = 0; i < view.length; i += 3) {
-    out.push({ id: view[i]!, count: view[i + 1]!, damage: view[i + 2]! });
+  // 每格四个 int32，第四个是附魔摘要：低 8 位条数、次 8 位主附魔 id、
+  // 再 8 位等级。见 server 的 syncInventory
+  for (let i = 0; i + 3 < view.length; i += 4) {
+    const summary = view[i + 3]!;
+    const stack: ItemStack = { id: view[i]!, count: view[i + 1]!, damage: view[i + 2]! };
+    if (summary !== 0) {
+      stack.enchantments = [{ id: (summary >> 8) & 0xff, level: (summary >> 16) & 0xff }];
+    }
+    out.push(stack);
   }
   return out;
 }

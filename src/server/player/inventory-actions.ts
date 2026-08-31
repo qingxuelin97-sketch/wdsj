@@ -106,11 +106,20 @@ export function syncInventory(core: ServerCore, player: ServerPlayer): void {
   const stacks = player.openWindow !== null
     ? player.openWindow.snapshot()
     : [...player.inventory.slots.map(cloneStack), cloneStack(player.inventory.cursor)];
-  const buf = new Int32Array(stacks.length * 3);
+  // 每格四个 int32。第四个是附魔的**摘要**，不是完整列表：
+  // 槽位是定长的，把一整串附魔塞进去会让每次同步都胀几倍，
+  // 而客户端只需要"要不要画光效"和"主附魔叫什么"。
+  // 完整列表是服务端权威的（伤害/耐久都在服务端算），见 docs/DEVIATIONS.md
+  const buf = new Int32Array(stacks.length * 4);
   for (let i = 0; i < stacks.length; i++) {
-    buf[i * 3] = stacks[i]!.id;
-    buf[i * 3 + 1] = stacks[i]!.count;
-    buf[i * 3 + 2] = stacks[i]!.damage;
+    const st = stacks[i]!;
+    buf[i * 4] = st.id;
+    buf[i * 4 + 1] = st.count;
+    buf[i * 4 + 2] = st.damage;
+    const ench = st.enchantments;
+    buf[i * 4 + 3] = ench === undefined || ench.length === 0
+      ? 0
+      : (ench.length & 0xff) | ((ench[0]!.id & 0xff) << 8) | ((ench[0]!.level & 0xff) << 16);
   }
   player.channel.send(S_WindowItems, {
     windowId: player.openWindow === null ? 0 : player.windowId,

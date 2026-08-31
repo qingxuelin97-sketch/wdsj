@@ -15,6 +15,10 @@ import type { MobDef } from '../../content/mobs.ts';
 import { nbt, getInt, getList, TagType, type NbtValue } from '../../core/nbt/nbt.ts';
 import { WORLD_HEIGHT } from '../../core/constants.ts';
 import { GoalSelector } from './goal.ts';
+import { collideMove, makeBox, setBodyBox } from '../../core/physics/block-collision.ts';
+
+/** 飞行碰撞复用的盒子。每刻可能有几十个飞行体，别每个都新建 */
+const flyBox = makeBox();
 
 /** 受伤之后多少刻内不再吃伤害。与玩家一致 */
 export const INVULNERABLE_TICKS = 10;
@@ -116,18 +120,28 @@ export class Mob {
       return false;
     }
 
-    const wasOnGround = this.body.onGround;
-    this.body.speed = this.speedMultiplier;
-    stepBody(world, tables, this.body, this.input);
+    if (this.def.flying) {
+      // 会飞的：直接按速度平移并做碰撞，不走 stepBody。
+      //
+      // 不复用 stepBody 是因为它内建了重力、摩擦和"站在地上"的语义，
+      // 而这三样对恶魂和火球全都不成立 —— 硬套的话恶魂会贴着天花板
+      // 一路蹭，而那看起来像卡住了
+      this.flyStep(world, tables);
+      this.fallStartY = this.body.y;
+    } else {
+      const wasOnGround = this.body.onGround;
+      this.body.speed = this.speedMultiplier;
+      stepBody(world, tables, this.body, this.input);
 
-    // 摔落伤害：与玩家同一条公式 ceil(距离 − 3)
-    if (!this.body.onGround && this.body.vy < 0 && wasOnGround) this.fallStartY = this.body.y;
-    if (this.body.onGround && !wasOnGround) {
-      const fell = this.fallStartY - this.body.y;
-      if (fell > 3) this.hurt(Math.ceil(fell - 3));
-      this.fallStartY = this.body.y;
-    } else if (this.body.onGround) {
-      this.fallStartY = this.body.y;
+      // 摔落伤害：与玩家同一条公式 ceil(距离 − 3)
+      if (!this.body.onGround && this.body.vy < 0 && wasOnGround) this.fallStartY = this.body.y;
+      if (this.body.onGround && !wasOnGround) {
+        const fell = this.fallStartY - this.body.y;
+        if (fell > 3) this.hurt(Math.ceil(fell - 3));
+        this.fallStartY = this.body.y;
+      } else if (this.body.onGround) {
+        this.fallStartY = this.body.y;
+      }
     }
 
     let hurtThisTick = false;
@@ -179,6 +193,32 @@ export class Mob {
 
   die(): void {
     if (this.deathTicks < 0) this.deathTicks = 0;
+  }
+
+  /** 撞上方块了吗。飞行体每刻更新，火球据此决定要不要炸 */
+  hitWall = false;
+
+  /**
+   * 飞行体的一步：按速度平移 + 碰撞，无重力无摩擦。
+   *
+   * 不复用 stepBody：那里内建了重力、摩擦和"站在地上"的语义，
+   * 而这三样对恶魂和火球全都不成立 —— 硬套的话恶魂会贴着天花板
+   * 一路蹭，看起来像卡住了。
+   *
+   * 速度由调用方（AI 目标或火球自己）设定，这里只负责搬运与撞墙判定。
+   */
+  private flyStep(world: BlockView, tables: PhysicsTables): void {
+    setBodyBox(flyBox, this.body.x, this.body.y, this.body.z, this.body.width, this.body.height);
+    const r = collideMove(world, tables, flyBox, this.body.vx, this.body.vy, this.body.vz);
+    this.hitWall = r.hitX || r.hitY || r.hitZ;
+    this.body.x += r.dx;
+    this.body.y += r.dy;
+    this.body.z += r.dz;
+    // 撞到哪一轴就把那一轴的速度清掉，不然会一直贴着墙推
+    if (r.hitX) this.body.vx = 0;
+    if (r.hitY) this.body.vy = 0;
+    if (r.hitZ) this.body.vz = 0;
+    this.body.onGround = r.hitY && this.body.vy <= 0;
   }
 
   /** 头顶那一格的世界坐标，用于查天光 */

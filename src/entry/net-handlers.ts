@@ -194,6 +194,12 @@ export function installPacketHandlers(net: PacketChannel, ctx: PacketContext): v
           xpProgress: value['xpProgress'] as number,
         });
         return;
+      case 'S_EnchantOffers':
+        ctx.ui.onEnchantOffers(
+          value['windowId'] as number,
+          value['a'] as number, value['b'] as number, value['c'] as number,
+        );
+        return;
       case 'S_WindowProgress':
         ctx.ui.onWindowProgress(
           value['windowId'] as number,

@@ -392,6 +392,32 @@ export const S_WindowProgress = S2C.add(
 );
 
 /**
+ * 附魔台的三个报价。
+ *
+ * 单独一个包而不是复用 S_WindowProgress：那个包的三个字段叫
+ * burnTime/burnTotal/cookTime，塞进"三个附魔等级"能跑，
+ * 但读代码的人下一次会以为附魔台在烧煤。
+ *
+ * 0 表示这个槽没得选（台子上没放东西，或者玩家等级不够）。
+ */
+export const S_EnchantOffers = S2C.add(
+  definePacket(0x9c, 'S_EnchantOffers', [
+    ['windowId', 'u8'],
+    ['a', 'u8'],
+    ['b', 'u8'],
+    ['c', 'u8'],
+  ]),
+);
+
+/** 玩家点了附魔台的第 slot 个选项（0..2） */
+export const C_EnchantSelect = C2S.add(
+  definePacket(0x0e, 'C_EnchantSelect', [
+    ['windowId', 'u8'],
+    ['slot', 'u8'],
+  ]),
+);
+
+/**
  * 一批生物的出现。
  *
  * 每项 23 字节：entityId(u32) type(u8) variant(u8) x/y/z(i32×3)
@@ -483,6 +509,10 @@ export const WindowKind = {
   FURNACE: 2,
   /** 箱子 */
   CHEST: 3,
+  /** 附魔台：一格放装备 + 三个报价 */
+  ENCHANTING: 4,
+  /** 酿造台：三个瓶位 + 一格材料 */
+  BREWING: 5,
 } as const;
 export type WindowKind = (typeof WindowKind)[keyof typeof WindowKind];
 
