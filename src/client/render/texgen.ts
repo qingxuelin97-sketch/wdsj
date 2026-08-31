@@ -259,6 +259,28 @@ export class TilePainter {
    * 本质就是各向异性的格点噪声 —— 顺纹方向格点少（变化慢），
    * 横纹方向格点多（变化快）。
    */
+  /**
+   * 在**已经画好的东西上面**再叠一层噪声，不改变色相，只改明暗。
+   *
+   * 与 `valueNoise` 的区别是关键：那个是"用某个基色重画整块"，
+   * 一调用就把之前的内容抹掉了；这个是加减。
+   *
+   * 存在的理由：真实的石头/泥土是**多尺度**的 —— 大块的明暗（哪一片凹下去）
+   * 叠上细密的颗粒（表面的砂砾）。只用一层 valueNoise 的话，
+   * 振幅调小是死板一片，调大是一团糊，怎么调都不像。
+   * 分成"低频打底 + 这个叠高频"两步，两种尺度各调各的，才有石头的样子。
+   */
+  noiseOverlay(amp: number, cellsX = 12, cellsY = 12, octaves = 1): this {
+    const f = this.noiseField(cellsX, cellsY, octaves);
+    for (let y = 0; y < TILE; y++) {
+      for (let x = 0; x < TILE; x++) {
+        const d = (f[y * TILE + x]! - 0.5) * 2 * amp;
+        this.shade(x, y, d);
+      }
+    }
+    return this;
+  }
+
   grain(c: Rgb, amp: number, vertical = false): this {
     return vertical ? this.valueNoise(c, amp, 9, 2, 2) : this.valueNoise(c, amp, 2, 9, 2);
   }

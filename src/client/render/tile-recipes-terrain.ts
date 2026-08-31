@@ -27,11 +27,37 @@ type Recipe = (p: TilePainter) => void;
 
 export const TERRAIN_RECIPES: Record<string, Recipe> = {
   // --- 地形 ---
-  stone: (p) => { p.valueNoise(rgb(0x7e7e7e), 11, 7, 7, 2); p.blobs(rgb(0x6e6e6e), 6, 1.6, 9); p.edgeShade(9); },
+  /**
+   * 石头。**整个地下都是它**，所以它的对比度决定了"地下看不看得清"。
+   *
+   * 原来是 `valueNoise(…, 11, …)` —— 11/255 只有 4% 的明暗跨度，
+   * 放大看勉强有层次，铺满一整个矿洞就是一面死灰的水泥墙，
+   * 玩家分不出哪里是墙哪里是地板。MC 的石头跨度接近 20%，
+   * 那是它在一支火把下仍然读得出结构的原因。
+   *
+   * 三层叠加而不是一层：低频（7×7）给大块明暗，高频（14×14）给颗粒，
+   * 再点几粒亮暗斑。只有一层的话不管振幅调多大都是"糊"而不是"花"。
+   */
+  stone: (p) => {
+    p.valueNoise(rgb(0x7e7e7e), 24, 7, 7, 3);
+    p.noiseOverlay(10, 14, 14, 1);
+    p.blobs(rgb(0x646464), 8, 1.5, 10);
+    p.blobs(rgb(0x969696), 5, 1.2, 8);
+    p.edgeShade(9);
+  },
+  /**
+   * 泥土。
+   *
+   * 原来是"少数几颗又大又亮的石子撒在很平的棕色上"—— 那几颗亮点成了
+   * 一眼认得出的记号，一平铺开来整片地就是同一个图案在重复。
+   * 改法是**把特征变多变小变淡**：颗粒感来自密集的中频噪声，
+   * 而不是几颗显眼的亮斑。
+   */
   dirt: (p) => {
-    p.valueNoise(rgb(0x866043), 20, 4, 4, 2);
-    p.blobs(rgb(0x6d4e37), 6, 1.9, 14);
-    p.blobs(rgb(0x9a7150), 4, 1.5, 12);
+    p.valueNoise(rgb(0x866043), 22, 5, 5, 3);
+    p.noiseOverlay(12, 12, 12, 1);
+    p.blobs(rgb(0x6d4e37), 11, 1.3, 12);
+    p.blobs(rgb(0x9a7150), 8, 1.0, 10);
     p.edgeShade(12);
   },
   // grass_top 是灰度，颜色由群系 tint 乘上去

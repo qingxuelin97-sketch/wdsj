@@ -15,8 +15,17 @@ import { rgb, type TilePainter, type Rgb } from './texgen.ts';
 
 /** 石头底。矿石、熔炉、发射器、半砖、坩埚、中继器都用它 */
 export function stoneBase(p: TilePainter, tone: Rgb = rgb(0x7e7e7e)): void {
-  p.valueNoise(tone, 15, 4, 4, 2);
-  p.blobs({ r: tone.r - 16, g: tone.g - 16, b: tone.b - 16 }, 4, 2.0, 8);
+  // 振幅 26 而不是 15。
+  //
+  // 15/255 只有 6% 的明暗范围 —— 放大看是有层次的，可一铺满整个地下
+  // 就是一面死灰的水泥墙，玩家分不出哪里是墙哪里是地。MC 的石头
+  // 明暗跨度接近 20%，这也是它在火把光下仍然读得出结构的原因。
+  p.valueNoise(tone, 26, 4, 4, 3);
+  // 深色斑：数量翻倍、更小更暗。少而大的斑点会在平铺时变成显眼的重复标记，
+  // 多而小的才读得出"石头本来就花"
+  p.blobs({ r: tone.r - 30, g: tone.g - 30, b: tone.b - 30 }, 9, 1.4, 10);
+  // 再补几点高光。只有暗斑没有亮斑的话，整张图会往下压成一块脏灰
+  p.blobs({ r: tone.r + 20, g: tone.g + 20, b: tone.b + 20 }, 5, 1.1, 8);
 }
 
 /**
@@ -95,11 +104,17 @@ export function stoneCluster(
   p.valueNoise(mortar, 8, 6, 6, 2);
   const step = 16 / cells;
   for (let gy = 0; gy < cells; gy++) {
+    // 奇数行整体错半格。规则的方格阵列即使加了抖动也还是能被眼睛读成
+    // 网格 —— 错行是砖墙的做法，成本一行，效果立竿见影
+    const rowShift = (gy % 2) * step * 0.5;
     for (let gx = 0; gx < cells; gx++) {
-      // 中心抖动限制在格内 ±25%，超过就会和邻格的石子挤在一起
-      const cx = (gx + 0.5) * step + (p.rand() - 0.5) * step * 0.5;
-      const cy = (gy + 0.5) * step + (p.rand() - 0.5) * step * 0.5;
-      const r = step * (0.42 + p.rand() * 0.16);
+      // 中心抖动 ±35%（原来是 ±25%）。再大就会和邻格挤在一起，
+      // 再小则网格感压不住
+      const cx = (gx + 0.5) * step + rowShift + (p.rand() - 0.5) * step * 0.7;
+      const cy = (gy + 0.5) * step + (p.rand() - 0.5) * step * 0.7;
+      // 半径范围拉开（原来是 0.42..0.58，几乎一样大）。
+      // 大小一致的石子看着像人造铺装，不像天然碎石
+      const r = step * (0.34 + p.rand() * 0.34);
       const d = (p.rand() - 0.5) * spread;
       const rr = Math.ceil(r) + 1;
       for (let dy = -rr; dy <= rr; dy++) {
@@ -108,8 +123,19 @@ export function stoneCluster(
           if (Math.hypot(dx, dy) > r + (p.rand() - 0.5) * 0.8) continue;
           const px = Math.round(cx) + dx;
           const py = Math.round(cy) + dy;
-          // 每块石子自己也有明暗：左上亮、右下暗，石子才是鼓起来的
-          const lift = (dx + dy) < -r * 0.5 ? 10 : (dx + dy) > r * 0.5 ? -12 : 0;
+          // 每块石子自己也有明暗：左上亮、右下暗，石子才是鼓起来的。
+          //
+          // **只在边缘那一圈上明暗，内部保持平。** 早先这里写的是
+          // `(dx + dy) < -r*0.5 ? 10 : ... ? -12 : 0` —— `dx+dy` 沿 45°
+          // 是常数，等于给**每一颗**石子都拉了一条同方向的 45° 硬边，
+          // 叠在规则网格上就成了整片斜纹，一眼看出是算法画的。
+          // 实测：那是"圆石看着假"的唯一最大来源。
+          const dist = Math.hypot(dx, dy);
+          const rim = dist / Math.max(0.001, r);   // 0 = 正中，1 = 边缘
+          // 受光方向仍是左上，但强度随"离边缘多近"衰减，
+          // 而且不做硬阈值 —— 硬阈值就是上面那条 45° 边的本质
+          const facing = dist < 0.001 ? 0 : -(dx + dy) / (dist * 1.4142);
+          const lift = Math.round(rim * rim * facing * 16);
           p.setWrapped(px, py, base.r + d + lift, base.g + d + lift, base.b + d + lift, 255);
         }
       }
