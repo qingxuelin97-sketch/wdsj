@@ -230,6 +230,73 @@ export const TERRAIN_RECIPES: Record<string, Recipe> = {
     p.rect(9, 6, 5, 4, rgb(0x7a5a2c));
     p.edgeShade(9);
   },
+  // --- M15/M16 的维度方块 ---
+  //
+  // 两张传送门都是**动画**贴图（见 block-textures 的 ANIMATED 表）：
+  // 静止的紫色矩形一眼假，而门在 MC 里最显著的特征恰恰是它一直在流动。
+  // 这里画的是第 0 帧，其余帧由动画表按相位重算。
+  nether_portal: (p) => {
+    // 底色偏黑的紫，不是亮紫 —— 门是**半透明**的，亮紫叠在背景上会发白
+    p.valueNoise(rgb(0x51189c), 9, 6, 6, 2);
+    // 竖直拉长的涡流。传送门的纹理感是"竖着流"，横向的斑点会像大理石
+    for (let x = 0; x < 16; x++) {
+      const f = p.noiseField(1, 6, 2);
+      for (let y = 0; y < 16; y++) {
+        const v = f[y]!;
+        if (v > 0.62) p.shade(x, y, 40 + v * 60);
+        else if (v < 0.3) p.shade(x, y, -30);
+      }
+    }
+    p.blobs(rgb(0xb46cff), 5, 1.1, 7);
+    p.quantize(6);
+  },
+  // 末地门是"透过一个洞看见星空"，所以底是纯黑加几点星
+  end_portal: (p) => {
+    p.fill(rgb(0x0a0616));
+    p.grain(rgb(0x140a24), 6);
+    for (let i = 0; i < 18; i++) {
+      const x = Math.floor(p.rand() * 16);
+      const y = Math.floor(p.rand() * 16);
+      const b = 120 + p.rand() * 120;
+      p.set(x, y, b * 0.7, b * 0.8, b);
+    }
+    p.blobs(rgb(0x2a1a52), 4, 1.4, 6);
+  },
+  end_portal_frame_top: (p) => {
+    p.valueNoise(rgb(0xdcdca8), 12, 5, 5, 2);
+    // 中间一圈凹槽，末影之眼就嵌在这里
+    p.rect(3, 3, 10, 10, rgb(0x4a5a3c));
+    // 凹槽的立体感：上/左压暗，下/右提亮 —— 与 UI 的凹陷框同一套光照约定
+    for (let i = 3; i < 13; i++) {
+      p.shade(i, 3, -34); p.shade(3, i, -34);
+      p.shade(i, 12, 26); p.shade(12, i, 26);
+    }
+    p.blobs(rgb(0x3a4a30), 4, 1.2, 5);
+    p.edgeShade(10);
+  },
+  end_portal_frame_side: (p) => {
+    p.valueNoise(rgb(0xdcdca8), 12, 5, 5, 2);
+    p.blobs(rgb(0xc2c28a), 6, 1.6, 11);
+    // 上沿三格是那圈凹槽的侧面，明显更暗
+    p.rect(0, 0, 16, 3, rgb(0x4a5a3c));
+    p.edgeShade(9);
+  },
+  dragon_egg: (p) => {
+    p.fill(rgb(0x0d0d12));
+    p.grain(rgb(0x16161e), 8);
+    // 蛋壳上的浅色斑点，越靠上越亮 —— 让蛋在暗处也读得出立体
+    for (let y = 0; y < 16; y++) {
+      for (let x = 0; x < 16; x++) {
+        if (p.rand() < 0.16) {
+          const b = 26 + (15 - y) * 3.2;
+          p.set(x, y, 0x18 + b, 0x12 + b * 0.7, 0x28 + b);
+        }
+      }
+    }
+    p.blobs(rgb(0x2b1c3a), 5, 1.5, 7);
+    p.quantize(5);
+  },
+
   // 灰度：由 FOLIAGE tint 染色
   leaves: (p) => {
     p.valueNoise(rgb(0xc8c8c8), 12, 8, 8, 2);

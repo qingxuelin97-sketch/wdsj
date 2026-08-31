@@ -50,6 +50,13 @@ export class ClientSession {
   readonly weather: WeatherState = { rain: 0, thunder: 0 };
   /** 玩家的登录包到了没有 */
   spawned = false;
+  /**
+   * 玩家在哪个维度：-1 下界 / 0 主世界 / 1 末地。
+   *
+   * 渲染只读它，绝不自己改 —— 与 timeOfDay 同理，维度是服务端权威的。
+   * 客户端自己切的话，会出现"画着下界的天，脚下是主世界的地"。
+   */
+  dimension = 0;
 
   /** 未回执的指令，按 requestId 索引 */
   private readonly commandWaiters = new Map<number, (r: { ok: boolean; text: string }) => void>();

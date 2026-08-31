@@ -18,6 +18,10 @@ import {
   S_WindowProgress,
 } from '../core/net/packets.ts';
 import { ServerWorld } from './world/server-world.ts';
+import { Dimension, type DimensionId } from '../core/world/dimension.ts';
+import { NetherGenerator } from './world/gen/nether-gen.ts';
+import { EndGenerator } from './world/gen/end-gen.ts';
+import { OverworldGenerator } from './world/gen/overworld-gen.ts';
 import { handleCommand } from './commands.ts';
 import {
   syncInventory,
@@ -60,7 +64,22 @@ export interface ServerStats {
 }
 
 export class ServerCore {
+  /**
+   * 主世界。**保留这个名字**是刻意的：加维度之前有一百多处写着
+   * `core.world`，其中绝大多数（红石、流体、熔炉、合成）在任何维度里
+   * 逻辑都一样，改成 `worldOf(player.dimension)` 只会平添噪声。
+   *
+   * 真正需要区分维度的是"某个玩家/实体所在的那个世界"，那些地方走
+   * `player.world` 或 `worldOf()`。
+   */
   readonly world: ServerWorld;
+  /**
+   * 三个维度的世界，按需创建。
+   *
+   * 懒创建不是为了省内存，是为了**别让四百个单元测试都去搭下界**：
+   * 每个 ServerWorld 都要建噪声表和光照引擎，而绝大多数测试根本不去下界。
+   */
+  private readonly dimWorlds = new Map<DimensionId, ServerWorld>();
   readonly items: ItemRegistry = createItemRegistry();
   readonly crafting: CraftingData = createCraftingData();
   readonly registry: BlockRegistry;
@@ -131,28 +150,76 @@ export class ServerCore {
 
   constructor(opts: ServerOptions) {
     this.registry = opts.registry;
-    this.world = new ServerWorld(BigInt(opts.seed), opts.registry);
+    this.world = new ServerWorld(BigInt(opts.seed), opts.registry,
+      new OverworldGenerator(BigInt(opts.seed), opts.registry), Dimension.OVERWORLD);
+    this.dimWorlds.set(Dimension.OVERWORLD, this.world);
     this.mobs = new MobManager(this);
     // vitalsCtx 在字段初始化时建，那时 this.world 还没赋值，所以补一刀
     (this.vitalsCtx as { world: ServerWorld }).world = this.world;
     this.timeSyncInterval = opts.timeSyncInterval ?? TPS;
     // 掉落物与玩家共用一个 id 空间：两边各发一号会让客户端把一个掉落物
     // 当成某个玩家的更新，而那种错乱看起来完全不像同步问题
-    this.world.allocEntityId = () => this.nextEntityId++;
+    this.wireWorld(this.world);
     for (const r of this.crafting.smelting) this.smeltingByInput.set(r.input, r);
+  }
+
+  /**
+   * 把一个新世界接到 core 上。三个维度共用同一份实体 id 空间与
+   * 同一个 MobManager —— 分开的话，一个实体跨维度时 id 会变，
+   * 而客户端只按 id 认实体，看起来就是"旧的没消失、新的又出现了"。
+   */
+  private wireWorld(w: ServerWorld): void {
+    // 掉落物与玩家共用一个 id 空间：两边各发一号会让客户端把一个掉落物
+    // 当成某个玩家的更新，而那种错乱看起来完全不像同步问题
+    w.allocEntityId = () => this.nextEntityId++;
     // 存档要能带上生物与箭。ServerWorld 不认识 MobManager，所以走钩子
-    this.world.mobsInChunk = (cx, cz) => this.mobs.inChunk(cx, cz);
-    this.world.arrowsInChunk = (cx, cz) => {
+    w.mobsInChunk = (cx, cz) => this.mobs.inChunk(cx, cz, w.dimension);
+    w.arrowsInChunk = (cx, cz) => {
       const out: Arrow[] = [];
       for (const a of this.arrows.values()) {
+        if (a.dimension !== w.dimension) continue;
         if ((Math.floor(a.x) >> 4) === cx && (Math.floor(a.z) >> 4) === cz) out.push(a);
       }
       return out;
     };
-    this.world.installLoadedMobs = (mobs, arrows) => {
+    w.installLoadedMobs = (mobs, arrows) => {
       for (const m of mobs) this.mobs.adopt(m);
       for (const a of arrows) this.arrows.set(a.entityId, a);
     };
+  }
+
+  /**
+   * 取某个维度的世界，没有就现建一个。
+   *
+   * 建出来的世界**不带存档** —— 存档由 save-controller 在 attach 时统一挂，
+   * 这里挂的话会出现"下界先跑起来、存档后到"，中间生成的区块就把
+   * 存档里的内容顶掉了（ServerWorld.forcedOverPendingSave 记的就是这种事）。
+   */
+  worldOf(dimension: DimensionId): ServerWorld {
+    const existing = this.dimWorlds.get(dimension);
+    if (existing !== undefined) return existing;
+    const seed = this.world.seed;
+    // 下界与末地用**同一个世界种子**，与 MC 一致 —— 三个维度是一个存档
+    const gen = dimension === Dimension.NETHER
+      ? new NetherGenerator(seed, this.registry)
+      : new EndGenerator(seed, this.registry);
+    const w = new ServerWorld(seed, this.registry, gen, dimension);
+    this.wireWorld(w);
+    this.dimWorlds.set(dimension, w);
+    this.onWorldCreated?.(w);
+    return w;
+  }
+
+  /**
+   * 新世界被创建时的回调。宿主（save-controller、gen worker 池）用它
+   * 给下界/末地补上存档与区块来源 —— 那两样都是在 ServerCore 之外挂的，
+   * 而维度是玩家跳进传送门的那一刻才出现的。
+   */
+  onWorldCreated: ((w: ServerWorld) => void) | null = null;
+
+  /** 已经存在的所有世界。没去过的维度不在里面 */
+  loadedWorlds(): Iterable<ServerWorld> {
+    return this.dimWorlds.values();
   }
 
   get tickNumber(): number {
@@ -415,8 +482,19 @@ export class ServerCore {
   //     （生物 AI、指令、测试）不必认识那个模块 ---
 
   /** 炸一下。苦力怕与（M11 的）TNT 共用 */
-  explode(x: number, y: number, z: number, power: number, sourceId = -1): void {
-    explodeAt(this, x, y, z, power, sourceId);
+  explode(x: number, y: number, z: number, power: number, sourceId = -1, world = this.world): void {
+    explodeAt(this, x, y, z, power, sourceId, world);
+  }
+
+  /**
+   * 把 vitalsCtx 指向某个世界。
+   *
+   * vitalsCtx 是**复用**的（每刻每人各建一个对象太浪费），所以它
+   * 必须在每个玩家的生存循环之前被指到那个玩家所在的世界。
+   * 这是共享可变对象的代价，换来的是每刻少建几十个闭包。
+   */
+  setVitalsWorld(w: ServerWorld): void {
+    (this.vitalsCtx as { world: ServerWorld }).world = w;
   }
 
   /** 骷髅放箭 */

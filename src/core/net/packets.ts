@@ -187,6 +187,27 @@ export const S_SectionUpdate = S2C.add(
 );
 
 /** 世界时间。服务端是时间的唯一权威 */
+/**
+ * 换维度。
+ *
+ * 客户端收到之后必须**把整个世界镜像扔掉**再重建 —— 区块坐标在两个
+ * 维度里是重叠的（下界的 (0,0) 和主世界的 (0,0) 都存在），不清空的话
+ * 新维度的区块会一块一块盖在旧的上面，而没被盖到的地方还留着主世界的
+ * 地形。症状是"下界里有一片草地"，看起来像生成器疯了。
+ *
+ * 位置一并带上：换维度必然伴随传送，分成两个包发的话中间那一刻
+ * 客户端会拿新维度的地形去判旧坐标的碰撞。
+ */
+export const S_ChangeDimension = S2C.add(
+  definePacket(0x9b, 'S_ChangeDimension', [
+    ['dimension', 'i8'],
+    ['x', 'f64'],
+    ['y', 'f64'],
+    ['z', 'f64'],
+    ['yaw', 'f32'],
+  ]),
+);
+
 export const S_TimeUpdate = S2C.add(
   definePacket(0x85, 'S_TimeUpdate', [
     ['worldAge', 'i64'],

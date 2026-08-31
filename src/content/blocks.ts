@@ -14,6 +14,7 @@ import { BlockRegistry } from '../core/registry/block-registry.ts';
 import { registerCraftedBlocks } from './blocks-crafted.ts';
 import { registerFluidBlocks } from './blocks-fluid.ts';
 import { registerRedstoneBlocks } from './blocks-redstone.ts';
+import { registerDimensionBlocks } from './blocks-dimension.ts';
 import { ModelKind, RenderLayer, TintKind, SoundGroup, ToolKind, ToolTier, Facing } from '../core/block/types.ts';
 import { NO_COLLISION } from '../core/math/aabb.ts';
 
@@ -125,6 +126,13 @@ export const Blocks = {
   END_STONE: 'end_stone',
   TALL_GRASS: 'tall_grass',
   DEAD_BUSH: 'dead_bush',
+
+  // --- M15/M16 的维度方块 ---
+  NETHER_PORTAL: 'nether_portal',
+  NETHER_BRICK_FENCE: 'nether_brick_fence',
+  END_PORTAL: 'end_portal',
+  END_PORTAL_FRAME: 'end_portal_frame',
+  DRAGON_EGG: 'dragon_egg',
 } as const;
 export type BlockName = (typeof Blocks)[keyof typeof Blocks];
 
@@ -343,6 +351,7 @@ export function createBlockRegistry(): BlockRegistry {
   registerCraftedBlocks(r);
   registerFluidBlocks(r);
   registerRedstoneBlocks(r);
+  registerDimensionBlocks(r);
 
   // --- 植物 ---
   r.register(crossPlant(31, Blocks.TALL_GRASS, 'tall_grass', TintKind.GRASS));

@@ -32,6 +32,13 @@ const FIRE_DAMAGE_INTERVAL = 20;
 export const PLAYER_WALK_SPEED = 4.317;
 
 export class Mob {
+  /**
+   * 生物在哪个维度。默认主世界。
+   *
+   * 与箭同理：不带维度的话，下界的恶魂会去打主世界同坐标上的玩家。
+   * 存档时按维度分开写（见 world-persistence）。
+   */
+  dimension = 0;
   readonly entityId: number;
   readonly def: MobDef;
   readonly body: Body;

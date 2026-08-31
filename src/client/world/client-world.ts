@@ -92,6 +92,23 @@ export class ClientWorld {
     }
   }
 
+  /**
+   * 把整个镜像扔掉。换维度时调。
+   *
+   * 必须**整个**扔，不能只卸载视野外的：两个维度的区块坐标是重叠的
+   * （下界的 (0,0) 与主世界的 (0,0) 都存在），留着的话新维度的区块
+   * 会一块一块盖在旧的上面，而没被盖到的地方还留着上一个维度的地形。
+   * 症状是"下界里有一片草地"，看起来像生成器疯了。
+   */
+  clearAll(): void {
+    for (const chunk of [...this.store.chunkValues()]) {
+      this.store.removeChunk(chunk.cx, chunk.cz);
+      this.chunksUnloaded++;
+    }
+    this.dirty.clear();
+    this.revs.clear();
+  }
+
   /** 处理 S_ChunkUnload */
   onChunkUnload(cx: number, cz: number): void {
     if (!this.store.hasChunk(cx, cz)) return;

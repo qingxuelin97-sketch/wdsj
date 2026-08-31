@@ -24,6 +24,7 @@ import { sendVitals } from '../entity/combat.ts';
 import { MAX_HUNGER } from '../../core/constants.ts';
 import { igniteAt, primeTnt } from '../world/block-ticks.ts';
 import { tillSoil, applyBoneMeal } from '../world/random-ticks.ts';
+import { ignitePortal } from '../world/portal-manager.ts';
 
 /**
  * 吃一口。饥饿已经满了就不吃 —— 与 MC 一致，免得把珍贵的食物浪费掉。
@@ -67,6 +68,7 @@ function useSpecialItem(
   bx: number, by: number, bz: number,
   px: number, py: number, pz: number,
 ): boolean {
+  const world = core.worldOf(player.dimension);
   const items = core.items;
   const held = player.inventory.held;
 
@@ -79,28 +81,28 @@ function useSpecialItem(
   };
 
   if (itemId === items.idOf('water_bucket')) {
-    placeFluid(core.world, px, py, pz, core.registry.idOf('water'), 0);
+    placeFluid(world, px, py, pz, core.registry.idOf('water'), 0);
     swapHeld('bucket');
     return true;
   }
   if (itemId === items.idOf('lava_bucket')) {
-    placeFluid(core.world, px, py, pz, core.registry.idOf('lava'), 0);
+    placeFluid(world, px, py, pz, core.registry.idOf('lava'), 0);
     swapHeld('bucket');
     return true;
   }
   if (itemId === items.idOf('bucket')) {
     // 只有**源**才装得进桶。舀流动的水会让玩家凭空造水
-    const state = core.world.getBlock(bx, by, bz);
+    const state = world.getBlock(bx, by, bz);
     const id = stateId(state);
     const meta = state >> 12 & 15;
     if (meta !== 0) return true;
     if (id === core.registry.idOf('water')) {
-      core.world.setBlock(bx, by, bz, AIR_STATE);
+      world.setBlock(bx, by, bz, AIR_STATE);
       swapHeld('water_bucket');
       return true;
     }
     if (id === core.registry.idOf('lava')) {
-      core.world.setBlock(bx, by, bz, AIR_STATE);
+      world.setBlock(bx, by, bz, AIR_STATE);
       swapHeld('lava_bucket');
       return true;
     }
@@ -109,7 +111,7 @@ function useSpecialItem(
   // 锄头：把泥土/草方块翻成耕地
   const hoeDef = core.items.get(itemId);
   if (hoeDef !== undefined && hoeDef.toolKind === ToolKind.HOE) {
-    if (tillSoil(core.world, bx, by, bz)) {
+    if (tillSoil(world, bx, by, bz)) {
       held.damage++;
       const max = hoeDef.maxDurability;
       if (max > 0 && held.damage >= max) {
@@ -123,7 +125,7 @@ function useSpecialItem(
 
   // 骨粉：催熟
   if (itemId === items.idOf('bone_meal')) {
-    if (applyBoneMeal(core.world, bx, by, bz)) {
+    if (applyBoneMeal(world, bx, by, bz)) {
       held.count--;
       if (held.count <= 0) {
         held.id = 0;
@@ -136,9 +138,9 @@ function useSpecialItem(
 
   // 种子：种在耕地上
   if (itemId === items.idOf('seeds')) {
-    if (stateId(core.world.getBlock(bx, by, bz)) === core.registry.idOf('farmland')
-      && stateId(core.world.getBlock(px, py, pz)) === 0) {
-      core.world.setBlock(px, py, pz, packState(core.registry.idOf('wheat_crop'), 0));
+    if (stateId(world.getBlock(bx, by, bz)) === core.registry.idOf('farmland')
+      && stateId(world.getBlock(px, py, pz)) === 0) {
+      world.setBlock(px, py, pz, packState(core.registry.idOf('wheat_crop'), 0));
       held.count--;
       if (held.count <= 0) {
         held.id = 0;
@@ -150,7 +152,19 @@ function useSpecialItem(
   }
 
   if (itemId === items.idOf('flint_and_steel')) {
-    if (igniteAt(core.world, px, py, pz)) {
+    // 先试传送门，再试普通的火。
+    //
+    // 顺序不能反：门内部点着的那一刻**先**变成火，
+    // 而 findPortalShape 要求内部是空的（或已经是门），
+    // 于是"点火成功"之后门就再也认不出来了 —— 症状是
+    // 黑曜石框里烧着一团火，怎么也不变紫
+    const lit = ignitePortal(core, world, px, py, pz);
+    if (lit.lit) {
+      held.damage++;
+      syncInventory(core, player);
+      return true;
+    }
+    if (igniteAt(world, px, py, pz)) {
       held.damage++;
       const max = items.get(itemId)?.maxDurability ?? 64;
       if (held.damage >= max) {
@@ -161,8 +175,8 @@ function useSpecialItem(
       return true;
     }
     // 点 TNT 也算用途
-    if (stateId(core.world.getBlock(bx, by, bz)) === core.registry.idOf('tnt')) {
-      primeTnt(core.world, bx, by, bz);
+    if (stateId(world.getBlock(bx, by, bz)) === core.registry.idOf('tnt')) {
+      primeTnt(world, bx, by, bz);
       held.damage++;
       syncInventory(core, player);
       return true;
@@ -195,14 +209,15 @@ const OPENS_WINDOW: Record<number, WindowKind> = {
 };
 
 export function onPlayerAction(core: ServerCore, player: ServerPlayer, value: Record<string, unknown>): void {
+  const world = core.worldOf(player.dimension);
   const action = value['action'] as number;
   const x = value['x'] as number;
   const y = value['y'] as number;
   const z = value['z'] as number;
 
   if (action === PlayerActionKind.START_DIG) {
-    const state = core.world.getBlock(x, y, z);
-    if (!core.world.isBreakable(state)) return;
+    const state = world.getBlock(x, y, z);
+    if (!world.isBreakable(state)) return;
     // 触及距离多给一点余量：客户端是按自己预测的位置发的，
     // 卡得正好在 4.5 格上时不该被判成作弊
     if (core.reachSq(player, x, y, z) > REACH_LIMIT_SQ) return;
@@ -231,11 +246,12 @@ export function onPlayerAction(core: ServerCore, player: ServerPlayer, value: Re
 
 /** 推进一个玩家的挖掘进度；够了就破坏 */
 export function advanceDigging(core: ServerCore, player: ServerPlayer): void {
+  const world = core.worldOf(player.dimension);
   if (!player.digging) return;
   const { digX: x, digY: y, digZ: z } = player;
-  const state = core.world.getBlock(x, y, z);
+  const state = world.getBlock(x, y, z);
   const id = stateId(state);
-  if (id === 0 || !core.world.isBreakable(state)) {
+  if (id === 0 || !world.isBreakable(state)) {
     player.digging = false;
     return;
   }
@@ -246,7 +262,7 @@ export function advanceDigging(core: ServerCore, player: ServerPlayer): void {
   }
 
   player.digProgress += breakProgressPerTick(
-    core.world.tables, id, toolOf(core, player.inventory.held),
+    world.tables, id, toolOf(core, player.inventory.held),
   );
   if (player.digProgress < 1) return;
 
@@ -255,11 +271,11 @@ export function advanceDigging(core: ServerCore, player: ServerPlayer): void {
   // 掉落物在方块变成空气**之前**先算出来：dropOf 要查这个方块的定义，
   // 而 setBlock 之后那里已经是空气了
   const drop = dropOf(core, id, player);
-  core.world.setBlock(x, y, z, AIR_STATE);
+  world.setBlock(x, y, z, AIR_STATE);
 
   // 箱子/熔炉被拆掉时，里面的东西撒一地。setBlock 会把方块实体摘下来
   // 放进 brokenBlockEntities，这里取出来处理
-  for (const broken of core.world.drainBrokenBlockEntities()) {
+  for (const broken of world.drainBrokenBlockEntities()) {
     scatterContents(core, broken.x, broken.y, broken.z, broken.contents());
   }
 
@@ -269,6 +285,7 @@ export function advanceDigging(core: ServerCore, player: ServerPlayer): void {
 }
 
 export function onUseBlock(core: ServerCore, player: ServerPlayer, value: Record<string, unknown>): void {
+  const world = core.worldOf(player.dimension);
   const x = value['x'] as number;
   const y = value['y'] as number;
   const z = value['z'] as number;
@@ -284,13 +301,13 @@ export function onUseBlock(core: ServerCore, player: ServerPlayer, value: Record
   if (py < 0 || py >= WORLD_HEIGHT) return;
 
   // 右键工作台/箱子/熔炉是"打开"，不是"放置"
-  const targetId = stateId(core.world.getBlock(x, y, z));
+  const targetId = stateId(world.getBlock(x, y, z));
   const opens = OPENS_WINDOW[targetId];
   if (opens !== undefined) {
     // 箱子与熔炉的内容在方块实体里。把它的 slots 数组**直接**交给窗口当
     // external —— 窗口是视图不是副本（见 player-inventory.ts 顶部），
     // 于是玩家的点击会就地改到方块实体上，不需要任何回写步骤
-    const entity = core.world.blockEntities.get(x, y, z);
+    const entity = world.blockEntities.get(x, y, z);
     const external = entity instanceof ChestEntity || entity instanceof FurnaceEntity
       ? entity.slots : null;
     showWindow(core, player, opens, external);
@@ -315,10 +332,10 @@ export function onUseBlock(core: ServerCore, player: ServerPlayer, value: Record
   const blockId = def?.placesBlock !== undefined && def.placesBlock !== 0
     ? def.placesBlock
     : (held.id < ITEM_ID_BASE ? held.id : 0);
-  if (blockId === 0 || core.world.tables.defs[blockId] == null) return;
+  if (blockId === 0 || world.tables.defs[blockId] == null) return;
 
   // 只能放进空气里
-  if (stateId(core.world.getBlock(px, py, pz)) !== 0) return;
+  if (stateId(world.getBlock(px, py, pz)) !== 0) return;
 
   // 不能把自己封在方块里：玩家碰撞盒与目标格重叠时拒绝。
   // 少了这一条，对着脚下点一下就会被卡进方块，然后被挤到旁边去。
@@ -328,7 +345,7 @@ export function onUseBlock(core: ServerCore, player: ServerPlayer, value: Record
   const overlapY = player.y + PLAYER_HEIGHT > py && player.y < py + 1;
   if (overlapX && overlapY && overlapZ) return;
 
-  if (!core.world.setBlock(px, py, pz, packState(blockId, held.damage & 15))) return;
+  if (!world.setBlock(px, py, pz, packState(blockId, held.damage & 15))) return;
   held.count--;
   if (held.count <= 0) {
     held.id = 0;

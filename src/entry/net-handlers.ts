@@ -32,6 +32,20 @@ export interface PacketContext {
   readonly interaction: Interaction;
   /** 把玩家与相机放到出生点 */
   onLogin(x: number, y: number, z: number): void;
+  /**
+   * 服务端把玩家挪走了（重生、传送、和解纠正）。
+   *
+   * 与 onLogin 分开是因为它可能在任何时刻发生，而 onLogin 只在开局 ——
+   * 合成一个的话，"重生"会顺带跑一遍开局才该做的初始化。
+   */
+  onTeleport(x: number, y: number, z: number, yaw: number, pitch: number): void;
+  /**
+   * 换维度：把世界镜像整个扔掉再落到新位置。
+   *
+   * @param dimension -1 下界 / 0 主世界 / 1 末地。客户端拿它决定天空、
+   *                  雾色与环境光 —— 下界不该有太阳
+   */
+  onChangeDimension(dimension: number, x: number, y: number, z: number, yaw: number): void;
   /** 世界时间更新 */
   onTime(worldAge: number, timeOfDay: number): void;
   /** 天气变了。rain/thunder 是 0..1，服务端已经平滑过，客户端照用即可 */
@@ -69,6 +83,25 @@ export function installPacketHandlers(net: PacketChannel, ctx: PacketContext): v
         // 把相机拽回身体所在的位置（世界原点上空），表现为一出生就掉进虚空
         ctx.onLogin(sx, sy, sz);
         console.log(`[net] 登录成功，出生点 ${sx.toFixed(1)} ${sy.toFixed(1)} ${sz.toFixed(1)}`);
+        return;
+      }
+      case 'S_PlayerPosLook':
+        ctx.onTeleport(
+          value['x'] as number, value['y'] as number, value['z'] as number,
+          value['yaw'] as number, value['pitch'] as number,
+        );
+        return;
+      case 'S_ChangeDimension': {
+        const dim = value['dimension'] as number;
+        // 顺序要紧：**先**清镜像再放人。反过来的话，落点那一帧
+        // 用的还是上一个维度的方块，玩家会被卡在旧地形里
+        ctx.world.clearAll();
+        ctx.renderer.dispose();
+        ctx.onChangeDimension(
+          dim, value['x'] as number, value['y'] as number, value['z'] as number,
+          value['yaw'] as number,
+        );
+        console.log(`[net] 换维度 -> ${dim}`);
         return;
       }
       case 'S_ChunkData':

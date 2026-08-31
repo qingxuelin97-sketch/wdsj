@@ -31,6 +31,11 @@ const ANIMATED: Readonly<Record<string, readonly [number, number]>> = {
   lava: [1, 1],
   lava_flow: [0, 1],
   fire: [0, 2],
+  // 传送门竖着流。横向不动（[0, ...]）—— 门的纹理是被"吸上去"的，
+  // 带横向分量会看成水流而不是能量场
+  nether_portal: [0, 1],
+  // 末地门的星空**很慢**地飘。给快了会像屏保
+  end_portal: [0, 1],
 };
 
 /** 每张动画贴图有几帧。滚 16 帧正好走完一圈，回到第 0 帧 */

@@ -123,13 +123,19 @@ export function shootArrow(core: ServerCore, mob: Mob, target: TargetRef): void 
 }
 
 /** 炸一下。苦力怕与（M11 的）TNT 共用 */
-export function explodeAt(core: ServerCore, x: number, y: number, z: number, power: number, sourceId = -1): void {
-  const result = explode(core, x, y, z, power, sourceId);
+export function explodeAt(
+  core: ServerCore, x: number, y: number, z: number, power: number,
+  sourceId = -1, world = core.world,
+): void {
+  const result = explode(core, x, y, z, power, sourceId, world);
   for (const hit of result.hurtPlayers) {
     const player = core.playerById(hit.entityId);
     if (player !== undefined) damagePlayer(core, player, hit.damage, x, z);
   }
   for (const player of core.eachPlayer()) {
+    // 只有同一维度的人才听得见。不看维度的话，下界炸一发 TNT
+    // 会让主世界同坐标的玩家眼前闪一下
+    if (player.dimension !== world.dimension) continue;
     if (!player.isSubscribed(Math.floor(x) >> 4, Math.floor(z) >> 4)) continue;
     player.channel.send(S_Explosion, { x, y, z, power });
   }

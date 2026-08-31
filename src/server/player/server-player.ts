@@ -15,6 +15,7 @@ import { DEFAULT_RENDER_DISTANCE, SEA_LEVEL, MAX_HEALTH } from '../../core/const
 import type { BlockEntity } from '../world/block-entity.ts';
 import { PlayerVitals } from './player-vitals.ts';
 import { Experience } from './experience.ts';
+import { Dimension, type DimensionId } from '../../core/world/dimension.ts';
 
 /** 每 tick 最多推送几个区块，避免一次性把带宽和生成预算打满 */
 const CHUNKS_PER_TICK = 8;
@@ -55,6 +56,17 @@ export class ServerPlayer {
   lastZ = 0;
   /** 死亡之后等待客户端请求重生 */
   awaitingRespawn = false;
+
+  /**
+   * 玩家在哪个维度。区块订阅、方块交互、伤害判定全都要按它取世界 ——
+   * 拿错世界的症状是"在下界挖主世界的方块"，而客户端看到的又是下界，
+   * 于是表现成"挖不动"。
+   */
+  dimension: DimensionId = Dimension.OVERWORLD;
+  /** 已经在传送门里站了多少刻。走出去就清零 */
+  portalTicks = 0;
+  /** 刚传送完的免疫期，防止在两个维度之间无限弹跳 */
+  portalCooldown = 0;
 
   get health(): number {
     return this.vitals.health;

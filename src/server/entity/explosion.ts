@@ -47,8 +47,10 @@ export function explode(
   cx: number, cy: number, cz: number,
   power: number,
   sourceId = -1,
+  // 爆炸发生在哪个世界。默认主世界 —— 绝大多数调用方（TNT、苦力怕）
+  // 手上已经有玩家或生物，会显式传；只有纯主世界的老测试省略它
+  world = core.world,
 ): ExplosionResult {
-  const world = core.world;
   /**
    * 爆炸自带一个**按位置播种**的随机源，不用世界那个共享的。
    *

@@ -20,13 +20,23 @@ import { runWeatherTick } from './world/weather-tick.ts';
 import { tickItems, broadcastItems } from './entity/item-manager.ts';
 import { tickArrows } from './entity/combat.ts';
 import { tickVitals } from './player/player-vitals.ts';
+import { tickPortal } from './world/portal-manager.ts';
+import type { ServerWorld } from './world/server-world.ts';
 
 export function runServerTick(core: ServerCore): void {
   core.tickCount++;
+  // 主世界推进昼夜；其余维度只跟着涨 worldAge。
+  //
+  // 下界与末地没有天光，昼夜在那里没有任何后果，但 worldAge 是
+  // 计划刻队列的时间轴 —— 不涨的话，下界里的水/岩浆/沙子会**永远**
+  // 停在原地，而且症状是"下界的流体不动"，很难联想到时间上
   core.world.advanceTime();
-  core.world.resetGenerationBudget();
-  // 先收下 gen worker 这一轮送到的区块，再决定要不要下新单
-  core.world.intakeGenerated();
+  for (const w of core.loadedWorlds()) {
+    if (w !== core.world) w.advanceTimeOnly();
+    w.resetGenerationBudget();
+    // 先收下 gen worker 这一轮送到的区块，再决定要不要下新单
+    w.intakeGenerated();
+  }
 
   // 挖掘进度：服务端自己算，每 tick 推进一步。
   //
@@ -36,11 +46,12 @@ export function runServerTick(core: ServerCore): void {
 
   // 区块流水线：先生成，再算光照，最后才推送。
   // 顺序不能颠倒 —— 先推送的话客户端拿到的是光照全 0 的区块。
-  const prepared: { player: ServerPlayer; keys: number[] }[] = [];
+  const prepared: { player: ServerPlayer; world: ServerWorld; keys: number[] }[] = [];
   for (const player of core.eachPlayer()) {
-    player.updateSubscriptions(core.world);
-    const keys = player.prepareChunks(core.world);
-    if (keys.length > 0) prepared.push({ player, keys });
+    const w = core.worldOf(player.dimension);
+    player.updateSubscriptions(w);
+    const keys = player.prepareChunks(w);
+    if (keys.length > 0) prepared.push({ player, world: w, keys });
   }
 
   // 计划刻：流体流动、沙子下落、火蔓延、TNT 引爆。
@@ -53,7 +64,9 @@ export function runServerTick(core: ServerCore): void {
   // 随机刻：作物生长、草蔓延、树苗成树、雪冰融化。
   // 与计划刻分开：计划刻是"我知道 N 刻之后要做什么"，
   // 随机刻是"这件事迟早会发生但没人知道什么时候"
-  if (core.randomTicks) runRandomTicks(core.world);
+  if (core.randomTicks) {
+    for (const w of core.loadedWorlds()) runRandomTicks(w);
+  }
 
   // 天气：状态机推进 + 闪电/积雪。
   //
@@ -75,10 +88,17 @@ export function runServerTick(core: ServerCore): void {
   // 那是一次真正的方块变更，得赶上这一刻的光照与广播
   tickBlockEntities(core);
 
-  // 玩家的生存状态：环境伤害、饥饿、回血
+  // 玩家的生存状态：环境伤害、饥饿、回血。
+  // vitalsCtx.world 要指到**这个玩家所在的**世界 —— 固定指主世界的话，
+  // 下界里的玩家会按主世界同坐标的方块判断"是不是泡在水里"
   for (const player of core.eachPlayer()) {
+    core.setVitalsWorld(core.worldOf(player.dimension));
     tickVitals(player, player.vitals, core.vitalsCtx);
   }
+
+  // 传送门：站够时间就走。排在生存之后 —— 传送会换掉玩家的世界，
+  // 这一刻剩下的步骤都该看到新的那个
+  for (const player of core.eachPlayer()) tickPortal(core, player);
 
   // 掉落物：物理、合并、拾取
   tickItems(core);
@@ -88,14 +108,17 @@ export function runServerTick(core: ServerCore): void {
   tickArrows(core);
 
   // 光照重算（M4 会换成局部增量）
-  core.world.updateLighting();
+  for (const w of core.loadedWorlds()) w.updateLighting();
 
-  for (const entry of prepared) entry.player.sendPreparedChunks(core.world, entry.keys);
+  for (const entry of prepared) entry.player.sendPreparedChunks(entry.world, entry.keys);
 
-  // 方块变更广播 —— 只发给订阅了对应区块的玩家
-  const changes = core.world.drainChanges();
-  if (changes.length > 0) {
+  // 方块变更广播 —— 只发给**同一维度里**订阅了对应区块的玩家。
+  // 不看维度的话，主世界挖一格会在下界的同名坐标上也变成空气
+  for (const w of core.loadedWorlds()) {
+    const changes = w.drainChanges();
+    if (changes.length === 0) continue;
     for (const player of core.eachPlayer()) {
+      if (player.dimension !== w.dimension) continue;
       for (const c of changes) {
         if (!player.isSubscribed(c.x >> 4, c.z >> 4)) continue;
         player.channel.send(S_BlockUpdate, { x: c.x, y: c.y, z: c.z, state: c.state });
@@ -104,7 +127,7 @@ export function runServerTick(core: ServerCore): void {
   }
 
   // 掉落物的出生 / 移动 / 销毁
-  broadcastItems(core, core.world.drainUnloadedItems());
+  for (const w of core.loadedWorlds()) broadcastItems(core, w.drainUnloadedItems());
 
   // 服务端状态：每 tick 都发。它很小（10 字节），但让主线程随时知道
   // 服务端还有多少活没干完 —— 这是 waitForIdle 判定世界安定的必要依据。
@@ -154,12 +177,14 @@ export function runServerTick(core: ServerCore): void {
  * 队列里下一刻接着做 —— 表现是水流得慢一点，而不是整个世界卡一下。
  */
 function runScheduledTicks(core: ServerCore): void {
-  const due = core.world.scheduled.drainDue(core.world.worldAge);
-  for (const t of due) {
-    runScheduledTick(
-      core.world, t.x, t.y, t.z, t.blockId,
-      (x, y, z, power) => { core.explode(x, y, z, power); },
-    );
+  for (const w of core.loadedWorlds()) {
+    const due = w.scheduled.drainDue(w.worldAge);
+    for (const t of due) {
+      runScheduledTick(
+        w, t.x, t.y, t.z, t.blockId,
+        (x, y, z, power) => { core.explode(x, y, z, power, -1, w); },
+      );
+    }
   }
 }
 
@@ -174,24 +199,37 @@ function runScheduledTicks(core: ServerCore): void {
  * 不会反复卸载又重新生成（那比多留几个区块贵得多）。
  */
 function unloadDistantChunks(core: ServerCore): void {
-  const keep = new Set<number>();
+  // 保留集按**维度**分开算。合成一个集合的话，主世界玩家脚下的区块
+  // 会保住下界同坐标的区块，于是去过一次下界就再也不卸载了
+  const keep = new Map<number, Set<number>>();
   for (const player of core.eachPlayer()) {
+    let set = keep.get(player.dimension);
+    if (set === undefined) {
+      set = new Set<number>();
+      keep.set(player.dimension, set);
+    }
     const cx = player.chunkX;
     const cz = player.chunkZ;
     const r = player.viewDistance + 2;
     for (let dz = -r; dz <= r; dz++) {
       for (let dx = -r; dx <= r; dx++) {
         if (dx * dx + dz * dz > r * r) continue;
-        keep.add(chunkKey(cx + dx, cz + dz));
+        set.add(chunkKey(cx + dx, cz + dz));
       }
     }
   }
-  const doomed: [number, number][] = [];
-  for (const chunk of core.world.store.chunkValues()) {
-    if (!keep.has(chunk.key)) doomed.push([chunk.cx, chunk.cz]);
+  for (const w of core.loadedWorlds()) {
+    const set = keep.get(w.dimension) ?? EMPTY_KEYS;
+    const doomed: [number, number][] = [];
+    for (const chunk of w.store.chunkValues()) {
+      if (!set.has(chunk.key)) doomed.push([chunk.cx, chunk.cz]);
+    }
+    for (const [cx, cz] of doomed) w.unloadChunk(cx, cz);
   }
-  for (const [cx, cz] of doomed) core.world.unloadChunk(cx, cz);
 }
+
+/** 没有玩家的维度，保留集是空的 —— 里面的区块全部卸掉 */
+const EMPTY_KEYS: ReadonlySet<number> = new Set<number>();
 
 /**
  * 天气变了才广播。

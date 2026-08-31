@@ -7,6 +7,10 @@
 import { ChunkStore } from '../../core/world/block-view.ts';
 import { Chunk, chunkKey, keyToCx, keyToCz, packState, AIR_STATE, stateId } from '../../core/world/chunk.ts';
 import { OverworldGenerator } from './gen/overworld-gen.ts';
+import type { WorldGenerator } from './gen/generator.ts';
+import {
+  Dimension, dimensionOf, type DimensionId, type DimensionDef,
+} from '../../core/world/dimension.ts';
 import { LightEngine, LightChannel } from '../../core/light/light-engine.ts';
 import type { ChunkProvider } from './chunk-provider.ts';
 import type { BlockRegistry } from '../../core/registry/block-registry.ts';
@@ -34,7 +38,11 @@ export interface BlockChange {
 
 export class ServerWorld {
   readonly store = new ChunkStore();
-  readonly generator: OverworldGenerator;
+  readonly generator: WorldGenerator;
+  /** 这是哪个维度。存档目录、传送门换算、有没有天光都看它 */
+  readonly dimension: DimensionId;
+  /** 维度的固有属性（天光/天花板/坐标比例），见 core/world/dimension.ts */
+  readonly dim: DimensionDef;
   readonly tables: BlockTables;
   readonly seed: bigint;
 
@@ -150,10 +158,17 @@ export class ServerWorld {
    */
   generationQuota = 6;
 
-  constructor(seed: bigint, registry: BlockRegistry) {
+  constructor(
+    seed: bigint, registry: BlockRegistry,
+    generator?: WorldGenerator, dimension: DimensionId = Dimension.OVERWORLD,
+  ) {
     this.seed = seed;
     this.tables = registry.getTables();
-    this.generator = new OverworldGenerator(seed, registry);
+    // 生成器默认主世界：几百个已有测试写的都是 `new ServerWorld(seed, registry)`，
+    // 让它们全部加一个参数只会淹掉真正的改动
+    this.generator = generator ?? new OverworldGenerator(seed, registry);
+    this.dimension = dimension;
+    this.dim = dimensionOf(dimension);
     this.random = new JavaRandom(seed);
     // 服务端按区块快照下发光照，不需要 touched 追踪
     this.light = new LightEngine(this.store, this.tables, false);
@@ -431,6 +446,17 @@ export class ServerWorld {
   advanceTime(): void {
     this.worldAge++;
     if (this.daylightCycle) this.timeOfDay = (this.timeOfDay + 1) % DAY_LENGTH_TICKS;
+  }
+
+  /**
+   * 只涨 worldAge，不动昼夜。下界与末地用它。
+   *
+   * worldAge 是**计划刻队列的时间轴**，不涨的话那两个维度里的流体、
+   * 沙子、红石会永远停在原地 —— 而症状（"下界的岩浆不流"）
+   * 很难联想到时间上。
+   */
+  advanceTimeOnly(): void {
+    this.worldAge++;
   }
 
   /** 找一个可站立的地面高度，用于放置玩家 */

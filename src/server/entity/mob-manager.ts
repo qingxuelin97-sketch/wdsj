@@ -90,9 +90,10 @@ export class MobManager {
   }
 
   /** 某个区块里的生物，存盘用 */
-  inChunk(cx: number, cz: number): Mob[] {
+  inChunk(cx: number, cz: number, dimension = 0): Mob[] {
     const out: Mob[] = [];
     for (const m of this.mobs.values()) {
+      if (m.dimension !== dimension) continue;
       if ((Math.floor(m.x) >> 4) === cx && (Math.floor(m.z) >> 4) === cz) out.push(m);
     }
     return out;

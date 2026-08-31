@@ -255,6 +255,20 @@ installPacketHandlers(net, {
     camera.setPosition(x, y + player.eyeHeight, z);
     session.spawned = true;
   },
+  onTeleport: (x, y, z, yaw, pitch) => {
+    player.teleport(x, y, z);
+    camera.setPosition(x, y + player.eyeHeight, z);
+    camera.yaw = yaw;
+    camera.pitch = pitch;
+  },
+  onChangeDimension: (dim, x, y, z, yaw) => {
+    // 镜像已经在 net-handlers 里清过了，这里只放人 + 记维度。
+    // 记维度是给天空渲染用的：下界没有太阳月亮，末地是自己的紫色天
+    session.dimension = dim;
+    player.teleport(x, y, z);
+    camera.setPosition(x, y + player.eyeHeight, z);
+    camera.yaw = yaw;
+  },
   onTime: (age, tod) => {
     session.worldAge = age;
     session.timeOfDay = tod;

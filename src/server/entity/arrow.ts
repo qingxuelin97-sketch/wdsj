@@ -26,6 +26,13 @@ const scratchBox = makeBox();
 
 export class ArrowEntity {
   readonly entityId: number;
+  /**
+   * 箭在哪个维度。默认主世界。
+   *
+   * 不带维度的话，下界里射出去的箭会在主世界的同名坐标上判定命中 ——
+   * 症状是"射空了"或者"隔着一个维度打到了人"，两种都极难归因。
+   */
+  dimension = 0;
   /** 谁射的。用来避免刚出膛就打到射手自己 */
   readonly ownerId: number;
   readonly damage: number;
