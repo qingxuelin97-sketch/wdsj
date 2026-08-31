@@ -318,6 +318,10 @@ export function onPlayerDeath(core: ServerCore, player: ServerPlayer): void {
 /** 重生：满血满饥饿，回到出生点 */
 export function respawnPlayer(core: ServerCore, player: ServerPlayer): void {
   player.vitals.reset();
+  // 一身药水效果也留在上一条命里。不清的话，被毒死的人一站起来
+  // 还在掉血，看着像"重生了但没回满血"（tickEffects 在玩家死着的
+  // 那几刻也会清一次，这里是把不变式写死在重生这一步上）
+  player.effects.clear();
   player.awaitingRespawn = false;
   // 出生点在**主世界**。只改坐标不改维度的话，在下界死掉的人会"重生"
   // 在下界的主世界出生点坐标上 —— 那八成是实心的地狱岩，人一进去就窒息，

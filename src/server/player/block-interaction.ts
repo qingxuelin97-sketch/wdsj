@@ -29,6 +29,7 @@ import { ignitePortal } from '../world/portal-manager.ts';
 import { EnchantingEntity, BrewingEntity } from '../world/block-entity-craft.ts';
 import { refreshOffers, sendOffers } from './enchant-actions.ts';
 import { insertEye, tryActivateEndPortal, throwEnderEye } from '../world/end-portal.ts';
+import { usePotionItem } from './potion-actions.ts';
 
 /**
  * 吃一口。饥饿已经满了就不吃 —— 与 MC 一致，免得把珍贵的食物浪费掉。
@@ -362,6 +363,9 @@ export function onUseBlock(core: ServerCore, player: ServerPlayer, value: Record
   // 吃东西优先：食物既不是方块也不需要瞄准什么，
   // 而且饿的时候玩家会对着地面猛点，那时候可不该在地上摆一排面包
   if (tryEat(core, player, held.id)) return;
+
+  // 药水的两个出口：把手上的药水喝掉、给玻璃瓶灌水（见 potion-actions.ts）
+  if (usePotionItem(core, player, x, y, z)) return;
 
   // 桶、打火石这类"用一下"的物品：它们不是放方块，
   // 走下面的 placesBlock 那条路会什么都不做

@@ -29,7 +29,7 @@ import {
   Effect, WATER_BOTTLE, writePotion, potionPotency, readPotion, brew,
 } from '../../src/core/craft/brewing.ts';
 import { BrewingEntity, BREW_TICKS } from '../../src/server/world/block-entity-craft.ts';
-import { onAttackEntity } from '../../src/server/entity/combat.ts';
+import { onAttackEntity, damagePlayer, respawnPlayer } from '../../src/server/entity/combat.ts';
 import { POTION, MAX_HEALTH, AIR_SUPPLY_TICKS } from '../../src/core/constants.ts';
 import type { ServerPlayer } from '../../src/server/player/server-player.ts';
 
@@ -363,6 +363,17 @@ test('效果到点自动消失，那一刻加成也跟着没', () => {
   for (let i = 0; i < 6; i++) r.core.tick();
   assert.equal(r.player.effects.size, 0, '5 刻的效果过了 6 刻还挂在身上 —— 没人给它扣时间');
   assert.equal(swing(), 7, '效果没了伤害就该回到基础值');
+});
+
+test('死了重生，一身效果不会跟着带过来', () => {
+  const r = makeRig();
+  drink(r, potionOf(Effect.POISON));
+  assert.ok(r.player.effects.has(Effect.POISON));
+
+  damagePlayer(r.core, r.player, 100, r.player.x + 5, r.player.z);
+  assert.ok(r.player.vitals.dead, '该被打死');
+  respawnPlayer(r.core, r.player);
+  assert.equal(r.player.effects.size, 0, '重生之后还带着毒 —— 人一站起来又开始掉血');
 });
 
 // ---------------------------------------------------------------------------
