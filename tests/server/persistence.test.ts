@@ -402,6 +402,37 @@ test('附魔与附魔台/酿造台跟着存档一起来回', async () => {
   assert.equal(stand2.slots[3]!.id, items.idOf(Items.NETHER_WART), '材料格要还原');
 });
 
+test('扔在地上的附魔剑，存读之后附魔还在', async () => {
+  const storage = new MemoryStorage();
+  const a = await makeRig(storage);
+  await tickAsync(a.core, 20);
+
+  const sword = makeStack(items.idOf(Items.DIAMOND_SWORD), 1, 5);
+  sword.enchantments = [{ id: Enchantment.SHARPNESS, level: 4 }, { id: Enchantment.FIRE_ASPECT, level: 2 }];
+  const dx = Math.floor(a.player.x) + 1;
+  const dz = Math.floor(a.player.z);
+  const dy = Math.floor(a.player.y) + 3;
+  const dropped = spawnItem(a.core, dx + 0.5, dy, dz + 0.5, sword, false);
+  assert.ok(dropped !== null, '应该扔得下');
+  await a.controller.saveNow();
+
+  // 和上面那条一样：**不要 tick**。一进 tick 循环这把剑就落到玩家头上被捡走，
+  // 那时候世界里的掉落物永远是 0
+  const b = await makeRig(storage);
+  b.core.world.forceChunk(Math.floor(dropped.x) >> 4, Math.floor(dropped.z) >> 4);
+  assert.equal(b.core.world.forcedOverPendingSave, 0);
+  const found = [...b.core.world.items.values()].find(
+    (e) => e.stack.id === items.idOf(Items.DIAMOND_SWORD),
+  );
+  assert.ok(found !== undefined, '掉落物本身没还原');
+  assert.equal(found.stack.damage, 5, '耐久要还原');
+  assert.equal(
+    (found.stack.enchantments ?? []).map((e) => `${e.id}/${e.level}`).join(','),
+    `${Enchantment.SHARPNESS}/4,${Enchantment.FIRE_ASPECT}/2`,
+    '地上那把剑的附魔没了 —— 区块卸载过一次就会这样，捡回来是把普通剑',
+  );
+});
+
 test('三个维度各存各的：下界不会把主世界的区块顶掉', async () => {
   const storage = new MemoryStorage();
   const a = await makeRig(storage);

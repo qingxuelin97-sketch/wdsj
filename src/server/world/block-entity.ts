@@ -222,6 +222,36 @@ export class SignEntity extends BlockEntity {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * 把一件物品的附魔写进它的 NBT 字段表。
+ *
+ * 没附过魔的物品**不写这一项** —— 箱子里绝大多数格子都没附魔，
+ * 给每一格写一个空列表会让存档白白胀一圈。
+ *
+ * 单独抽出来是因为有两条路要用：容器里的格子（stacksToNbt）和
+ * 掉在地上的那一件（ItemEntity.toNbt）。少接一条的表现是
+ * "扔在地上的附魔剑，区块一卸载再走回来，附魔没了"
+ */
+export function writeEnchantments(s: ItemStack, fields: Record<string, NbtValue>): void {
+  if (s.enchantments === undefined || s.enchantments.length === 0) return;
+  fields['ench'] = nbt.list(TagType.COMPOUND, s.enchantments.map((e) => nbt.compound({
+    id: nbt.short(e.id),
+    lvl: nbt.short(e.level),
+  })));
+}
+
+/** 反过来。没有 ench 就把字段删掉 —— 目标物品可能是复用的 */
+export function readEnchantments(item: NbtValue, dst: ItemStack): void {
+  const ench = getList(item, 'ench');
+  if (ench.length > 0) {
+    dst.enchantments = ench.map((e) => ({ id: getInt(e, 'id'), level: getInt(e, 'lvl') }));
+  } else {
+    // nbtToStacks 上面那个清空循环只清了 id/count/damage —— 数组是复用的，
+    // 不删的话上一次读进来的附魔会挂在一件空物品上
+    delete dst.enchantments;
+  }
+}
+
 /** 物品数组 -> NBT 列表。空格子不写，读回来时按 Slot 号还原 */
 export function stacksToNbt(slots: readonly ItemStack[]): NbtValue {
   const items: NbtValue[] = [];
@@ -234,17 +264,7 @@ export function stacksToNbt(slots: readonly ItemStack[]): NbtValue {
       Count: nbt.byte(s.count),
       Damage: nbt.short(s.damage),
     };
-    // 附魔。没附过魔的物品**不写这一项** —— 箱子里绝大多数格子都没附魔，
-    // 给每一格写一个空列表会让存档白白胀一圈。
-    //
-    // 不写的话玩家花三十级换来的锋利 V 会在退出重进时消失，
-    // 而且没有任何提示：剑还在，附魔没了
-    if (s.enchantments !== undefined && s.enchantments.length > 0) {
-      fields['ench'] = nbt.list(TagType.COMPOUND, s.enchantments.map((e) => nbt.compound({
-        id: nbt.short(e.id),
-        lvl: nbt.short(e.level),
-      })));
-    }
+    writeEnchantments(s, fields);
     items.push(nbt.compound(fields));
   }
   return nbt.list(TagType.COMPOUND, items);
@@ -264,14 +284,7 @@ export function nbtToStacks(list: readonly NbtValue[], out: ItemStack[]): void {
     dst.id = getInt(item, 'id');
     dst.count = getInt(item, 'Count');
     dst.damage = getInt(item, 'Damage');
-    const ench = getList(item, 'ench');
-    if (ench.length > 0) {
-      dst.enchantments = ench.map((e) => ({ id: getInt(e, 'id'), level: getInt(e, 'lvl') }));
-    } else {
-      // 上面那个循环只清了 id/count/damage —— 这个数组是复用的，
-      // 不删的话上一次读进来的附魔会挂在一件空物品上
-      delete dst.enchantments;
-    }
+    readEnchantments(item, dst);
   }
 }
 

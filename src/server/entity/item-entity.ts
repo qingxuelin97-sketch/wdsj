@@ -18,6 +18,7 @@
 import { collideMove, makeBox, setBodyBox, type CollisionTables } from '../../core/physics/block-collision.ts';
 import type { BlockView } from '../../core/world/block-view.ts';
 import { makeStack, type ItemStack } from '../../core/item/item-def.ts';
+import { writeEnchantments, readEnchantments } from '../world/block-entity.ts';
 import { nbt, getInt, getList, type NbtValue } from '../../core/nbt/nbt.ts';
 import { TagType } from '../../core/nbt/nbt.ts';
 
@@ -137,13 +138,20 @@ export class ItemEntity {
       PickupDelay: nbt.short(this.pickupDelay),
       Pos: nbt.list(TagType.DOUBLE, [nbt.double(this.x), nbt.double(this.y), nbt.double(this.z)]),
       Motion: nbt.list(TagType.DOUBLE, [nbt.double(this.vx), nbt.double(this.vy), nbt.double(this.vz)]),
-      Item: nbt.compound({
-        id: nbt.short(this.stack.id),
-        Count: nbt.byte(this.stack.count),
-        Damage: nbt.short(this.stack.damage),
-      }),
+      Item: nbt.compound(itemFields(this.stack)),
     });
   }
+}
+
+/** 一件物品的 NBT 字段。与容器里的格子用同一套写法，附魔也一起带上 */
+function itemFields(stack: ItemStack): Record<string, NbtValue> {
+  const fields: Record<string, NbtValue> = {
+    id: nbt.short(stack.id),
+    Count: nbt.byte(stack.count),
+    Damage: nbt.short(stack.damage),
+  };
+  writeEnchantments(stack, fields);
+  return fields;
 }
 
 /** 从 NBT 还原一个掉落物。entityId 由调用方重新分配 —— 它只在本次运行内有意义 */
@@ -158,6 +166,9 @@ export function itemEntityFromNbt(entityId: number, tag: NbtValue): ItemEntity |
   };
   const stack = makeStack(getInt(item, 'id'), getInt(item, 'Count'), getInt(item, 'Damage'));
   if (stack.id === 0 || stack.count <= 0) return null;
+  // 附魔。漏了它的话，扔在地上的附魔剑只要区块卸载过一次
+  // （或者存盘读档），捡回来就是一把普通剑
+  readEnchantments(item, stack);
   const e = new ItemEntity(entityId, num(pos, 0), num(pos, 1), num(pos, 2), stack);
   e.vx = num(motion, 0);
   e.vy = num(motion, 1);
