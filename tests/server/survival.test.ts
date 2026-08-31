@@ -252,6 +252,58 @@ test('岩浆里掉血更快，而且会着火', () => {
   assert.ok(player.vitals.fireTicks > 0, '该着火了');
 });
 
+/**
+ * 闸门② 的岩浆那项卡了很久，最后查明**是场景错了，不是判定错了**。
+ *
+ * 岩浆的 `collisionShape` 是空的（content/blocks-fluid.ts：
+ * "没有碰撞盒 —— 玩家会掉进去而不是站在上面"）。所以一池岩浆**托不住人** ——
+ * 池子底下必须有实心方块。`mine-check` 的场景只把 deepY..deepY+3 清成空气，
+ * 而 deepY-1 是原始地形；Y=12 这个深度洞穴很多，池底一旦是空的，
+ * 人就从池子里直接穿过去落到几十格以下。
+ *
+ * 症状极具迷惑性：掉血 0/2/4、每次跑都不一样（取决于下落中蹭到几刻岩浆），
+ * 事后查 `pos` 得到的是落地处的方块（stone），与池心的 `getblock`（lava）
+ * 对不上 —— 看着像"同一格读出两种结果"，实际两次读的根本不是同一格。
+ *
+ * 这两条钉的就是那件事：有底托着就掉血，没底就掉下去。
+ */
+test('岩浆池底下有实心方块时，人站在里面持续掉血', () => {
+  const { core, player } = makeRig();
+  const LAVA = registry.idOf('lava');
+  for (let x = -1; x <= 1; x++) {
+    for (let z = -1; z <= 1; z++) {
+      core.world.setBlock(x, 70, z, packState(STONE));  // 池底
+      core.world.setBlock(x, 71, z, packState(LAVA));
+    }
+  }
+  player.x = 0.5; player.y = 71; player.z = 0.5;
+  for (let i = 0; i < 30; i++) core.tick();
+  assert.ok(player.vitals.fireTicks > 0, '泡在岩浆里该着火');
+  // MC 1.0 是每 10 刻 4 点，30 刻该掉两位数上下；给宽一点只断"明显掉了"
+  assert.ok(player.vitals.health <= 12,
+    `30 刻该掉不少血，实得 ${player.vitals.health}`);
+});
+
+test('岩浆池底下是空的时，人会直接穿过去 —— 这是场景错，不是判定错', () => {
+  const { core, player } = makeRig();
+  const LAVA = registry.idOf('lava');
+  // 只放岩浆，**不垫底**，并且把下面一路挖空
+  for (let x = -1; x <= 1; x++) {
+    for (let z = -1; z <= 1; z++) {
+      for (let y = 60; y < 71; y++) core.world.setBlock(x, y, z, AIR_STATE);
+      core.world.setBlock(x, 71, z, packState(LAVA));
+    }
+  }
+  player.x = 0.5; player.y = 71; player.z = 0.5;
+  // 服务端信客户端报的位置，所以这里直接模拟"人在往下掉"
+  for (let i = 0; i < 20; i++) { player.y -= 0.8; core.tick(); }
+  assert.ok(player.y < 70, '人该掉出岩浆层');
+  // 断言的重点不是"掉了多少血"，而是**这种场景本身不能用来验岩浆致命** ——
+  // 人已经不在岩浆里了，掉不掉血都说明不了判定对不对
+  const feetY = Math.floor(player.y);
+  assert.notEqual(feetY, 71, '脚已经不在岩浆那一层了');
+});
+
 test('摔落伤害由服务端判 —— 客户端只报位置', () => {
   const { core, player, send } = makeRig();
   // 客户端报"我在 y=100 空中"

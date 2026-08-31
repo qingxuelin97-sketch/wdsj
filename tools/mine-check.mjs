@@ -36,7 +36,12 @@ const OUT_DIR = path.join(ROOT, 'tests/out');
 const HEADLESS = !process.argv.includes('--head');
 const SEED = 20261118;
 const URL = `http://127.0.0.1:${PORT}/?test=mine&seed=${SEED}&radius=3`
-  + '&persist=0&randomTicks=0&particles=0';
+  + '&persist=0&randomTicks=0&particles=0'
+  // 指令超时调到 30 秒。这一项要连发十几条 fillbox/getblock，
+  // 而软件渲染的机器（无 GPU 的 CI 容器）帧时间能到 160ms，
+  // 默认的 8 秒会一条条撞上去 —— 报 "指令超时: getblock ..."，
+  // 看着像服务端挂了，其实只是慢
+  + '&cmdTimeout=30000';
 
 const failures = [];
 const log = (m) => console.log(`[下矿] ${m}`);
@@ -246,8 +251,12 @@ try {
     //
     // 这是挖矿最常见的死法，也是 1.0 里唯一"看见了还来不及躲"的东西。
     // 它不致命的话，整个下矿过程最基本的紧张感就没了。
-    await m.command('fillbox ' + (sx-4) + ' ' + deepY + ' ' + (sz+2) + ' '
-      + (sx+4) + ' ' + (deepY+3) + ' ' + (sz+20) + ' air');
+    // 清一小片就够。原来清的是 9×4×19 = 684 格 ——
+    // 在软件渲染的机器上，那一下触发的重网格化会把主线程压住几十秒，
+    // 紧跟着的 waitForIdle 直接超时（报"指令超时: settled"，看着像服务端挂了）。
+    // 这一项真正需要的只有：一个 5×5 的岩浆盆、一条到水洼的通道。
+    await m.command('fillbox ' + (sx-2) + ' ' + deepY + ' ' + (sz+4) + ' '
+      + (sx+2) + ' ' + (deepY+2) + ' ' + (sz+20) + ' air');
     // 一小洼岩浆。玩家要真的**踩进岩浆里** —— 站在岩浆顶上是不会烧的
     // （脚在上面那一格空气里），第一版就是那样"通过"的。
     //
@@ -256,6 +265,33 @@ try {
     // "客户端 getblock 说 lava、服务端 pos 说 stone"，两次读的是同一格、
     // 差了一次往返，那一刻正好在转变中间。
     // 那是**对的**游戏行为（水碰岩浆生石头），是这个场景摆错了。
+    // **岩浆池必须是一个封闭的盆，不能只是"倒一摊岩浆"。**
+    //
+    // 两件事都要做，缺一不可：
+    //
+    // （注意：这整段在一个模板字符串里，注释里不能出现反引号。）
+    //
+    // 1. **底下垫实心方块**。岩浆的 collisionShape 是空的
+    //    （content/blocks-fluid.ts："没有碰撞盒 —— 玩家会掉进去而不是站在上面"），
+    //    人不会浮在池面上。上面那句 fillbox 只清了 deepY..deepY+3，
+    //    **deepY-1 是原始地形** —— Y=12 这个深度洞穴很多，池底一旦是空的，
+    //    人就从池子里直接穿过去落到几十格以下。
+    //
+    //    症状极具迷惑性：掉血 0 或 2 或 4、**每次跑都不一样**（取决于下落中
+    //    蹭到几刻岩浆），事后查 pos 得到的是落地处的方块（stone），
+    //    与池心的 getblock（lava）对不上 —— 看着像"同一格读出两种结果"，
+    //    实际两次读的根本不是同一格。
+    //
+    // 2. **四周围一圈墙**。只垫底不围边的话，九个岩浆源会朝刚清出来的
+    //    9×19 格空地漫过去，流体模拟一直有活干，waitForIdle 永远等不到
+    //    世界安静下来 —— 表现是"指令超时: settled"，看着像服务端挂了。
+    //    （这是修完第 1 条之后立刻撞上的：原来岩浆是从洞里漏走的，
+    //    补上底之后它才有机会往外摊。）
+    //
+    // 做法：先把 5×5 一整块填成石头，再把中间 3×3 换成岩浆 —— 得到的是
+    // 一个四面加底都封死的盆。
+    await m.command('fillbox ' + (sx-2) + ' ' + (deepY-1) + ' ' + (sz+5) + ' '
+      + (sx+2) + ' ' + deepY + ' ' + (sz+9) + ' stone');
     await m.command('fillbox ' + (sx-1) + ' ' + deepY + ' ' + (sz+6) + ' '
       + (sx+1) + ' ' + deepY + ' ' + (sz+8) + ' lava');
     await m.waitForIdle();
@@ -280,6 +316,24 @@ try {
     // 踩进岩浆：y 取 deepY，脚就在岩浆那一格里
     await m.command('tp ' + (sx + 0.5) + ' ' + deepY + ' ' + (sz + 7));
     m.attachPlayer(sx + 0.5, deepY, sz + 7);
+
+    // **先确认人真的站在岩浆里，再开始泡。**
+    //
+    // 不确认的话，"没掉血"有两种完全不同的原因 —— 岩浆不致命（代码错了）、
+    // 或者人根本不在岩浆里（场景错了）—— 而失败信息长得一模一样。
+    // 这一项之前正是卡在这里：报出来像是伤害判定坏了，实际是人掉下去了。
+    for (let i = 0; i < 10; i++) await new Promise(r => requestAnimationFrame(r));
+    const standing = (await m.command('pos')).text;
+    if (!standing.includes('feet=lava')) {
+      // 人不在岩浆里有两种可能：人掉下去了，或者岩浆变了。
+      // 再读一次池子就能分开这两件事 —— 少了这一步，
+      // 两种完全不同的原因会长成同一条失败信息
+      await poolRow('失败时池子:');
+      fail('人没能站在岩浆里，后面的掉血判定无从谈起。服务端 ' + standing
+        + '（岩浆没有碰撞盒，池子底下必须有实心方块托着，否则会直接穿过去）');
+      return { notes };
+    }
+
     for (let i = 0; i < 70; i++) await new Promise(r => requestAnimationFrame(r));
     const hpInLava = m.vitals().health;
     const lost = hpBefore - hpInLava;

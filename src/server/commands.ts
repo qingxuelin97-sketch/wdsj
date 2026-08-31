@@ -124,7 +124,15 @@ value: Record<string, unknown>,
         const bz = Math.floor(player.z);
         // y 打到 6 位小数：判定用的是 Math.floor(y)，而 toFixed(2) 会把
         // 11.999999 显示成 "12.00" —— 正好把最要命的那种差别藏起来
+        // **把 floor 后的整数也打出来**，不能只打小数位。
+        //
+        // 原来只打 y.toFixed(6)，理由是"toFixed(2) 会把 11.999999 显示成 12.00"。
+        // 方向对，但没解决问题：toFixed(6) 一样会**四舍五入** ——
+        // 11.9999996 照样显示成 "12.000000"，而判定用的 Math.floor 得到的是 11。
+        // 于是"服务端说我在 12，脚下却是 12 下面那格的方块"，
+        // 看着像同一格读出两种结果。真正该打的是判定实际用的那个整数。
         reply(true, `${player.x.toFixed(2)},${player.y.toFixed(6)},${player.z.toFixed(2)}`
+          + ` blk=${bx},${fy},${bz}`
           + ` feet=${nameAt(bx, fy, bz)} head=${nameAt(bx, Math.floor(player.y + 1.62), bz)}`
           + ` hp=${player.vitals.health} fire=${player.vitals.fireTicks}`);
         return;

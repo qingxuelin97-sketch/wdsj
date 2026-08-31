@@ -37,6 +37,8 @@ export interface WeatherState {
 
 export class ClientSession {
   readonly net: PacketChannel;
+  /** 指令回执的超时上限，见 command() 的注释。`?cmdTimeout=` 可调 */
+  private readonly commandTimeoutMs: number;
   private readonly host: ReturnType<typeof startServerHost>;
 
   /** 服务端权威的当日时间，0..23999。渲染只读它，绝不自己推进 */
@@ -55,6 +57,7 @@ export class ClientSession {
 
   constructor(o: SessionOptions) {
     const { params } = o;
+    this.commandTimeoutMs = Number(params.get('cmdTimeout') ?? 8000);
     this.host = startServerHost({
       seed: o.seed,
       // 截图回归必须关掉存档：存了的话"同一个种子跑两次"会得到不同的世界 ——
@@ -105,14 +108,26 @@ export class ClientSession {
     return this.host.sharedStats();
   }
 
-  /** 发一条指令给服务端，等回执。超时会 reject，避免测试永远挂着 */
+  /**
+   * 发一条指令给服务端，等回执。超时会 reject，避免测试永远挂着。
+   *
+   * 超时值可以用 `?cmdTimeout=30000` 调大。默认 8 秒在真 GPU 上绰绰有余，
+   * 但在**软件渲染**（SwiftShader、无 GPU 的 CI 容器）上帧时间能到 160 ms，
+   * 而回执要等主循环泵一次包队列 —— 大批量 fillbox 之后连着发十来条
+   * getblock，就会一条条撞上这个上限。
+   *
+   * 表现是 `指令超时: getblock ...`，看着像服务端挂了，实际只是慢。
+   * 这类"环境慢导致的假失败"在本项目里已经出现过好几次
+   * （裂纹采样、生物截图），每次都花时间查过才发现不是代码的问题。
+   */
   command(text: string): Promise<{ ok: boolean; text: string }> {
     const requestId = this.nextCommandId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.commandWaiters.delete(requestId);
-        reject(new Error(`指令超时: ${text}`));
-      }, 8000);
+        reject(new Error(`指令超时: ${text}（上限 ${this.commandTimeoutMs}ms，`
+          + '慢机器可用 ?cmdTimeout=30000 调大）'));
+      }, this.commandTimeoutMs);
       this.commandWaiters.set(requestId, (r) => {
         clearTimeout(timer);
         resolve(r);
