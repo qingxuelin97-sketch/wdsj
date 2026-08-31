@@ -15,6 +15,7 @@ import {
 import { WindowKind } from '../../core/net/packets.ts';
 import { emptyStack, cloneStack, type ItemStack } from '../../core/item/item-def.ts';
 import { MenuState, drawVersionTag, type MenuAction } from './menu-screen.ts';
+import { decodeEnchantSummary, rememberEnchantSummary } from './item-enchant.ts';
 
 /** 玩家永久持有的槽位数，与服务端一致 */
 const PERSISTENT_SLOTS = 40;
@@ -167,12 +168,20 @@ export class UiController {
     this.enchantOffers = [a, b, c];
   }
 
-  draw(ui: UiRenderer, ctx: DrawContext): void {
+  /**
+   * 画这一帧的界面。
+   *
+   * @param renderTick 渲染帧号，附魔光效的相位靠它。**必须**是 `clock.renderTick`
+   *   而不是任何形式的挂钟或自己数的帧数（规约第 4 条）—— 否则 `__mc.freeze()`
+   *   停不住画面，截图取样等不到"连续两帧一样"。
+   *   由 entry/world-render.ts 一路传进来。
+   */
+  draw(ui: UiRenderer, ctx: DrawContext, renderTick: number): void {
     ui.begin();
     if (this.open) {
       drawWindow(
         ui, this.windowKind!, this.layout, this.slots, this.cursorStack,
-        this.hovered, ctx, this.mouseX, this.mouseY,
+        this.hovered, ctx, this.mouseX, this.mouseY, renderTick,
       );
       if (this.windowKind === WindowKind.FURNACE) {
         drawFurnaceProgress(ui, this.layout, this.progress);
@@ -190,7 +199,7 @@ export class UiController {
     // 自己没退出游戏），快捷栏会从底下透出来，看着像界面画漏了。
     // MC 也是暂停时收起 HUD 的
     if (!this.menu.open) {
-      drawHotbar(ui, this.slots, this.hotbarStart, this.selectedHotbar, ctx);
+      drawHotbar(ui, this.slots, this.hotbarStart, this.selectedHotbar, ctx, renderTick);
       // 生存状态画在快捷栏之上。开着容器界面时不画 —— 那时候面板已经
       // 盖住了那一片，两者叠在一起会糊成一团
       if (!this.open) drawVitals(ui, this.vitals);
@@ -218,10 +227,13 @@ export function decodeSlots(bytes: Uint8Array): ItemStack[] {
   // 每格四个 int32，第四个是附魔摘要：低 8 位条数、次 8 位主附魔 id、
   // 再 8 位等级。见 server 的 syncInventory
   for (let i = 0; i + 3 < view.length; i += 4) {
-    const summary = view[i + 3]!;
     const stack: ItemStack = { id: view[i]!, count: view[i + 1]!, damage: view[i + 2]! };
-    if (summary !== 0) {
-      stack.enchantments = [{ id: (summary >> 8) & 0xff, level: (summary >> 16) & 0xff }];
+    const summary = decodeEnchantSummary(view[i + 3]!);
+    if (summary !== null) {
+      // ItemStack 只装得下"有哪几条"，装不下"一共几条" ——
+      // 总条数记在旁挂表里，界面画提示条时要用。见 item-enchant.ts
+      stack.enchantments = [{ id: summary.id, level: summary.level }];
+      rememberEnchantSummary(stack, summary);
     }
     out.push(stack);
   }

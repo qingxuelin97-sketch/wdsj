@@ -420,15 +420,35 @@ value: Record<string, unknown>,
         reply(true, 'ok');
         return;
       }
+      /**
+       * `give <名字|id> [数量] [附魔]` —— 直接把东西塞进背包。
+       *
+       * 附魔写成 `id:等级` 用逗号隔开，例如 `give diamond_sword 1 16:5,34:3`
+       * （锋利 V + 耐久 III）。附魔的 id 见 core/item/enchantment.ts。
+       *
+       * 有这一条才能在自动化里验附魔：走附魔台的话要先攒三十级、
+       * 摆书架、还得碰运气摇到想要的那一条，验收脚本没法那么玩
+       */
       case 'give': {
-        // 自动化与调试用：直接把东西塞进背包
-        const [, what, howMany] = parts;
+        const [, what, howMany, ench] = parts;
         const name = String(what);
         const id = core.items.get(0) !== undefined && /^\d+$/.test(name)
           ? Number(name)
           : (core.registry.hasBlock(name) ? core.registry.idOf(name) : core.items.idOf(name));
         const count = Math.max(1, Math.min(640, Number(howMany ?? 1)));
-        const left = giveToPlayer(core, player, makeStack(id, count));
+        const stack = makeStack(id, count);
+        if (ench !== undefined && ench !== '') {
+          const list: { id: number; level: number }[] = [];
+          for (const part of ench.split(',')) {
+            const [eid, lvl] = part.split(':');
+            const n = Number(eid);
+            const l = Number(lvl ?? 1);
+            if (!Number.isFinite(n) || !Number.isFinite(l)) continue;
+            list.push({ id: n, level: Math.max(1, Math.min(5, l)) });
+          }
+          if (list.length > 0) stack.enchantments = list;
+        }
+        const left = giveToPlayer(core, player, stack);
         syncInventory(core, player);
         reply(true, `${count - left}`);
         return;

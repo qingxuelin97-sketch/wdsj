@@ -69,6 +69,20 @@ console.log(`[gl] ${caps.rendererName}`);
 // ---------------------------------------------------------------------------
 const params = new URLSearchParams(location.search);
 
+/** 这一局用哪个名字。见下面 C_Handshake 那里的注释 */
+function resolvePlayerName(): string {
+  const fromUrl = (params.get('name') ?? '').trim();
+  if (fromUrl !== '') {
+    try { localStorage.setItem('mc.playerName', fromUrl); } catch { /* 隐私模式下会抛 */ }
+    return fromUrl.slice(0, 32);
+  }
+  try {
+    const saved = localStorage.getItem('mc.playerName');
+    if (saved !== null && saved.trim() !== '') return saved.slice(0, 32);
+  } catch { /* 同上，读不到就用默认名 */ }
+  return '玩家';
+}
+
 const registry = createBlockRegistry();
 const itemRegistry = createItemRegistry();
 const tables = registry.getTables();
@@ -302,7 +316,14 @@ installPacketHandlers(net, {
   recordError,
 });
 
-net.send(C_Handshake, { protocolVersion: PROTOCOL_VERSION, playerName: '玩家' });
+// 玩家名。写死的话多人时所有人重名，而存档是按名字分的
+// （players/<名字>.dat）—— 三个人共用一份档，谁后退出谁说了算，
+// 而且每个人一登录都会套上同一份背包。
+//
+// 优先级：?name= > 上次用过的（localStorage）> 默认。存本地是为了
+// 刷新页面还是同一个人，否则每次 F5 都换一份存档
+const playerName = resolvePlayerName();
+net.send(C_Handshake, { protocolVersion: PROTOCOL_VERSION, playerName });
 net.send(C_SetViewDistance, { distance: renderDistance });
 net.flush();
 

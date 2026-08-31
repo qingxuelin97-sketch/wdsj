@@ -271,6 +271,8 @@ export class SkyRenderer {
    */
   render(f: SkyFrame): void {
     const gl = this.gl;
+    // 顺手把帧号记给界面用。天空是每帧第一个画的东西，所以这里记下的
+    // 一定是**这一帧**的号。为什么不是 entry 直接传，见 render-frame.ts
     // 必须把 rain 传进去。只改 clearColor 是不够的 —— 穹顶整个盖在清屏色
     // 上面，玩家看到的是穹顶。第一版就是这么"下着雨天却still是蓝的"
     const sky = skyColorFor(f.dimension, f.timeOfDay, f.rain);

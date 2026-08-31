@@ -11,6 +11,9 @@ import { UiRenderer, UI_WIDTH, UI_HEIGHT } from './ui-renderer.ts';
 import { C, panelRaised, centeredText, inset } from './ui-widgets.ts';
 import { WindowKind } from '../../core/net/packets.ts';
 import { isEmpty, type ItemStack } from '../../core/item/item-def.ts';
+import { enchantSummaryOf, enchantTooltipFor } from './item-enchant.ts';
+import { drawEnchantGlint } from './item-glint.ts';
+import { drawItemTooltip } from './item-tooltip.ts';
 
 /** 一个槽位在界面上的位置 */
 export interface SlotRect {
@@ -122,7 +125,11 @@ export interface DrawContext {
   maxStack(id: number): number;
 }
 
-/** 画一个容器界面 */
+/**
+ * 画一个容器界面。
+ *
+ * @param frame 渲染帧号。附魔光效的相位靠它，**不许换成挂钟**（规约第 4 条）
+ */
 export function drawWindow(
   ui: UiRenderer,
   kind: WindowKind,
@@ -133,6 +140,7 @@ export function drawWindow(
   ctx: DrawContext,
   mouseX: number,
   mouseY: number,
+  frame: number,
 ): void {
   // 半透明的暗色底，让背后的世界还看得见一点 —— 与 MC 一致
   ui.rect(0, 0, UI_WIDTH, UI_HEIGHT, 0, 0, 0, 0.55);
@@ -151,6 +159,9 @@ export function drawWindow(
     if (stack === undefined || isEmpty(stack)) continue;
     const layer = ctx.iconLayer(stack.id, stack.damage);
     if (layer >= 0) ui.sprite(s.x + 1, s.y + 1, 16, 16, layer);
+    // 附了魔的罩一层紫色流光。画在图标之后、堆叠数之前 ——
+    // 压在数字上面的话，一堆附了魔的东西会数不清有几个
+    if (enchantSummaryOf(stack) !== null) drawEnchantGlint(ui, s.x + 1, s.y + 1, 16, frame);
     if (stack.count > 1) ui.number(stack.count, s.x + 17, s.y + 10, 1);
   }
 
@@ -163,17 +174,38 @@ export function drawWindow(
   if (!isEmpty(cursor)) {
     const layer = ctx.iconLayer(cursor.id, cursor.damage);
     if (layer >= 0) ui.sprite(mouseX - 8, mouseY - 8, 16, 16, layer);
+    if (enchantSummaryOf(cursor) !== null) drawEnchantGlint(ui, mouseX - 8, mouseY - 8, 16, frame);
     if (cursor.count > 1) ui.number(cursor.count, mouseX + 8, mouseY + 1, 1);
+  }
+
+  // 提示条画在**最后**：它要盖住格子、图标、高亮。
+  //
+  // 手上拿着东西时不画 —— 那时玩家关心的是"往哪放"，一块跟着指针走的
+  // 文字牌只会挡住目标格子。MC 也是这个规矩。
+  //
+  // 眼下只有附了魔的东西才弹提示（enchantTooltipFor 对普通物品返回 null）。
+  // 给所有物品都加是另一件事：那会改掉每一张已有的界面截图，
+  // 该单独做、单独重录黄金哈希
+  if (isEmpty(cursor) && hit !== undefined) {
+    const hoverStack = slots[hit.index];
+    const tip = hoverStack === undefined || isEmpty(hoverStack)
+      ? null : enchantTooltipFor(hoverStack);
+    if (tip !== null) drawItemTooltip(ui, tip, mouseX, mouseY);
   }
 }
 
-/** 画快捷栏（不开界面时也一直显示） */
+/**
+ * 画快捷栏（不开界面时也一直显示）。
+ *
+ * @param frame 渲染帧号，用途同 drawWindow
+ */
 export function drawHotbar(
   ui: UiRenderer,
   slots: readonly ItemStack[],
   hotbarStart: number,
   selected: number,
   ctx: DrawContext,
+  frame: number,
 ): void {
   const w = 9 * SLOT + 4;
   const x0 = (UI_WIDTH - w) / 2;
@@ -195,6 +227,8 @@ export function drawHotbar(
     if (stack !== undefined && !isEmpty(stack)) {
       const layer = ctx.iconLayer(stack.id, stack.damage);
       if (layer >= 0) ui.sprite(sx + 1, sy + 1, 16, 16, layer);
+      // 快捷栏也要发光：附了魔的剑多半就挂在手上那一格
+      if (enchantSummaryOf(stack) !== null) drawEnchantGlint(ui, sx + 1, sy + 1, 16, frame);
       if (stack.count > 1) ui.number(stack.count, sx + 17, sy + 10, 1);
     }
     if (i === selected) {

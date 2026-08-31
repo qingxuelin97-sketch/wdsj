@@ -191,7 +191,10 @@ export function drawWorldFrame(d: FrameDeps): void {
   });
 
   // 界面画在最后，且用**虚拟像素**坐标系（见 client/ui/ui-renderer.ts）
-  d.ui.draw(d.uiRenderer, d.uiCtx);
+  // 帧号要一路传到界面里：附魔物品那层紫色流光靠它驱动。
+  // 渲染路径**不许读挂钟**（规约第 4 条）—— 读了的话 freeze() 停不住画面，
+  // 截图回归就成了假的
+  d.ui.draw(d.uiRenderer, d.uiCtx, d.renderTick);
   d.uiRenderer.flush(d.texture);
 
   // F3 **单独一批**。

@@ -123,6 +123,17 @@ export class Window {
 
   /** 处理一次点击并同步 */
   click(slot: number, button: 0 | 1, shift: boolean): boolean {
+    // **先把外面的现状抄进来再点。**
+    //
+    // 窗口是打开那一刻的一份快照，而 pushToPlayer 会把整份快照写回去。
+    // 两个人开着同一个箱子时，这就是一台复制机：A 拿走一整堆钻石
+    // （箱子被写成空），B 随后点一下，B 那份还停在"箱子里有 64 颗"的快照上，
+    // 整份写回去 —— 箱子又满了，而 A 手上那 64 颗还在。实测凭空多出 64 颗。
+    //
+    // 服务端是单线程的，一次只处理一个点击，所以"点之前重读一遍"
+    // 就足以把它变成正确的读-改-写。顺带也接上了另一件事：
+    // 窗口开着的时候捡到的东西，现在也能立刻在窗口里看到
+    this.pullFromPlayer();
     const changed = this.container.click(slot, button, shift);
     if (!changed) return false;
     this.refreshOutput();
