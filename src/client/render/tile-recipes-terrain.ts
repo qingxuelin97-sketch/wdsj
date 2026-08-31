@@ -61,7 +61,22 @@ export const TERRAIN_RECIPES: Record<string, Recipe> = {
     p.edgeShade(12);
   },
   // grass_top 是灰度，颜色由群系 tint 乘上去
-  grass_top: (p) => { p.valueNoise(rgb(0xd4d4d4), 10, 8, 8, 2); p.blobs(rgb(0xc4c4c4), 7, 1.3, 9); p.edgeShade(7); },
+  // 主世界抬头低头看得最多的一张。灰度，颜色由群系 tint 乘上去 ——
+  // 也就是说**这张图的明暗跨度会被原样放大到最终颜色上**，
+  // 振幅 10 意味着整片草地几乎是一个纯色，远看是一块绿塑料板
+  grass_top: (p) => {
+    // 底色压到 0xc0 而不是 0xd4。0xd4 已经很接近白，往上加的振幅
+    // 会直接撞到 255 被截掉 —— 结果是"只能变暗不能变亮"的单边噪声，
+    // 看起来就是一片发白的糊。压低底色才有上下两边的余量。
+    //
+    // 这张是灰度、由群系色乘上去的，所以最终的绿会比这里深一档 ——
+    // 那正是原版草地的样子（MC 的草顶灰度图本身也不亮）
+    p.valueNoise(rgb(0xc0c0c0), 26, 6, 6, 3);
+    p.noiseOverlay(14, 16, 16, 1);
+    p.blobs(rgb(0x9c9c9c), 12, 1.3, 12);
+    p.blobs(rgb(0xdcdcdc), 8, 1.1, 9);
+    p.edgeShade(7);
+  },
   // grass_side **不染色**（方块定义里 tintFaces 只勾了 UP 面），所以这里必须画成彩色：
   // 下半是泥土本色，顶部长出一圈绿色草边。整块染色会把泥土也染绿。
   grass_side: (p) => {
@@ -88,24 +103,46 @@ export const TERRAIN_RECIPES: Record<string, Recipe> = {
   },
   // 沙、雪、黏土这类**光滑**材质：只要极轻的格点噪声，不要 blobs。
   // 量化会把小团变成边界清楚的斑，在均匀底上读作"脏"而不是"有颗粒"
-  sand: (p) => { p.valueNoise(rgb(0xded5a8), 13, 5, 5, 2); p.edgeShade(7); },
+  // 沙子是**颗粒**，所以主要靠高频那一层。低频只给一点起伏（沙丘的影子），
+  // 全靠低频的话是一块奶油色的板子
+  sand: (p) => {
+    p.valueNoise(rgb(0xded5a8), 12, 4, 4, 2);
+    p.noiseOverlay(14, 16, 16, 1);
+    p.blobs(rgb(0xcabf92), 9, 1.0, 8);
+    p.edgeShade(7);
+  },
   gravel: (p) => {
     // 4×4 = 十六块约 4px 的碎石，比圆石小一号、明度差更大
     stoneCluster(p, 4, rgb(0x8a8a8a), rgb(0x5a5a5a), 40);
     p.edgeShade(10);
   },
-  clay: (p) => { p.valueNoise(rgb(0xa4a8b8), 11, 5, 5, 2); p.edgeShade(8); },
+  clay: (p) => {
+    p.valueNoise(rgb(0xa4a8b8), 18, 5, 5, 3);
+    p.noiseOverlay(7, 13, 13, 1);
+    p.blobs(rgb(0x8e92a2), 8, 1.3, 9);
+    p.edgeShade(8);
+  },
   bedrock: (p) => {
     p.valueNoise(rgb(0x525252), 22, 3, 3, 2);
     p.blobs(rgb(0x2c2c2c), 9, 2.4, 16);
     p.blobs(rgb(0x6e6e6e), 5, 1.6, 12);
     p.edgeShade(14);
   },
-  snow: (p) => { p.valueNoise(rgb(0xf1f6f6), 9, 5, 5, 2); p.edgeShade(6); },
+  // 雪的振幅要克制：它本来就该是近乎纯白的。但"近乎"不等于"完全"——
+  // 一点点起伏才看得出这是一层积雪而不是一张白纸
+  snow: (p) => {
+    p.valueNoise(rgb(0xf1f6f6), 11, 5, 5, 2);
+    p.noiseOverlay(6, 14, 14, 1);
+    p.edgeShade(6);
+  },
+  // 冰。这一张要的**不是**颗粒感 —— 冰是通透的，颗粒会让它变成磨砂玻璃。
+  // 要的是大块的、边界柔和的明暗（冰层里的裂纹与气泡），
+  // 所以低频振幅给足、高频只给一点点
   ice: (p) => {
-    p.valueNoise(rgb(0x9ec4f0), 10, 6, 6, 2);
-    p.blobs(rgb(0xc4dcf8), 6, 2.0, 10);
-    p.blobs(rgb(0x86acd8), 4, 1.6, 8);
+    p.valueNoise(rgb(0x9ec4f0), 18, 5, 5, 3);
+    p.noiseOverlay(5, 12, 12, 1);
+    p.blobs(rgb(0xd2e6fa), 7, 1.6, 9);
+    p.blobs(rgb(0x7c9ecc), 6, 1.3, 9);
     p.edgeShade(7);
   },
   mycelium_top: (p) => { p.valueNoise(rgb(0x6f6167), 16, 5, 5, 2); p.blobs(rgb(0x8b7b86), 9, 1.6, 14); p.edgeShade(10); },
@@ -115,14 +152,33 @@ export const TERRAIN_RECIPES: Record<string, Recipe> = {
     p.grassOverlay(rgb(0x6f6167));
     p.edgeShade(10);
   },
-  end_stone: (p) => { p.valueNoise(rgb(0xdcdca8), 12, 5, 5, 2); p.blobs(rgb(0xc2c28a), 7, 1.7, 12); p.edgeShade(9); },
+  end_stone: (p) => {
+    p.valueNoise(rgb(0xdcdca8), 20, 5, 5, 3);
+    p.noiseOverlay(9, 14, 14, 1);
+    p.blobs(rgb(0xbcbc82), 10, 1.3, 11);
+    p.blobs(rgb(0xeeeebe), 5, 1.0, 8);
+    p.edgeShade(9);
+  },
+  // 地狱岩。原版是**纤维状**的 —— 密密麻麻的深色短纹，不是几团大暗斑。
+  // 大暗斑的问题在 2×2 平铺时看得最清楚：它们会在贴图边界处连成十字。
+  // 低频格点从 4 提到 7 也是同一个理由：4×4 的格点周期太长，
+  // 一块贴图里只有四个起伏，平铺起来就是规则的波浪
   netherrack: (p) => {
-    p.valueNoise(rgb(0x703434), 20, 4, 4, 2);
-    p.blobs(rgb(0x582626), 7, 1.9, 16);
-    p.blobs(rgb(0x8a4444), 5, 1.5, 12);
+    p.valueNoise(rgb(0x703434), 20, 7, 7, 3);
+    p.noiseOverlay(14, 16, 16, 1);
+    p.blobs(rgb(0x582626), 14, 1.1, 12);
+    p.blobs(rgb(0x8a4444), 9, 0.9, 10);
     p.edgeShade(12);
   },
-  soul_sand: (p) => { p.valueNoise(rgb(0x53403a), 15, 4, 4, 2); p.blobs(rgb(0x372823), 6, 2.2, 12); p.edgeShade(11); },
+  // 灵魂沙：深棕底 + 几处明显的凹陷（原版那几张"脸"的抽象）。
+  // 凹陷要**深**，浅了就只是脏泥土
+  soul_sand: (p) => {
+    p.valueNoise(rgb(0x53403a), 22, 4, 4, 3);
+    p.noiseOverlay(10, 12, 12, 1);
+    p.blobs(rgb(0x2e211d), 7, 2.0, 10);
+    p.blobs(rgb(0x6b544a), 5, 1.2, 8);
+    p.edgeShade(11);
+  },
   glowstone: (p) => {
     p.valueNoise(rgb(0xb99a5e), 14, 4, 4, 2);
     // 亮团带暗边，萤石才有"一颗颗发光结晶"的样子，而不是一张亮黄的纸
