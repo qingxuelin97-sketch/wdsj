@@ -12,7 +12,8 @@ import { Shader } from '../client/gl/shader.ts';
 import { Clock } from '../client/clock.ts';
 import { Camera } from '../client/camera.ts';
 import { Input } from '../client/input/input.ts';
-import { installTestHook, recordError, recordLog } from '../client/debug/test-hook.ts';
+import { recordError, recordLog } from '../client/debug/test-hook.ts';
+import { wireTestHook } from './test-hook-wiring.ts';
 import { scheduleFrame } from '../client/frame-scheduler.ts';
 import { ClientEntities } from '../client/entity/client-entities.ts';
 import { ClientMobs } from '../client/entity/client-mobs.ts';
@@ -29,6 +30,7 @@ import { tintColorArray } from '../client/render/block-textures.ts';
 import { bootRenderResources } from '../client/render/resources.ts';
 import type { MenuAction } from '../client/ui/menu-screen.ts';
 import { runMenuAction } from './menu-actions.ts';
+import { ClientAmbience } from './client-ambience.ts';
 import { SkyRenderer } from '../client/render/sky-renderer.ts';
 import { WeatherRenderer } from '../client/render/weather-renderer.ts';
 import { ParticleEmitters } from '../client/particle/emitters.ts';
@@ -50,10 +52,7 @@ import { installPacketHandlers } from './net-handlers.ts';
 import { FrameInput } from './frame-input.ts';
 import { collectDebugInfo } from '../client/ui/debug-info.ts';
 import {
-  C_Handshake, C_PlayerMove, C_PlayerAction, 
-  C_SetViewDistance, C_AttackEntity, C_Respawn,
-  PROTOCOL_VERSION, PlayerActionKind, 
-  
+  C_Handshake, C_PlayerMove, C_SetViewDistance, C_AttackEntity, PROTOCOL_VERSION,
 } from '../core/net/packets.ts';
 import { SECTION_SIZE, DEFAULT_RENDER_DISTANCE, TPS, MS_PER_TICK } from '../core/constants.ts';
 
@@ -142,6 +141,7 @@ let entityAccumMs = 0;
 let entityPartialTick = 0;
 const audio = new AudioEngine();
 input.onUserGesture(() => audio.resume());
+
 /** 粒子与音效用的随机源。固定种子，同一次运行里可复现 */
 const RAND_SEED0 = 0x1234567;
 let soundSeed = RAND_SEED0;
@@ -150,6 +150,15 @@ const rand = (): number => {
   return soundSeed / 0x100000000;
 };
 const player = new LocalPlayer(0.5, 70, 0.5);
+
+/** 环境音与背景音乐。调度在 core，播放在 client，这里只是把两头接上 */
+const ambience = new ClientAmbience({
+  audio,
+  playerBlock: () => ({
+    x: Math.floor(player.body.x), y: Math.floor(player.body.y), z: Math.floor(player.body.z),
+  }),
+  skyLightAt: (x, y, z) => world.store.getSkyLight(x, y, z),
+});
 
 /**
  * 粒子发射器。用同一个 rand —— 粒子必须**可复现**：
@@ -179,7 +188,6 @@ const emitters = new ParticleEmitters({
 // ---------------------------------------------------------------------------
 const session = new ClientSession({ seed, params, recordError, recordLog });
 const net = session.net;
-const sendCommand = (text: string): Promise<{ ok: boolean; text: string }> => session.command(text);
 const serverStats = session.stats;
 const weather = session.weather;
 
@@ -343,118 +351,13 @@ function renderOnce(): void {
   });
 }
 
-installTestHook({
-  clock, camera, input, canvas, renderOnce,
-  saveWorld: () => session.requestSave('save'),
-  wipeSave: () => session.requestSave('wipe'),
-  itemEntities: () => [...entities.values()].map((e) => ({
-    id: e.entityId, x: e.x, y: e.y, z: e.z, item: e.itemId, count: e.count,
-  })),
-  mobEntities: () => [...mobs.values()].map((m) => ({
-    id: m.entityId, type: m.type, x: m.x, y: m.y, z: m.z, health: m.health,
-  })),
-  mobVerts: () => mobRenderer.lastVerts,
-  isDead: () => ui.dead,
-  vitals: () => ({
-    health: ui.vitals.health, hunger: ui.vitals.hunger,
-    air: ui.vitals.air, xpLevel: ui.vitals.xpLevel,
-  }),
-  respawn: () => { net.send(C_Respawn, {}); net.flush(); },
-  sendAction: (kind, x, y, z) => {
-    net.send(C_PlayerAction, {
-      action: kind === 'start-dig' ? PlayerActionKind.START_DIG : PlayerActionKind.CANCEL_DIG,
-      x, y, z, face: 1,
-    });
-    net.flush();
-  },
-  drawStats: () => ({ drawCalls: renderer.drawCalls, quads: renderer.quadsDrawn }),
-  setSizeLock: (locked: boolean) => {
-    sizeLocked = locked;
-  },
-  idleStats: () => ({
-    // 在飞的网格化任务也算"未安定"——否则会在结果还没回来时就判定世界已就绪
-    dirty: world.dirtyCount + meshPool.pendingJobs,
-    chunks: world.chunkCount,
-    serverPending: serverStats.pendingChunks,
-  }),
-  pumpWorld,
-  command: sendCommand,
-  sharedStats: () => session.sharedStats(),
-  timeOfDay: () => session.timeOfDay,
-  remeshCount: () => world.remeshCount,
-  mirrorInfo: (x: number, y: number, z: number) => ({
-    light: `${world.store.getSkyLight(x, y, z)}/${world.store.getBlockLight(x, y, z)}`,
-    height: world.store.getHeight(x, z),
-    loaded: world.store.isLoaded(x, z),
-  }),
-  debugWorld: () => world,
-  remeshAll: () => world.markAllDirty(),
-  detachCamera: () => { player.mode = 'detached'; },
-  attachPlayer: (x: number, y: number, z: number) => {
-    player.mode = 'physics';
-    player.teleport(x, y, z);
-    camera.setPosition(x, y + player.eyeHeight, z);
-  },
-  playerState: () => ({
-    x: player.body.x, y: player.body.y, z: player.body.z,
-    onGround: player.body.onGround, mode: player.mode,
-  }),
-  selectedBlock: () => interaction.selectedBlock(),
-  digProgress: () => interaction.digProgress,
-  audioStats: () => ({ ready: audio.ready, plays: audio.playCount }),
-  startAudio: () => audio.resume(),
-  particleCount: () => particles.count,
-  setDebugOverlay: (on: boolean, pinned = false) => {
-    showDebug = on;
-    pinDebug = pinned;
-  },
-  /**
-   * 确定性地推进粒子系统若干刻。
-   *
-   * 截图回归需要一片**可复现**的粒子。正常路径下粒子由主循环按真实耗时
-   * 推进，跑了多少刻取决于机器多快 —— 同一个场景两次截出来的烟不在一个地方。
-   *
-   * 这个钩子把随机源复位再跑固定刻数，走的是**和正常路径同一份**发射器
-   * 与物理，所以它验的是真东西，不是一个专门给测试看的假象。
-   */
-  stepParticles: (
-    ticks: number,
-    burst?: readonly [number, number, number, number],
-    burstTicks = 6,
-  ): void => {
-    particles.clear();
-    soundSeed = RAND_SEED0;
-    const ambientStep = (): void => {
-      emitters.tickAmbient(camera.position[0]!, camera.position[1]!, camera.position[2]!);
-      particles.update();
-    };
-    for (let i = 0; i < ticks; i++) ambientStep();
-    // 爆炸放在**最后**才发，然后只再跑几刻。
-    //
-    // 一开始就发是没用的：爆炸粒子只活二十来刻，等 150 刻的环境积累跑完，
-    // 它们早没了 —— 表现是"加了爆炸粒子数一点没变"。
-    //
-    // 为什么要有它：环境粒子那条路是**稀疏**的（每刻在 32³ 里挑 420 格，
-    // 一根火把十几刻才轮到一次），数值上验得了、截图上几乎看不见。
-    // 爆炸是事件那条路，一次三十几粒挤在一起，才是能用眼睛验收的证据。
-    if (burst !== undefined) {
-      emitters.explosion(burst[0], burst[1], burst[2], burst[3]);
-      for (let i = 0; i < burstTicks; i++) ambientStep();
-    }
-  },
-  uiQuads: () => uiRenderer.lastQuads,
-  uiOpen: () => ui.open,
-  showMenu: (screen: string) => { ui.menu.show(screen as 'none'); },
-  menuScreen: () => ui.menu.screen,
-  menuButtons: () => ui.menu.buttonIds(),
-  pressMenu: (id: string) => { applyMenuAction(ui.menu.press(id)); },
-  pixelAt: (x: number, y: number) => {
-    const buf = new Uint8Array(4);
-    // readPixels 的原点在**左下角**，和屏幕坐标相反
-    gl.readPixels(x, canvas!.height - 1 - y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-    return [buf[0]!, buf[1]!, buf[2]!, buf[3]!];
-  },
-
+wireTestHook({
+  gl, canvas: canvas!, clock, camera, input, world, session, meshing, renderer,
+  entities, mobs, mobRenderer, particles, emitters, uiRenderer, ui, audio,
+  interaction, player, renderOnce, pumpWorld, applyMenuAction,
+  setSizeLock: (locked) => { sizeLocked = locked; },
+  setDebugOverlay: (on, pinned) => { showDebug = on; pinDebug = pinned; },
+  resetRand: () => { soundSeed = RAND_SEED0; },
 });
 
 /**
@@ -515,6 +418,8 @@ function frame(nowMs: number): void {
     return;
   }
   frameInput.handleUi(snap);
+
+  ambience.update(serverStats.tick);
 
   // F3 要边沿触发，否则按住会每帧翻一次，看起来是在闪
   if (snap.debug && !prevDebugKey) showDebug = !showDebug;

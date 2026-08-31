@@ -10,18 +10,18 @@
  * 1. **AudioContext 必须等用户手势之后才能启动**。浏览器会把自动创建的
  *    上下文挂成 suspended，第一次播放会静音且不报错 —— 表现是"游戏没声音"
  *    且完全查不出原因。这里在第一次指针锁定时 resume。
- * 2. 噪声缓冲**只生成一次**并复用。每次播放都新建一个 0.2 秒的缓冲，
- *    连续挖掘时每秒要分配十几个，GC 会在音频线程上制造爆音。
+ * 2. 波形由 core/audio/sound-render.ts **离线渲染**并按 spec 缓存，
+ *    播放时只搭一个 BufferSource。这样只有一份波形实现（node 里可哈希），
+ *    而且连续挖掘时不会每秒分配十几张节点图 —— 那会在音频线程上制造爆音。
  */
 import type { SoundSpec } from '../../core/audio/sound-spec.ts';
-
-/** 噪声源缓冲的长度（秒）。够长就不会听出循环 */
-const NOISE_SECONDS = 2;
+import { renderSound } from '../../core/audio/sound-render.ts';
 
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
-  private noiseBuffer: AudioBuffer | null = null;
+  /** spec+音高 -> 已渲染的波形。渲染一次就够，之后都是命中 */
+  private readonly buffers = new Map<string, AudioBuffer>();
   /** 播放失败只报一次，别把控制台刷满 */
   private warned = false;
   private muted = false;
@@ -42,18 +42,6 @@ export class AudioEngine {
       this.master.gain.value = 0.6;
       this.master.connect(this.ctx.destination);
 
-      // 一次性生成噪声源
-      const len = Math.floor(this.ctx.sampleRate * NOISE_SECONDS);
-      const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-      const data = buf.getChannelData(0);
-      // 固定种子的 LCG：同一次运行里每次挖石头听起来一样，
-      // 用 Math.random 的话音色会飘，而且没法做回归
-      let seed = 0x9e3779b9;
-      for (let i = 0; i < len; i++) {
-        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
-        data[i] = (seed / 0x80000000) - 1;
-      }
-      this.noiseBuffer = buf;
     }
     if (this.ctx.state === 'suspended') void this.ctx.resume();
   }
@@ -71,53 +59,41 @@ export class AudioEngine {
    * 播一个音。
    * @param pan −1..1，左右声道。按声源相对玩家的方位给，能听出方块在哪一边
    */
+  /**
+   * 播一个音。
+   *
+   * 波形由 `core/audio/sound-render.ts` **离线渲染**，这里只负责把它
+   * 塞进一个 BufferSource 播出去。
+   *
+   * 原来是当场搭一张 WebAudio 节点图（噪声源 + 双二阶低通 + 两个增益包络）。
+   * 换掉的理由不是性能，是**可测性**：节点图在 node 里跑不起来，
+   * 于是"音效生成字节哈希稳定"这条验收根本无从做起 —— 只能断言参数表，
+   * 而参数对、合成错（包络反了、噪声段没接上）照样是一片静音。
+   *
+   * 现在只有一份波形实现，测试哈希的就是玩家听到的那一串采样。
+   * 顺带也更省：每次播放不再现搭图，只有一个 BufferSource。
+   *
+   * @param pan −1..1，左右声道。按声源相对玩家的方位给，能听出方块在哪一边
+   */
   play(spec: SoundSpec, pan = 0, pitchScale = 1): void {
     const ctx = this.ctx;
     const master = this.master;
-    if (ctx === null || master === null || this.noiseBuffer === null) return;
+    if (ctx === null || master === null) return;
     if (ctx.state !== 'running') return;
+    // 静音时直接不渲染也不排期。只把 master 增益归零的话，
+    // 波形照样在算、节点照样在建 —— 关掉声音本该省下这些
+    if (this.muted) return;
 
     try {
-      const now = ctx.currentTime;
+      const buf = this.bufferFor(spec, pitchScale);
+      if (buf === null) return;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
       const out = ctx.createStereoPanner();
       out.pan.value = Math.max(-1, Math.min(1, pan));
+      src.connect(out);
       out.connect(master);
-
-      if (spec.noiseDuration > 0) {
-        const src = ctx.createBufferSource();
-        src.buffer = this.noiseBuffer;
-        // 从缓冲的随机位置起播，避免每次都是同一段波形
-        src.loop = true;
-        const lp = ctx.createBiquadFilter();
-        lp.type = 'lowpass';
-        lp.frequency.value = spec.cutoff * pitchScale;
-        const g = ctx.createGain();
-        g.gain.setValueAtTime(spec.gain, now);
-        // 指数衰减而不是线性：线性收尾会有一声"喀"的截断
-        g.gain.exponentialRampToValueAtTime(0.0001, now + spec.noiseDuration);
-        src.connect(lp);
-        lp.connect(g);
-        g.connect(out);
-        src.start(now, (this.playCount * 0.137) % (NOISE_SECONDS - spec.noiseDuration - 0.01));
-        src.stop(now + spec.noiseDuration);
-      }
-
-      if (spec.toneStart > 0 && spec.toneDuration > 0) {
-        const osc = ctx.createOscillator();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(spec.toneStart * pitchScale, now);
-        osc.frequency.exponentialRampToValueAtTime(
-          Math.max(20, spec.toneEnd * pitchScale), now + spec.toneDuration,
-        );
-        const g = ctx.createGain();
-        g.gain.setValueAtTime(spec.gain * 0.7, now);
-        g.gain.exponentialRampToValueAtTime(0.0001, now + spec.toneDuration);
-        osc.connect(g);
-        g.connect(out);
-        osc.start(now);
-        osc.stop(now + spec.toneDuration);
-      }
-
+      src.start();
       this.playCount++;
     } catch (err) {
       if (!this.warned) {
@@ -125,6 +101,30 @@ export class AudioEngine {
         console.warn('[audio] 播放失败', err);
       }
     }
-    void this.muted;
+  }
+
+  /**
+   * 取（或渲染并缓存）一个 spec 的 AudioBuffer。
+   *
+   * 缓存键要带上音高倍率：生物按体型缩放音高，同一个 HURT spec
+   * 在鸡和牛身上是两条不同的波形。不带的话所有生物听起来一个样，
+   * 而那是最难发现的一类退化 —— 功能全在，只是"不对味"。
+   *
+   * 音高量化到两位小数再做键：连续的浮点会让缓存永远不命中，
+   * 每次受伤都重渲染一遍。
+   */
+  private bufferFor(spec: SoundSpec, pitchScale: number): AudioBuffer | null {
+    const ctx = this.ctx;
+    if (ctx === null) return null;
+    const p = Math.round(pitchScale * 100) / 100;
+    const key = `${spec.noiseDuration}|${spec.cutoff}|${spec.toneStart}|${spec.toneEnd}`
+      + `|${spec.toneDuration}|${spec.gain}|${p}`;
+    const hit = this.buffers.get(key);
+    if (hit !== undefined) return hit;
+    const pcm = renderSound(spec, p, ctx.sampleRate);
+    const buf = ctx.createBuffer(1, pcm.length, ctx.sampleRate);
+    buf.getChannelData(0).set(pcm);
+    this.buffers.set(key, buf);
+    return buf;
   }
 }

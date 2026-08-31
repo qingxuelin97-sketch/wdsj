@@ -101,14 +101,21 @@ export async function runSceneChecks(ctx) {
     // 劈给两个窗口，速度看上去忽高忽低。逐帧采样没有这个问题。
     const track = [];
     const pressed = m.press('KeyW', 1000);
-    let last = { t: performance.now(), x: before.x, z: before.z };
+    let last = { t: performance.now(), x: before.x, z: before.z, ticks: before.ticks };
     while (true) {
       await new Promise(r => requestAnimationFrame(r));
       const st = m.playerState();
       const now = performance.now();
       const dt = (now - last.t) / 1000;
-      if (dt > 0) track.push({ dt, d: Math.hypot(st.x - last.x, st.z - last.z) });
-      last = { t: now, x: st.x, z: st.z };
+      if (dt > 0) {
+        track.push({
+          dt,
+          d: Math.hypot(st.x - last.x, st.z - last.z),
+          // 这一帧里跑了几步物理。低帧率下会大于 1
+          ticks: st.ticks - last.ticks,
+        });
+      }
+      last = { t: now, x: st.x, z: st.z, ticks: st.ticks };
       if (track.length > 400) break;
       if (track.reduce((a, b) => a + b.dt, 0) > 1.0) break;
     }
@@ -123,22 +130,48 @@ export async function runSceneChecks(ctx) {
     for (let i = 0; i < track.length; i++) {
       if (track[i].d > track[i].dt * 1.0) { if (first < 0) first = i; last2 = i; }
     }
-    // 按**物理 tick** 度量，不按墙钟。
+    // 按**物理 tick** 度量，不按墙钟 —— 而且是按真的 tick 计数，
+    // 不是"用帧数猜 tick 数"。
     //
-    // 物理固定 20 Hz，画面可能 180 fps —— 位置只在 tick 边界上跳，
-    // 中间的帧位移是 0。任何按墙钟切窗口的算法都会被这个量化打败：
-    // 整段平均受起步加速段和撞墙那一下的影响，滑窗取最大又必然偏高。
-    // 而"每个 tick 走了多远"是个干净的量：稳态下它恒等于 4.317/20 = 0.2159。
+    // 墙钟为什么不行：clock.dt 有 0.1 秒的上限截断（切标签页回来不该瞬移），
+    // 所以帧率低于 10fps 时**模拟时间本来就比真实时间慢**。软件渲染的
+    // 容器只有 6fps，一个完全正确的实现按墙钟量也只有六成速度。
     //
-    // 取中位数，起步的几步和撞墙被截断的最后一步都会被排除掉。
-    const steps = track.filter((f) => f.d > 0.01).map((f) => f.d).sort((a, b) => a - b);
-    const movingFrames = steps.length;
-    const best = steps.length > 0 ? steps[Math.floor(steps.length / 2)] * 20 : 0;
+    // 帧数为什么也不行：>=20fps 时一帧最多一个 tick，帧数≈tick 数；
+    // 低于 20fps 时一帧含好几个 tick，帧数就不再是 tick 数了。
+    //
+    // 而"每 tick 走 0.2159 格"在任何帧率下都恒成立，所以直接问客户端
+    // 跑过多少步物理（playerState().ticks），拿位移除以它。
+    //
+    // 取各段的**最大**值，不是中位数。
+    //
+    // 稳态速度是个上确界：起步是从 0 渐近逼近它的（MC 的地面摩擦让加速
+    // 呈几何收敛，要六七个 tick 才到 95%），撞墙只会更慢，而没有任何
+    // 机制能让玩家超过它（疾跑要另按键）。所以"跑过的最快的一段"
+    // 就是稳态速度，而中位数会被加速段拖低。
+    //
+    // 3.8fps 的容器里 dt 被截断到 0.1 秒，按住一秒只跑得出 12 个 tick，
+    // 其中前六个还在加速 —— 中位数在这种样本下必然偏低（实测 4.16 / 4.317）。
+    //
+    // 取最大值不怕"偏高"：下面的断言是**双向**的，真高了照样红。
+    // 老注释担心的"滑窗取最大必然偏高"说的是按墙钟切窗口 ——
+    // 那时窗口边界可能把两个 tick 的位移塞进一个短窗口。分母换成
+    // 真实 tick 数之后这个失效模式就不存在了。
+    const perTick = [];
+    for (const f of track) {
+      if (f.ticks > 0 && f.d > 0.01) perTick.push(f.d / f.ticks);
+    }
+    perTick.sort((a, b) => a - b);
+    const best = perTick.length > 0 ? perTick[perTick.length - 1] * 20 : 0;
+    // 移动持续了多少个物理 tick。用 tick 而不是帧数：帧数是帧率的函数，
+    // 而"按住一秒该一直在走"说的是模拟时间里的事
+    let movedTicks = 0;
+    for (let i = first; i >= 0 && i <= last2; i++) movedTicks += track[i].ticks;
     return {
       before, after,
       frames: track.length,
-      movingFrames,
-      span: last2 - first + 1,
+      movingFrames: perTick.length,
+      movedTicks,
       speed: best,
       dist: Math.hypot(after.x - before.x, after.z - before.z),
     };
@@ -153,12 +186,17 @@ export async function runSceneChecks(ctx) {
       failures.push(`按 W 之前玩家应该已经站稳了，实得 onGround=${walk.before.onGround}`);
     } else if (walk.after.mode !== 'physics') {
       failures.push(`按 W 期间玩家应处于物理模式，实得 ${walk.after.mode}`);
-    } else if (walk.span < 10) {
-      failures.push(`按住 W 几乎没动：移动区间只有 ${walk.span} 帧（共 ${walk.frames} 帧）`);
+    } else if (walk.movedTicks < 10) {
+      // 按 tick 而不是按帧数：软件渲染只有 6fps，一秒就七帧，
+      // 按帧数设阈值等于把慢机器判死
+      failures.push(
+        `按住 W 几乎没动：只走了 ${walk.movedTicks} 个物理 tick` +
+        `（共 ${walk.frames} 帧，其中 ${walk.movingFrames} 帧有位移）`,
+      );
     } else if (Math.abs(speed - 4.317) > 0.15) {
       failures.push(
         `行走稳态速度 ${speed.toFixed(3)} 格/秒，MC 是 4.317` +
-        `（${walk.movingFrames} 个 tick 有位移，共走 ${walk.dist.toFixed(2)} 格）`,
+        `（${walk.movedTicks} 个 tick 有位移，共走 ${walk.dist.toFixed(2)} 格）`,
       );
     } else {
       log(`按住 W：每 tick 走 ${(speed / 20).toFixed(4)} 格 = ${speed.toFixed(3)} 格/秒（MC 4.317）ok`);

@@ -116,10 +116,6 @@ export interface HostBridge {
   uiQuads(): number;
   /** 当前是否开着某个容器界面 */
   uiOpen(): boolean;
-  showMenu(screen: string): void;
-  menuScreen(): string;
-  menuButtons(): string[];
-  pressMenu(id: string): void;
   /**
    * 打开某个全屏菜单（'main' / 'worlds' / 'settings' / 'pause' / 'none'）。
    * 截图回归靠它 —— 不必去模拟"按 Esc、再点第几个按钮"那一串。
@@ -134,7 +130,7 @@ export interface HostBridge {
   /** 读一个像素，排查用 */
   pixelAt(x: number, y: number): number[];
   /** 玩家身体状态，物理验收用 */
-  playerState(): { x: number; y: number; z: number; onGround: boolean; mode: string };
+  playerState(): { x: number; y: number; z: number; onGround: boolean; mode: string; ticks: number };
   /** 叫服务端立刻存盘，等回执。闸门测试③要用 */
   saveWorld(): Promise<{ ok: boolean; chunks: number }>;
   /** 把存档整个删掉 */
@@ -447,7 +443,7 @@ export function installTestHook(host: HostBridge): void {
     attachPlayer(x: number, y: number, z: number): void {
       host.attachPlayer(x, y, z);
     },
-    playerState: (): { x: number; y: number; z: number; onGround: boolean; mode: string } =>
+    playerState: (): { x: number; y: number; z: number; onGround: boolean; mode: string; ticks: number } =>
       host.playerState(),
     selectedBlock: (): { x: number; y: number; z: number; face: number } | null =>
       host.selectedBlock(),

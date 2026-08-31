@@ -33,6 +33,15 @@ export class LocalPlayer {
   /** 累积的时间，够一个 tick 就跑一步物理 */
   private accumulatorMs = 0;
   /**
+   * 至今跑过多少步物理。
+   *
+   * 供自动化验收把"走多快"换算成**每 tick 走多远**。按墙钟量是不行的：
+   * clock.dt 有 0.1 秒的上限截断（切标签页回来不该瞬移），于是帧率低于
+   * 10fps 时模拟时间本来就比真实时间慢，一个完全正确的实现按墙钟量
+   * 也只有六成速度。而"每 tick 走 0.2159 格"在任何帧率下都恒成立。
+   */
+  physicsTicks = 0;
+  /**
    * 上一 tick 结束时的位置。
    *
    * 物理固定 20 Hz，而画面可能跑 120 fps —— 直接把身体位置喂给相机的话，
@@ -113,6 +122,7 @@ export class LocalPlayer {
       this.prevZ = this.body.z;
       stepBody(world, tables, this.body, this.input);
       this.accumulatorMs -= MS_PER_TICK;
+      this.physicsTicks++;
       steps++;
     }
     if (steps === MAX_CATCHUP_TICKS) {

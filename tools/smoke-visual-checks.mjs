@@ -234,6 +234,10 @@ export async function runVisualChecks(ctx) {
       log(`${name}: ${shot.hash} (已记录)`);
     } else if (golden[name] !== undefined && golden[name] !== shot.hash) {
       failures.push(`${name} 截图哈希不匹配: 期望 ${golden[name]}，实得 ${shot.hash}`);
+    } else if (golden[name] === undefined) {
+      // 说"ok"会骗人 —— 金值还没录过，这一张根本没跟任何东西比。
+      // 金值要在**真显卡**的机器上录（见 docs/ART-PLAN.md）
+      log(`${name}: ${shot.hash}（金值未录，仅检查按钮：${shot.ids.join(',')}）`);
     } else {
       log(`${name}: ${shot.hash} ok（按钮 ${shot.ids.join(',')}）`);
     }

@@ -15,27 +15,11 @@ const CHANNELS = 4;
 export const TILE_SIZE = TILE;
 export const TILE_BYTES = TILE * TILE * CHANNELS;
 
-/** FNV-1a，用来把贴图名字变成稳定的 32 位种子 */
-export function fnv1a(str: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return h >>> 0;
-}
-
-/** mulberry32：小巧、质量足够、状态只有一个 uint32 */
-export function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+// fnv1a / mulberry32 原来长在这里，现在搬到了 core/rng/mulberry.ts ——
+// 环境音调度也要播种，而"音频模块 import 渲染模块只为拿一个随机数发生器"
+// 是层次上的倒挂。这里转出去，贴图侧的写法一个字都不用改。
+export { fnv1a, mulberry32 } from '../../core/rng/mulberry.ts';
+import { fnv1a, mulberry32 } from '../../core/rng/mulberry.ts';
 
 export interface Rgb {
   r: number;
