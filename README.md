@@ -14,12 +14,15 @@ TypeScript + 原生 WebGL2 + Web Workers，**零 npm 依赖**。
 
 ```bash
 node tools/dev-server.mjs          # 开发服务器 -> http://localhost:8080
-node tools/ci.mjs                  # 全套门禁：类型检查 + 3 个 lint + 单测 + 无头冒烟
+node tools/ci.mjs                  # 全套门禁：类型检查 + 3 个 lint + 单测 + 无头冒烟 + 多人 + 性能
 node --test                        # 只跑单元测试
 node tools/smoke.mjs --head        # 有头模式跑冒烟测试，方便肉眼看
 node tools/persist-check.mjs       # 闸门③：真浏览器建结构 -> 存盘 -> 重开 -> 全还原
 node tools/first-night-check.mjs   # 闸门①：打木 -> 合成 -> 掩体 -> 熬过有怪的一夜
 node tools/mine-check.mjs          # 闸门②：下矿 -> 火把照明 -> 挖到钻石 -> 活着回来
+node tools/mp-server.mjs           # 独立多人服务端（零依赖 WebSocket，静态文件也一起服务）
+node tools/mp-check.mjs            # 多人验收：两个真标签页互相看得见、延迟 < 100ms
+node tools/perf-check.mjs          # 帧率 / 服务端每刻耗时 / 十分钟内存漂移
 UPDATE_GOLDEN=1 node tools/smoke.mjs   # 重新生成截图黄金哈希（只在录它的那台机器上跑）
 node tools/tile-sheet.mjs          # 把程序化贴图渲成 PNG 供肉眼检查，不用起浏览器
 ```
@@ -77,7 +80,14 @@ docs/          设计、路线图、规约、评分表、有意偏差
 
 ## 当前进度
 
-**M0–M13 完成**，CI 9 步全绿。详见 [ROADMAP](docs/ROADMAP.md) 的逐里程碑完成记录。
+**M0–M17 全部完成**，按评分表得 **93 / 100**（逐项扣分说明见
+[RUBRIC](docs/RUBRIC.md) 的打分记录）。详见 [ROADMAP](docs/ROADMAP.md)
+的逐里程碑完成记录。
+
+一处**还没验过**的地方：闸门②（下矿）没能在这台无 GPU 的容器上跑通一次
+完整验证。它不是已知失败 —— 场景里两个真错已经修了、也补了回归测试 ——
+但按评分表的规则，闸门不过总分封顶 60，所以那 93 分带一个星号。
+在有真显卡的机器上跑一次 `node tools/mine-check.mjs` 就能定论。
 
 | | |
 |---|---|

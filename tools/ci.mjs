@@ -40,6 +40,15 @@ if (!skipSmoke && fs.existsSync(path.join(ROOT, 'tools/smoke.mjs'))) {
   // 怪物生成与 AI 串成一条链跑一遍。单项全绿而这条挂掉，
   // 说明有东西只在隔离环境里成立
   steps.push({ name: '闸门① 第一夜 (headless chrome)', cmd: NODE, args: [path.join(ROOT, 'tools/first-night-check.mjs')] });
+  // 多人：起一个独立服务端 + 两个真标签页。
+  // 单元测试验的是服务端的差集逻辑，这里验的是整条链路真的通
+  // （WebSocket 握手、帧编解码、把出生包画成一个人）——
+  // 两者少了哪一半都可能"全绿但连不上"。
+  steps.push({ name: '多人 (两个标签页)', cmd: NODE, args: [path.join(ROOT, 'tools/mp-check.mjs')] });
+  // 性能：只跑 1 分钟。帧率在软件渲染下不作数（工具自己会判断并跳过），
+  // 但**服务端每刻耗时**与**堆漂移**与 GPU 无关，任何机器上都作数。
+  // 十分钟的完整内存验收用 node tools/perf-check.mjs --minutes 10 单跑
+  steps.push({ name: '性能 (1 分钟)', cmd: NODE, args: [path.join(ROOT, 'tools/perf-check.mjs'), '--rd', '4', '--minutes', '1'] });
 }
 
 let failed = 0;
