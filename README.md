@@ -10,6 +10,18 @@ TypeScript + 原生 WebGL2 + Web Workers，**零 npm 依赖**。
 > **接手这个项目？先读 [docs/HANDOFF.md](docs/HANDOFF.md)** —— 现在做到哪了、
 > 代码为什么长这样、下一步该干什么，以及唯一一个已知未解决的问题。
 
+## 直接玩
+
+**<https://qingxuelin97-sketch.github.io/wdsj/>** —— 浏览器打开就能玩，不用装任何东西。
+需要支持 WebGL2 的浏览器（Chrome / Edge / Firefox 的近几年版本都行）。
+
+每次推到 `main` 会自动重新发布，见 [.github/workflows/pages.yml](.github/workflows/pages.yml)。
+
+> 线上版有**一处降级**：GitHub Pages 发不了跨源隔离所需的 COOP/COEP 响应头，
+> 所以没有 `SharedArrayBuffer`，服务端的心跳会从 worker 回落到 `setTimeout` ——
+> 表现是**切到后台标签页时世界会停住**。本地跑 `node tools/dev-server.mjs`
+> 没有这个问题（它带着那两个头）。游戏本身的玩法一样不缺。
+
 ## 快速开始
 
 ```bash
@@ -18,6 +30,9 @@ node tools/ci.mjs                  # 全套门禁：类型检查 + 3 个 lint + 
 node --test                        # 只跑单元测试
 node tools/smoke.mjs --head        # 有头模式跑冒烟测试，方便肉眼看
 node tools/persist-check.mjs       # 闸门③：真浏览器建结构 -> 存盘 -> 重开 -> 全还原
+
+node tools/build-static.mjs        # 编译成纯静态站到 dist/（GitHub Pages 用）
+node tools/serve-static.mjs        # 预览 dist/，**不带 COOP/COEP**，与线上一致
 node tools/first-night-check.mjs   # 闸门①：打木 -> 合成 -> 掩体 -> 熬过有怪的一夜
 node tools/mine-check.mjs          # 闸门②：下矿 -> 火把照明 -> 挖到钻石 -> 活着回来
 node tools/mp-server.mjs           # 独立多人服务端（零依赖 WebSocket，静态文件也一起服务）

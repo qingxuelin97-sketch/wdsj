@@ -20,3 +20,6 @@ Thumbs.db
 
 # 测试输出
 tests/out/
+
+# GitHub Pages 的构建产物。开发不需要它，发布时由 CI 现生成
+dist/

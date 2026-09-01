@@ -1,0 +1,67 @@
+# 把游戏发到 GitHub Pages，浏览器直接打开就能玩。
+#
+# 为什么需要一步构建：GitHub Pages 只会原样吐文件，没有服务端帮你剥 TypeScript。
+# 开发那条路（tools/dev-server.mjs 现场剥类型）依然是零构建的，这里只是
+# 把同一个 module.stripTypeScriptTypes 提前离线跑一遍。详见 tools/build-static.mjs。
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  # 手动触发。改了 workflow 本身、或者想重发一次时用得上
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时刻只跑一个部署。cancel-in-progress 故意设成 false ——
+# 取消一个**正在发布**的部署可能让线上停在半新半旧的状态
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 22 起才有 module.stripTypeScriptTypes（构建脚本与 dev-server 都靠它）
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # **先跑测试再发布。** 这一步不是走过场：
+      # 它是"线上那份东西至少通过了 638 条单元测试"的唯一保证。
+      # 没有它的话，一次手滑推到 main 就直接把坏版本发出去了。
+      - name: 单元测试
+        run: node --no-warnings --test
+
+      # 三个 lint 都是零依赖的 .mjs，CI 里直接能跑。
+      # **tsc 不在这里跑**：工具链是 vendor 进来的（tools/vendor.mjs 从本机
+      # 其他项目复制，见 docs/HANDOFF.md），CI 上那些路径不存在。
+      # 类型检查靠提交前本地跑，这一点是这个零依赖项目的既定取舍
+      - name: lint
+        run: |
+          node tools/lint-erasable.mjs
+          node tools/lint-layers.mjs
+          node tools/lint-size.mjs
+
+      - name: 构建静态站
+        run: node tools/build-static.mjs
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
